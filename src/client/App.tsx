@@ -35,6 +35,7 @@ import type {
   AuthResponse,
   AuthSessionResponse,
   AuthUser,
+  AdminStatsResponse,
   Artwork,
   ArtworkResponse,
   GalleryResponse,
@@ -53,9 +54,9 @@ type HealthResponse = {
 
 const sortOptions: { value: SortMode; label: string; icon: typeof Grid3X3 }[] = [
   { value: "latest", label: "Latest", icon: Grid3X3 },
+  { value: "following", label: "Following", icon: Sparkles },
   { value: "popular", label: "Popular", icon: Flame },
-  { value: "rising", label: "Rising", icon: TrendingUp },
-  { value: "following", label: "Following", icon: Sparkles }
+  { value: "rising", label: "Rising", icon: TrendingUp }
 ];
 
 const numberFormat = new Intl.NumberFormat("en", {
@@ -73,6 +74,8 @@ const formatCount = (value: number) => numberFormat.format(value);
 const classNames = (...values: Array<string | false | null | undefined>) =>
   values.filter(Boolean).join(" ");
 
+const csrfHeaderName = "x-csrf-token";
+
 type ViewMode = "home" | "dashboard";
 type AuthMode = "login" | "register";
 type TurnstileAction = AuthMode | "resend";
@@ -87,8 +90,12 @@ const getInitialView = (): ViewMode => {
 function App() {
   const [gallery, setGallery] = useState<GalleryResponse | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [adminStats, setAdminStats] = useState<AdminStatsResponse | null>(null);
+  const [dashboardMessage, setDashboardMessage] = useState("");
   const [authConfig, setAuthConfig] = useState<AuthConfigResponse | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [csrfToken, setCsrfToken] = useState("");
+  const [authReady, setAuthReady] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [authNotice, setAuthNotice] = useState("");
@@ -101,6 +108,7 @@ function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
+  const [postAuthSort, setPostAuthSort] = useState<SortMode | null>(null);
 
   const galleryUrl = useMemo(() => {
     const params = new URLSearchParams();
@@ -131,7 +139,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [galleryUrl]);
+  }, [currentUser?.id, galleryUrl]);
 
   useEffect(() => {
     let cancelled = false;
@@ -152,10 +160,16 @@ function App() {
       .then((session) => {
         if (!cancelled) {
           setCurrentUser(session.user);
+          setCsrfToken(session.csrfToken ?? "");
         }
       })
       .catch((error: unknown) => {
         console.error("Unable to load auth session", error);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAuthReady(true);
+        }
       });
 
     const params = new URLSearchParams(window.location.search);
@@ -184,6 +198,17 @@ function App() {
     if (view !== "dashboard") {
       return;
     }
+    if (!authReady) {
+      return;
+    }
+    if (currentUser?.role !== "admin") {
+      setDashboardMessage("Administrator access is required.");
+      setView("home");
+      if (window.location.hash === "#dashboard") {
+        window.history.pushState(null, "", window.location.pathname + window.location.search);
+      }
+      return;
+    }
 
     fetch("/api/health")
       .then((response) => response.json() as Promise<HealthResponse>)
@@ -191,7 +216,28 @@ function App() {
       .catch((error: unknown) => {
         console.error("Unable to load health state", error);
       });
-  }, [view]);
+
+    fetch("/api/admin/stats", { credentials: "include" })
+      .then(async (response) => {
+        const payload = (await response.json()) as AdminStatsResponse | { message?: string };
+        if (!response.ok) {
+          const message =
+            "message" in payload && payload.message
+              ? payload.message
+              : "Unable to load dashboard stats.";
+          throw new Error(message);
+        }
+        return payload as AdminStatsResponse;
+      })
+      .then((stats) => {
+        setAdminStats(stats);
+        setDashboardMessage("");
+      })
+      .catch((error: unknown) => {
+        setAdminStats(null);
+        setDashboardMessage(error instanceof Error ? error.message : "Unable to load dashboard stats.");
+      });
+  }, [authReady, currentUser?.role, view]);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -236,6 +282,12 @@ function App() {
   const ranking = [...artworks].sort((left, right) => right.likeCount - left.likeCount);
   const totalLikes = artworks.reduce((sum, artwork) => sum + artwork.likeCount, 0);
   const totalViews = artworks.reduce((sum, artwork) => sum + artwork.viewCount, 0);
+  const isBookmarksView = sort === "bookmarks";
+  const feedTitle = isBookmarksView ? "Bookmarked illustrations" : "Recommended illustrations";
+  const feedMeta = isBookmarksView
+    ? `${formatCount(artworks.length)} saved ${artworks.length === 1 ? "work" : "works"}`
+    : `${formatCount(totalLikes)} likes across ${formatCount(totalViews)} views`;
+  const filterLabel = isBookmarksView ? "All bookmarks" : "All work";
 
   const showHome = (nextSort: SortMode) => {
     setView("home");
@@ -245,7 +297,23 @@ function App() {
     }
   };
 
+  const showBookmarks = () => {
+    if (!currentUser) {
+      setPostAuthSort("bookmarks");
+      setAuthMode("login");
+      setAuthNotice("Sign in to view your bookmarks.");
+      setAuthOpen(true);
+      return;
+    }
+    showHome("bookmarks");
+  };
+
   const showDashboard = () => {
+    if (currentUser?.role !== "admin") {
+      setDashboardMessage("Administrator access is required.");
+      openAuth("login");
+      return;
+    }
     setView("dashboard");
     if (window.location.hash !== "#dashboard") {
       window.location.hash = "dashboard";
@@ -268,20 +336,55 @@ function App() {
 
   const handleAuthSuccess = (payload: AuthResponse) => {
     setCurrentUser(payload.user);
+    setCsrfToken(payload.csrfToken);
     setAuthNotice(payload.message);
     setAuthOpen(false);
+    if (postAuthSort) {
+      showHome(postAuthSort);
+      setPostAuthSort(null);
+    }
   };
 
   const handleLogout = async () => {
     const response = await fetch("/api/auth/logout", {
       method: "POST",
-      credentials: "include"
+      credentials: "include",
+      headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
     });
     const payload = (await response.json().catch(() => ({ message: "Signed out." }))) as {
       message: string;
     };
-    setCurrentUser(null);
+    if (response.ok) {
+      setCurrentUser(null);
+      setCsrfToken("");
+      setAdminStats(null);
+      if (view === "dashboard" || sort === "bookmarks") {
+        showHome("latest");
+      }
+    }
     setAuthNotice(payload.message);
+  };
+
+  const syncArtwork = (updatedArtwork: Artwork) => {
+    setGallery((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        artworks: current.artworks
+          .map((item) => (item.id === updatedArtwork.id ? updatedArtwork : item))
+          .filter((item) => sort !== "bookmarks" || item.bookmarked)
+      };
+    });
+    setSelectedArtwork((current) =>
+      current?.id === updatedArtwork.id ? updatedArtwork : current
+    );
+    setArtworkDetail((current) =>
+      current?.artwork.id === updatedArtwork.id
+        ? { ...current, artwork: updatedArtwork }
+        : current
+    );
   };
 
   const handleResendVerification = useCallback(async (turnstileToken: string) => {
@@ -289,7 +392,8 @@ function App() {
       method: "POST",
       credentials: "include",
       headers: {
-        "content-type": "application/json"
+        "content-type": "application/json",
+        [csrfHeaderName]: csrfToken
       },
       body: JSON.stringify({ turnstileToken })
     });
@@ -305,32 +409,43 @@ function App() {
       throw new Error(payload.message);
     }
     return payload.message;
-  }, []);
+  }, [csrfToken]);
 
   const handleLike = async (artwork: Artwork) => {
+    if (!currentUser) {
+      openAuth("login");
+      return;
+    }
     const response = await fetch(`/api/artworks/${artwork.id}/like`, {
-      method: "POST"
+      method: "POST",
+      credentials: "include",
+      headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
     });
-    const payload = (await response.json()) as { artwork: Artwork };
-    setGallery((current) => {
-      if (!current) {
-        return current;
-      }
-      return {
-        ...current,
-        artworks: current.artworks.map((item) =>
-          item.id === payload.artwork.id ? payload.artwork : item
-        )
-      };
+    const payload = (await response.json()) as { artwork?: Artwork; message?: string };
+    if (!response.ok || !payload.artwork) {
+      setAuthNotice(payload.message ?? "Unable to like artwork.");
+      return;
+    }
+    const likedArtwork = payload.artwork;
+    syncArtwork(likedArtwork);
+  };
+
+  const handleBookmark = async (artwork: Artwork) => {
+    if (!currentUser) {
+      openAuth("login");
+      return;
+    }
+    const response = await fetch(`/api/artworks/${artwork.id}/bookmark`, {
+      method: "POST",
+      credentials: "include",
+      headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
     });
-    setSelectedArtwork((current) =>
-      current?.id === payload.artwork.id ? payload.artwork : current
-    );
-    setArtworkDetail((current) =>
-      current?.artwork.id === payload.artwork.id
-        ? { ...current, artwork: payload.artwork }
-        : current
-    );
+    const payload = (await response.json()) as { artwork?: Artwork; message?: string };
+    if (!response.ok || !payload.artwork) {
+      setAuthNotice(payload.message ?? "Unable to bookmark artwork.");
+      return;
+    }
+    syncArtwork(payload.artwork);
   };
 
   const handleUpload = async (event: FormEvent<HTMLFormElement>) => {
@@ -340,6 +455,8 @@ function App() {
     const formData = new FormData(form);
     const response = await fetch("/api/upload", {
       method: "POST",
+      credentials: "include",
+      headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined,
       body: formData
     });
     const payload = (await response.json()) as UploadResponse | { message: string };
@@ -440,28 +557,32 @@ function App() {
             Rankings
           </button>
           <button
-            className="menu-item"
+            className={classNames("menu-item", view === "home" && sort === "bookmarks" && "is-active")}
             type="button"
-            onClick={() => showHome("latest")}
+            onClick={showBookmarks}
           >
             <Bookmark size={18} />
             Bookmarks
           </button>
-          <button
-            className={classNames("menu-item", view === "dashboard" && "is-active")}
-            type="button"
-            onClick={showDashboard}
-          >
-            <BarChart3 size={18} />
-            Dashboard
-          </button>
+          {currentUser?.role === "admin" ? (
+            <button
+              className={classNames("menu-item", view === "dashboard" && "is-active")}
+              type="button"
+              onClick={showDashboard}
+            >
+              <BarChart3 size={18} />
+              Dashboard
+            </button>
+          ) : null}
         </aside>
 
         {view === "dashboard" ? (
           <Dashboard
             artworks={artworks}
             health={health}
-            source={gallery?.source ?? "seed"}
+            adminStats={adminStats}
+            message={dashboardMessage}
+            source={gallery?.source ?? "empty"}
             tagsCount={gallery?.tags.length ?? 0}
             creatorsCount={gallery?.creators.length ?? 0}
             totalLikes={totalLikes}
@@ -472,16 +593,19 @@ function App() {
           <>
             <section className="feed-main">
               <AccountNotice
-                notice={authNotice}
+                notice={dashboardMessage || authNotice}
                 siteKey={authConfig?.turnstileSiteKey ?? ""}
                 user={currentUser}
-                onDismiss={() => setAuthNotice("")}
+                onDismiss={() => {
+                  setAuthNotice("");
+                  setDashboardMessage("");
+                }}
                 onResend={handleResendVerification}
               />
               <div className="section-heading">
                 <div>
-                  <h1>Recommended illustrations</h1>
-                  <p>{formatCount(totalLikes)} likes across {formatCount(totalViews)} views</p>
+                  <h1>{feedTitle}</h1>
+                  <p>{feedMeta}</p>
                 </div>
                 <button
                   className="filter-chip"
@@ -491,7 +615,7 @@ function App() {
                     setQuery("");
                   }}
                 >
-                  All work
+                  {filterLabel}
                   <ChevronDown size={15} />
                 </button>
               </div>
@@ -534,10 +658,17 @@ function App() {
                     artwork={artwork}
                     index={index}
                     onSelect={setSelectedArtwork}
-                    onLike={handleLike}
+                    onBookmark={handleBookmark}
                   />
                 ))}
               </div>
+              {artworks.length === 0 ? (
+                <p className="empty-feed">
+                  {isBookmarksView
+                    ? "Bookmarked works will appear here after you save them."
+                    : "No artwork matches this view yet."}
+                </p>
+              ) : null}
             </section>
 
             <aside className="right-rail" aria-label="Recommendations">
@@ -593,6 +724,7 @@ function App() {
           loading={detailLoading}
           onClose={() => setSelectedArtwork(null)}
           onLike={handleLike}
+          onBookmark={handleBookmark}
         />
       ) : null}
 
@@ -641,9 +773,9 @@ function AccountControl({ user, onLogin, onRegister, onLogout }: AccountControlP
 
   return (
     <div className="account-chip">
-      <span className={classNames("verify-dot", user.emailVerified && "is-verified")} />
+      <span className={classNames("verify-dot", (user.emailVerified || user.role === "admin") && "is-verified")} />
       <span className="account-name">{user.displayName}</span>
-      <small>{user.emailVerified ? "Verified" : "Pending"}</small>
+      <small>{user.role === "admin" ? "Admin" : user.emailVerified ? "Verified" : "Pending"}</small>
       <button className="icon-button account-logout" type="button" onClick={onLogout} aria-label="Sign out">
         <LogOut size={16} />
       </button>
@@ -950,6 +1082,8 @@ function AuthDialog({ mode, siteKey, onClose, onModeChange, onSuccess }: AuthDia
 type DashboardProps = {
   artworks: Artwork[];
   health: HealthResponse | null;
+  adminStats: AdminStatsResponse | null;
+  message: string;
   source: GalleryResponse["source"];
   tagsCount: number;
   creatorsCount: number;
@@ -961,6 +1095,8 @@ type DashboardProps = {
 function Dashboard({
   artworks,
   health,
+  adminStats,
+  message,
   source,
   tagsCount,
   creatorsCount,
@@ -971,6 +1107,8 @@ function Dashboard({
   const recent = [...artworks].sort(
     (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
   );
+  const contentStats = adminStats?.content;
+  const accountStats = adminStats?.accounts;
 
   return (
     <section className="dashboard-main" aria-label="Operations dashboard">
@@ -979,6 +1117,7 @@ function Dashboard({
           <p className="eyebrow">Operations</p>
           <h1>Cloudflare dashboard</h1>
           <p>Worker, D1, R2, and content pipeline status for NEHub.</p>
+          {message ? <p className="dashboard-message">{message}</p> : null}
         </div>
         <button className="primary-button" type="button" onClick={onUpload}>
           <ImageUp size={17} />
@@ -1015,20 +1154,59 @@ function Dashboard({
           active
           detail="Vite build on Workers assets"
         />
+        <StatusCard
+          icon={<MailCheck size={22} />}
+          label="Email binding"
+          value={adminStats?.storage.email ? "Ready" : "Checking"}
+          active={Boolean(adminStats?.storage.email)}
+          detail="Verification email delivery"
+        />
       </div>
 
       <div className="dashboard-grid">
+        <section className="dashboard-panel">
+          <div className="panel-title">
+            <UserRound size={18} />
+            Account controls
+          </div>
+          <StatusLine
+            label="Total users"
+            value={formatCount(accountStats?.totalUsers ?? 0)}
+            active={Boolean(accountStats)}
+          />
+          <StatusLine
+            label="Verified users"
+            value={formatCount(accountStats?.verifiedUsers ?? 0)}
+            active={Boolean(accountStats?.verifiedUsers)}
+          />
+          <StatusLine
+            label="Administrators"
+            value={formatCount(accountStats?.admins ?? 0)}
+            active={Boolean(accountStats?.admins)}
+          />
+          <StatusLine
+            label="Active sessions"
+            value={formatCount(accountStats?.activeSessions ?? 0)}
+            active={Boolean(accountStats?.activeSessions)}
+          />
+          <StatusLine
+            label="Pending email links"
+            value={formatCount(accountStats?.pendingVerifications ?? 0)}
+            active={Boolean(accountStats?.pendingVerifications)}
+          />
+        </section>
+
         <section className="dashboard-panel metric-panel">
           <div className="panel-title">
             <Activity size={18} />
             Content metrics
           </div>
           <div className="metric-grid">
-            <MetricTile label="Artworks" value={formatCount(artworks.length)} />
-            <MetricTile label="Creators" value={formatCount(creatorsCount)} />
+            <MetricTile label="Artworks" value={formatCount(contentStats?.artworks ?? artworks.length)} />
+            <MetricTile label="Creators" value={formatCount(contentStats?.creators ?? creatorsCount)} />
             <MetricTile label="Tags" value={formatCount(tagsCount)} />
-            <MetricTile label="Likes" value={formatCount(totalLikes)} />
-            <MetricTile label="Views" value={formatCount(totalViews)} />
+            <MetricTile label="Likes" value={formatCount(contentStats?.likes ?? totalLikes)} />
+            <MetricTile label="Views" value={formatCount(contentStats?.views ?? totalViews)} />
             <MetricTile label="Source" value={source.toUpperCase()} />
           </div>
         </section>
@@ -1055,9 +1233,30 @@ function Dashboard({
           />
           <StatusLine
             label="Gallery data"
-            value={source === "d1" ? "Persisted" : "Seeded"}
+            value={source === "d1" ? "Persisted" : "Empty"}
             active={source === "d1"}
           />
+        </section>
+
+        <section className="dashboard-panel recent-users-panel">
+          <div className="panel-title">
+            <ShieldCheck size={18} />
+            Recent users
+          </div>
+          {(adminStats?.recentUsers ?? []).map((user) => (
+            <div className="admin-user-row" key={user.id}>
+              <span className={classNames("verify-dot", user.emailVerified && "is-verified")} />
+              <div>
+                <strong>{user.displayName}</strong>
+                <span>
+                  @{user.username} · {user.role} · {dateFormat.format(new Date(user.createdAt))}
+                </span>
+              </div>
+            </div>
+          ))}
+          {adminStats && adminStats.recentUsers.length === 0 ? (
+            <p className="muted">No users yet.</p>
+          ) : null}
         </section>
 
         <section className="dashboard-panel recent-panel">
@@ -1121,10 +1320,10 @@ type ArtworkCardProps = {
   artwork: Artwork;
   index: number;
   onSelect: (artwork: Artwork) => void;
-  onLike: (artwork: Artwork) => void;
+  onBookmark: (artwork: Artwork) => void;
 };
 
-function ArtworkCard({ artwork, index, onSelect, onLike }: ArtworkCardProps) {
+function ArtworkCard({ artwork, index, onSelect, onBookmark }: ArtworkCardProps) {
   return (
     <article
       className="art-card"
@@ -1159,12 +1358,12 @@ function ArtworkCard({ artwork, index, onSelect, onLike }: ArtworkCardProps) {
           {formatCount(artwork.viewCount)}
         </span>
         <button
-          className="bookmark-button"
+          className={classNames("bookmark-button", artwork.bookmarked && "is-active")}
           type="button"
-          onClick={() => onLike(artwork)}
-          aria-label={`Like ${artwork.title}`}
+          onClick={() => onBookmark(artwork)}
+          aria-label={artwork.bookmarked ? `Remove bookmark ${artwork.title}` : `Bookmark ${artwork.title}`}
         >
-          <Heart size={15} />
+          <Bookmark size={15} fill={artwork.bookmarked ? "currentColor" : "none"} />
         </button>
       </div>
     </article>
@@ -1192,6 +1391,7 @@ type ArtworkDialogProps = {
   loading: boolean;
   onClose: () => void;
   onLike: (artwork: Artwork) => void;
+  onBookmark: (artwork: Artwork) => void;
 };
 
 function ArtworkDialog({
@@ -1199,7 +1399,8 @@ function ArtworkDialog({
   fallbackArtwork,
   loading,
   onClose,
-  onLike
+  onLike,
+  onBookmark
 }: ArtworkDialogProps) {
   const artwork = detail?.artwork ?? fallbackArtwork;
 
@@ -1234,9 +1435,14 @@ function ArtworkDialog({
               <Heart size={17} />
               {formatCount(artwork.likeCount)}
             </button>
-            <button className="secondary-button" type="button">
-              <Bookmark size={17} />
-              Bookmark
+            <button
+              className={classNames("secondary-button", artwork.bookmarked && "is-active")}
+              type="button"
+              onClick={() => onBookmark(artwork)}
+            >
+              <Bookmark size={17} fill={artwork.bookmarked ? "currentColor" : "none"} />
+              {artwork.bookmarked ? "Bookmarked" : "Bookmark"}
+              <span>{formatCount(artwork.bookmarkCount)}</span>
             </button>
           </div>
           <div className="comment-list">

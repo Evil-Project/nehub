@@ -1,4 +1,4 @@
-export type SortMode = "latest" | "popular" | "rising" | "following";
+export type SortMode = "latest" | "popular" | "rising" | "following" | "bookmarks";
 
 export type Creator = {
   id: string;
@@ -30,6 +30,7 @@ export type Artwork = {
   tags: string[];
   likeCount: number;
   bookmarkCount: number;
+  bookmarked: boolean;
   viewCount: number;
   commentCount: number;
   createdAt: string;
@@ -40,13 +41,13 @@ export type GalleryResponse = {
   artworks: Artwork[];
   tags: { name: string; count: number }[];
   creators: Creator[];
-  source: "d1" | "seed";
+  source: "d1" | "empty";
 };
 
 export type ArtworkResponse = {
   artwork: Artwork;
   comments: Comment[];
-  source: "d1" | "seed";
+  source: "d1";
 };
 
 export type UploadResponse = {
@@ -60,6 +61,7 @@ export type AuthUser = {
   email: string;
   username: string;
   displayName: string;
+  role: "member" | "admin";
   emailVerified: boolean;
 };
 
@@ -69,9 +71,41 @@ export type AuthConfigResponse = {
 
 export type AuthSessionResponse = {
   user: AuthUser | null;
+  csrfToken: string | null;
 };
 
 export type AuthResponse = {
   user: AuthUser;
+  csrfToken: string;
   message: string;
+};
+
+export type AdminStatsResponse = {
+  accounts: {
+    totalUsers: number;
+    verifiedUsers: number;
+    admins: number;
+    activeSessions: number;
+    pendingVerifications: number;
+  };
+  content: {
+    artworks: number;
+    creators: number;
+    likes: number;
+    views: number;
+  };
+  storage: {
+    d1: boolean;
+    r2: boolean;
+    email: boolean;
+  };
+  recentUsers: Array<{
+    id: string;
+    email: string;
+    username: string;
+    displayName: string;
+    role: "member" | "admin";
+    emailVerified: boolean;
+    createdAt: string;
+  }>;
 };

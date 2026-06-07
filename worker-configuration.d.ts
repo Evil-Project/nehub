@@ -8,4 +8,5 @@ interface Env {
   PUBLIC_TURNSTILE_SITE_KEY: string;
   AUTH_EMAIL_FROM: string;
   TURNSTILE_SECRET_KEY?: string;
+  ADMIN_BOOTSTRAP_PASSWORD?: string;
 }

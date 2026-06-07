@@ -10,7 +10,7 @@ NEHub is a Pixiv-like artwork sharing app built as one Cloudflare-native deploym
 - **Cloudflare Turnstile** for register, login, and verification-email resend protection.
 - **Cloudflare Email Routing Workers** for account verification email.
 
-The app ships with seeded data and local PNG artwork assets so it works before any Cloudflare resources are created. Once D1 and R2 are bound, uploads are stored in R2 and indexed in D1.
+Bind D1 and R2 to begin publishing artwork; the gallery starts empty until creators sign in and upload their own work.
 
 ## Local Development
 
@@ -65,12 +65,20 @@ TURNSTILE_SECRET_KEY=your-turnstile-secret-key
 The checked-in local public site key is Cloudflare's always-pass testing key. To exercise the full local flow with that key, run Wrangler with the matching testing secret:
 
 ```bash
-npx wrangler dev --port 8787 --var TURNSTILE_SECRET_KEY:1x0000000000000000000000000000000AA
+npx wrangler dev --port 8787 \
+  --var TURNSTILE_SECRET_KEY:1x0000000000000000000000000000000AA \
+  --var ADMIN_BOOTSTRAP_PASSWORD:use-a-strong-local-password
 ```
 
 Configure Email Routing for Workers and set `AUTH_EMAIL_FROM` to an allowed sender address for your zone. The Worker uses the `EMAIL` `send_email` binding from `wrangler.jsonc` to send verification links.
 
-Apply the schema and seed data:
+The schema creates a locked default administrator account:
+
+- Email or username: `admin@nehub.local` or `admin`
+
+Set `ADMIN_BOOTSTRAP_PASSWORD` only for the first admin login. After a successful login, the Worker stores a normal password hash in D1. Use a strong unique password and remove or rotate the bootstrap secret before exposing a deployed environment.
+
+Apply the schema:
 
 ```bash
 npm run db:migrate:local
@@ -88,6 +96,7 @@ npm run deploy
 - `GET /api/health` reports Worker, D1, and R2 binding status.
 - `GET /api/auth/config` returns the public Turnstile site key.
 - `GET /api/auth/session` returns the current signed-in user from the HttpOnly session cookie.
+- Cookie-authenticated POST routes require the `x-csrf-token` returned by auth/session responses.
 - `POST /api/auth/register` creates an account, validates Turnstile, sends a verification email, and starts a session.
 - `POST /api/auth/login` validates Turnstile and starts a session.
 - `POST /api/auth/logout` clears the current session.

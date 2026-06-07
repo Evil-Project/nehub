@@ -5,7 +5,9 @@ import type { Context } from "hono";
 import type {
   AuthConfigResponse,
   AuthResponse,
+  AuthSessionResponse,
   AuthUser,
+  AdminStatsResponse,
   Artwork,
   ArtworkResponse,
   Comment,
@@ -14,22 +16,26 @@ import type {
   SortMode,
   UploadResponse
 } from "../shared/types";
-import {
-  artworks as seedArtworks,
-  comments as seedComments,
-  creators as seedCreators
-} from "./sampleData";
-
 type Bindings = Env;
 type AppContext = Context<{ Bindings: Bindings }>;
 
 const app = new Hono<{ Bindings: Bindings }>();
 
 const sessionCookieName = "nehub_session";
+const csrfCookieName = "nehub_csrf";
+const csrfHeaderName = "x-csrf-token";
 const sessionDurationSeconds = 60 * 60 * 24 * 30;
 const verificationTokenDurationSeconds = 60 * 60 * 24;
 const passwordIterations = 120_000;
 const passwordKeyLengthBytes = 32;
+const maxUploadBytes = 10 * 1024 * 1024;
+const bootstrapPasswordHash = "bootstrap-env";
+const allowedUploadTypes = new Map([
+  ["image/jpeg", "jpg"],
+  ["image/png", "png"],
+  ["image/webp", "webp"],
+  ["image/gif", "gif"]
+]);
 
 const uploadSchema = z.object({
   title: z.string().trim().min(2).max(120),
@@ -113,6 +119,26 @@ const constantTimeEqual = (left: Uint8Array, right: Uint8Array) => {
   return diff === 0;
 };
 
+const constantTimeStringEqual = async (left: string, right: string) => {
+  const [leftDigest, rightDigest] = await Promise.all([
+    crypto.subtle.digest("SHA-256", textEncoder.encode(left)),
+    crypto.subtle.digest("SHA-256", textEncoder.encode(right))
+  ]);
+  return constantTimeEqual(new Uint8Array(leftDigest), new Uint8Array(rightDigest));
+};
+
+const hmacSha256 = async (key: string, value: string) => {
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    textEncoder.encode(key),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", cryptoKey, textEncoder.encode(value));
+  return toBase64Url(new Uint8Array(signature));
+};
+
 const hashPassword = async (password: string) => {
   const salt = new Uint8Array(16);
   crypto.getRandomValues(salt);
@@ -183,11 +209,71 @@ const getCookie = (request: Request, name: string) => {
   return undefined;
 };
 
-const sessionCookie = (token: string, maxAge = sessionDurationSeconds) =>
-  `${sessionCookieName}=${encodeURIComponent(token)}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Lax`;
+const secureCookieSuffix = (context: AppContext) => {
+  const requestUrl = new URL(context.req.url);
+  const forwardedProto = context.req.header("X-Forwarded-Proto");
+  if (
+    requestUrl.protocol === "https:" ||
+    forwardedProto === "https" ||
+    context.env.PUBLIC_APP_URL.startsWith("https://")
+  ) {
+    return "; Secure";
+  }
+  return "";
+};
 
-const clearSessionCookie = () =>
-  `${sessionCookieName}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax`;
+const sessionCookie = (context: AppContext, token: string, maxAge = sessionDurationSeconds) =>
+  `${sessionCookieName}=${encodeURIComponent(
+    token
+  )}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Lax${secureCookieSuffix(context)}`;
+
+const csrfCookie = (context: AppContext, nonce: string, maxAge = sessionDurationSeconds) =>
+  `${csrfCookieName}=${encodeURIComponent(
+    nonce
+  )}; Max-Age=${maxAge}; Path=/; SameSite=Lax${secureCookieSuffix(context)}`;
+
+const clearSessionCookie = (context: AppContext) =>
+  `${sessionCookieName}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax${secureCookieSuffix(context)}`;
+
+const clearCsrfCookie = (context: AppContext) =>
+  `${csrfCookieName}=; Max-Age=0; Path=/; SameSite=Lax${secureCookieSuffix(context)}`;
+
+const createCsrfToken = async (sessionToken: string, nonce = randomToken(24)) => ({
+  nonce,
+  token: `${nonce}.${await hmacSha256(sessionToken, nonce)}`
+});
+
+const issueCsrfToken = async (context: AppContext, sessionToken: string) => {
+  const existingNonce = getCookie(context.req.raw, csrfCookieName);
+  const nonce =
+    existingNonce && /^[A-Za-z0-9_-]{24,96}$/.test(existingNonce)
+      ? existingNonce
+      : undefined;
+  const csrf = await createCsrfToken(sessionToken, nonce);
+  context.header("Set-Cookie", csrfCookie(context, csrf.nonce), { append: true });
+  return csrf.token;
+};
+
+const validateCsrf = async (context: AppContext) => {
+  const sessionToken = getCookie(context.req.raw, sessionCookieName);
+  const nonce = getCookie(context.req.raw, csrfCookieName);
+  const submitted = context.req.header(csrfHeaderName);
+  if (!sessionToken || !nonce || !submitted) {
+    return context.json({ message: "Security token is missing." }, 403);
+  }
+
+  const [submittedNonce, submittedSignature] = submitted.split(".");
+  if (!submittedNonce || !submittedSignature || submittedNonce !== nonce) {
+    return context.json({ message: "Security token is invalid." }, 403);
+  }
+
+  const expected = await createCsrfToken(sessionToken, nonce);
+  if (!(await constantTimeStringEqual(submitted, expected.token))) {
+    return context.json({ message: "Security token is invalid." }, 403);
+  }
+
+  return undefined;
+};
 
 const toIsoAfterSeconds = (seconds: number) =>
   new Date(Date.now() + seconds * 1000).toISOString();
@@ -197,7 +283,8 @@ const asSortMode = (value: string | null): SortMode => {
     value === "latest" ||
     value === "popular" ||
     value === "rising" ||
-    value === "following"
+    value === "following" ||
+    value === "bookmarks"
   ) {
     return value;
   }
@@ -245,6 +332,15 @@ const filterAndSort = (
     result = result.filter((artwork) =>
       artwork.tags.some((artworkTag) => artworkTag.toLowerCase() === normalizedTag)
     );
+  }
+
+  if (sort === "bookmarks") {
+    return result
+      .filter((artwork) => artwork.bookmarked)
+      .sort(
+        (left, right) =>
+          new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+      );
   }
 
   if (sort === "popular") {
@@ -311,6 +407,7 @@ type UserRow = {
   username: string;
   display_name: string;
   password_hash: string;
+  role: string;
   email_verified_at: string | null;
   created_at: string;
   updated_at: string;
@@ -349,6 +446,7 @@ const artworkFromRow = (row: ArtworkRow): Artwork => ({
   tags: parseTags(row.tags_json),
   likeCount: row.like_count,
   bookmarkCount: row.bookmark_count,
+  bookmarked: false,
   viewCount: row.view_count,
   commentCount: row.comment_count,
   createdAt: row.created_at,
@@ -376,6 +474,7 @@ const authUserFromRow = (row: UserRow): AuthUser => ({
   email: row.email,
   username: row.username,
   displayName: row.display_name,
+  role: row.role === "admin" ? "admin" : "member",
   emailVerified: Boolean(row.email_verified_at)
 });
 
@@ -469,7 +568,7 @@ const sendVerificationEmail = async (
     verificationToken
   )}`;
   if (!env.EMAIL) {
-    console.warn(`Verification email for ${user.email}: ${verificationUrl}`);
+    console.warn("Verification email binding is not configured; email was not sent.");
     return;
   }
 
@@ -487,7 +586,7 @@ const sendVerificationEmail = async (
   try {
     await env.EMAIL.send(message);
   } catch (error) {
-    console.warn("Unable to send verification email", error, verificationUrl);
+    console.warn("Unable to send verification email", error);
   }
 };
 
@@ -546,6 +645,7 @@ const getCurrentUser = async (db: D1Database | undefined, request: Request) => {
         users.username,
         users.display_name,
         users.password_hash,
+        users.role,
         users.email_verified_at,
         users.created_at,
         users.updated_at
@@ -582,6 +682,21 @@ const isUniqueConstraintError = (error: unknown) =>
   error instanceof Error &&
   /unique|constraint|users\.email|users\.username/i.test(error.message);
 
+const requireAdmin = async (context: AppContext) => {
+  if (!context.env.DB) {
+    return { response: authUnavailable(context) };
+  }
+
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return { response: context.json({ message: "Sign in as an administrator." }, 401) };
+  }
+  if (user.role !== "admin") {
+    return { response: context.json({ message: "Administrator access is required." }, 403) };
+  }
+  return { db: context.env.DB, user };
+};
+
 const artworkSelect = `
   SELECT
     artworks.id,
@@ -615,6 +730,37 @@ const getD1Artworks = async (db: D1Database) => {
     .prepare(`${artworkSelect} ORDER BY datetime(artworks.created_at) DESC`)
     .all<ArtworkRow>();
   return result.results.map(artworkFromRow);
+};
+
+const withViewerBookmarks = async (
+  db: D1Database,
+  viewerId: string | undefined,
+  artworks: Artwork[]
+) => {
+  if (!viewerId || artworks.length === 0) {
+    return artworks;
+  }
+
+  try {
+    const placeholders = artworks.map(() => "?").join(", ");
+    const result = await db
+      .prepare(
+        `SELECT artwork_id
+         FROM user_bookmarks
+         WHERE user_id = ?
+           AND artwork_id IN (${placeholders})`
+      )
+      .bind(viewerId, ...artworks.map((artwork) => artwork.id))
+      .all<{ artwork_id: string }>();
+    const bookmarkedIds = new Set(result.results.map((row) => row.artwork_id));
+    return artworks.map((artwork) => ({
+      ...artwork,
+      bookmarked: bookmarkedIds.has(artwork.id)
+    }));
+  } catch (error) {
+    console.warn("Unable to read viewer bookmarks", error);
+    return artworks;
+  }
 };
 
 const getD1Creators = async (db: D1Database) => {
@@ -654,24 +800,25 @@ const getD1Creators = async (db: D1Database) => {
   );
 };
 
-const maybeGetD1Gallery = async (db: D1Database | undefined) => {
+const maybeGetD1Gallery = async (db: D1Database | undefined, viewerId?: string) => {
   if (!db) {
     return undefined;
   }
 
   try {
-    const [artworks, creators] = await Promise.all([getD1Artworks(db), getD1Creators(db)]);
+    const [rawArtworks, creators] = await Promise.all([getD1Artworks(db), getD1Creators(db)]);
+    const artworks = await withViewerBookmarks(db, viewerId, rawArtworks);
     if (artworks.length === 0) {
       return undefined;
     }
     return { artworks, creators };
   } catch (error) {
-    console.warn("Falling back to seeded data because D1 is not ready", error);
+    console.warn("Unable to read gallery from D1", error);
     return undefined;
   }
 };
 
-const getArtworkFromD1 = async (db: D1Database, id: string) => {
+const getArtworkFromD1 = async (db: D1Database, id: string, viewerId?: string) => {
   const artwork = await db
     .prepare(`${artworkSelect} WHERE artworks.id = ? LIMIT 1`)
     .bind(id)
@@ -691,8 +838,12 @@ const getArtworkFromD1 = async (db: D1Database, id: string) => {
     .bind(id)
     .all<CommentRow>();
 
+  const [artworkWithBookmarks] = await withViewerBookmarks(db, viewerId, [
+    artworkFromRow(artwork)
+  ]);
+
   return {
-    artwork: artworkFromRow(artwork),
+    artwork: artworkWithBookmarks,
     comments: comments.results.map(commentFromRow)
   };
 };
@@ -705,7 +856,13 @@ app.get("/api/auth/config", (context) =>
 
 app.get("/api/auth/session", async (context) => {
   const user = await getCurrentUser(context.env.DB, context.req.raw);
-  return context.json<{ user: AuthUser | null }>({ user: user ?? null });
+  const sessionToken = getCookie(context.req.raw, sessionCookieName);
+  const csrfToken = user && sessionToken ? await issueCsrfToken(context, sessionToken) : null;
+  if (!user) {
+    context.header("Set-Cookie", clearSessionCookie(context), { append: true });
+    context.header("Set-Cookie", clearCsrfCookie(context), { append: true });
+  }
+  return context.json<AuthSessionResponse>({ user: user ?? null, csrfToken });
 });
 
 app.post("/api/auth/register", async (context) => {
@@ -750,6 +907,7 @@ app.post("/api/auth/register", async (context) => {
       username,
       display_name,
       password_hash,
+      role,
       email_verified_at,
       created_at,
       updated_at
@@ -768,11 +926,13 @@ app.post("/api/auth/register", async (context) => {
   const verificationToken = await createVerificationToken(context.env.DB, authUser.id);
   await sendVerificationEmail(context.env, authUser, verificationToken);
   const sessionToken = await createSession(context.env.DB, authUser.id);
-  context.header("Set-Cookie", sessionCookie(sessionToken), { append: true });
+  context.header("Set-Cookie", sessionCookie(context, sessionToken), { append: true });
+  const csrfToken = await issueCsrfToken(context, sessionToken);
 
   return context.json<AuthResponse>(
     {
       user: authUser,
+      csrfToken,
       message: "Account created. Check your email to verify it."
     },
     201
@@ -802,6 +962,7 @@ app.post("/api/auth/login", async (context) => {
       username,
       display_name,
       password_hash,
+      role,
       email_verified_at,
       created_at,
       updated_at
@@ -812,15 +973,35 @@ app.post("/api/auth/login", async (context) => {
     .bind(identifier, identifier)
     .first<UserRow>();
 
-  if (!user || !(await verifyPassword(parsed.data.password, user.password_hash))) {
+  let validPassword = user
+    ? await verifyPassword(parsed.data.password, user.password_hash)
+    : false;
+  if (
+    user &&
+    !validPassword &&
+    user.password_hash === bootstrapPasswordHash &&
+    context.env.ADMIN_BOOTSTRAP_PASSWORD &&
+    (await constantTimeStringEqual(parsed.data.password, context.env.ADMIN_BOOTSTRAP_PASSWORD))
+  ) {
+    await context.env.DB.prepare(
+      "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND password_hash = ?"
+    )
+      .bind(await hashPassword(parsed.data.password), user.id, bootstrapPasswordHash)
+      .run();
+    validPassword = true;
+  }
+
+  if (!user || !validPassword) {
     return context.json({ message: "Email, username, or password is incorrect." }, 401);
   }
 
   const sessionToken = await createSession(context.env.DB, user.id);
-  context.header("Set-Cookie", sessionCookie(sessionToken), { append: true });
+  context.header("Set-Cookie", sessionCookie(context, sessionToken), { append: true });
+  const csrfToken = await issueCsrfToken(context, sessionToken);
 
   return context.json<AuthResponse>({
     user: authUserFromRow(user),
+    csrfToken,
     message: "Signed in."
   });
 });
@@ -829,13 +1010,18 @@ app.post("/api/auth/logout", async (context) => {
   if (context.env.DB) {
     const token = getCookie(context.req.raw, sessionCookieName);
     if (token) {
+      const csrfError = await validateCsrf(context);
+      if (csrfError) {
+        return csrfError;
+      }
       await context.env.DB.prepare("DELETE FROM auth_sessions WHERE session_hash = ?")
         .bind(await sha256(token))
         .run();
     }
   }
 
-  context.header("Set-Cookie", clearSessionCookie(), { append: true });
+  context.header("Set-Cookie", clearSessionCookie(context), { append: true });
+  context.header("Set-Cookie", clearCsrfCookie(context), { append: true });
   return context.json({ message: "Signed out." });
 });
 
@@ -852,6 +1038,10 @@ app.post("/api/auth/resend-verification", async (context) => {
   const user = await getCurrentUser(context.env.DB, context.req.raw);
   if (!user) {
     return context.json({ message: "Sign in to resend verification." }, 401);
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
   }
 
   if (user.emailVerified) {
@@ -887,6 +1077,7 @@ app.get("/api/auth/verify-email", async (context) => {
       users.username,
       users.display_name,
       users.password_hash,
+      users.role,
       users.email_verified_at,
       users.created_at,
       users.updated_at
@@ -919,6 +1110,108 @@ app.get("/api/auth/verify-email", async (context) => {
   return context.redirect("/?verified=1", 302);
 });
 
+app.get("/api/admin/stats", async (context) => {
+  const admin = await requireAdmin(context);
+  if (admin.response) {
+    return admin.response;
+  }
+
+  const [accountRows, contentRows, recentUsers] = await Promise.all([
+    admin.db
+      .prepare(
+        `SELECT
+          COUNT(*) AS total_users,
+          SUM(CASE WHEN email_verified_at IS NOT NULL THEN 1 ELSE 0 END) AS verified_users,
+          SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) AS admins
+         FROM users`
+      )
+      .first<{
+        total_users: number;
+        verified_users: number | null;
+        admins: number | null;
+      }>(),
+    admin.db
+      .prepare(
+        `SELECT
+          COUNT(*) AS artworks,
+          COALESCE(SUM(like_count), 0) AS likes,
+          COALESCE(SUM(view_count), 0) AS views,
+          COUNT(DISTINCT creator_id) AS creators
+         FROM artworks`
+      )
+      .first<{
+        artworks: number;
+        likes: number | null;
+        views: number | null;
+        creators: number;
+      }>(),
+    admin.db
+      .prepare(
+        `SELECT
+          id,
+          email,
+          username,
+          display_name,
+          role,
+          email_verified_at,
+          created_at,
+          updated_at
+         FROM users
+         ORDER BY datetime(created_at) DESC
+         LIMIT 8`
+      )
+      .all<Omit<UserRow, "password_hash">>()
+  ]);
+
+  const [sessionCount, pendingVerificationCount] = await Promise.all([
+    admin.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM auth_sessions
+         WHERE datetime(expires_at) > datetime('now')`
+      )
+      .first<{ count: number }>(),
+    admin.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM email_verification_tokens
+         WHERE consumed_at IS NULL
+           AND datetime(expires_at) > datetime('now')`
+      )
+      .first<{ count: number }>()
+  ]);
+
+  return context.json<AdminStatsResponse>({
+    accounts: {
+      totalUsers: accountRows?.total_users ?? 0,
+      verifiedUsers: accountRows?.verified_users ?? 0,
+      admins: accountRows?.admins ?? 0,
+      activeSessions: sessionCount?.count ?? 0,
+      pendingVerifications: pendingVerificationCount?.count ?? 0
+    },
+    content: {
+      artworks: contentRows?.artworks ?? 0,
+      creators: contentRows?.creators ?? 0,
+      likes: contentRows?.likes ?? 0,
+      views: contentRows?.views ?? 0
+    },
+    storage: {
+      d1: Boolean(context.env.DB),
+      r2: Boolean(context.env.ARTWORKS),
+      email: Boolean(context.env.EMAIL)
+    },
+    recentUsers: recentUsers.results.map((row) => ({
+      id: row.id,
+      email: row.email,
+      username: row.username,
+      displayName: row.display_name,
+      role: row.role === "admin" ? "admin" : "member",
+      emailVerified: Boolean(row.email_verified_at),
+      createdAt: row.created_at
+    }))
+  });
+});
+
 app.get("/api/health", (context) =>
   context.json({
     ok: true,
@@ -934,21 +1227,17 @@ app.get("/api/gallery", async (context) => {
   const sort = asSortMode(context.req.query("sort") ?? null);
   const search = context.req.query("q") ?? "";
   const tag = context.req.query("tag") ?? "";
-  const d1Gallery = await maybeGetD1Gallery(context.env.DB);
-  const source = d1Gallery ? "d1" : "seed";
-  const artworks = filterAndSort(
-    d1Gallery?.artworks ?? seedArtworks,
-    search,
-    tag,
-    sort
-  );
-  const creators = d1Gallery?.creators ?? seedCreators;
+  const viewer = await getCurrentUser(context.env.DB, context.req.raw);
+  const d1Gallery = await maybeGetD1Gallery(context.env.DB, viewer?.id);
+  const allArtworks = d1Gallery?.artworks ?? [];
+  const creators = d1Gallery?.creators ?? [];
+  const artworks = filterAndSort(allArtworks, search, tag, sort);
 
   return context.json<GalleryResponse>({
     artworks,
     creators,
-    tags: tagCounts(d1Gallery?.artworks ?? seedArtworks),
-    source
+    tags: tagCounts(allArtworks),
+    source: d1Gallery ? "d1" : "empty"
   });
 });
 
@@ -957,7 +1246,8 @@ app.get("/api/artworks/:id", async (context) => {
 
   if (context.env.DB) {
     try {
-      const d1Artwork = await getArtworkFromD1(context.env.DB, id);
+      const viewer = await getCurrentUser(context.env.DB, context.req.raw);
+      const d1Artwork = await getArtworkFromD1(context.env.DB, id, viewer?.id);
       if (d1Artwork) {
         return context.json<ArtworkResponse>({ ...d1Artwork, source: "d1" });
       }
@@ -966,51 +1256,124 @@ app.get("/api/artworks/:id", async (context) => {
     }
   }
 
-  const artwork = seedArtworks.find((item) => item.id === id);
-  if (!artwork) {
-    return context.json({ message: "Artwork not found" }, 404);
-  }
-
-  return context.json<ArtworkResponse>({
-    artwork,
-    comments: seedComments[id] ?? [],
-    source: "seed"
-  });
+  return context.json({ message: "Artwork not found" }, 404);
 });
 
 app.post("/api/artworks/:id/like", async (context) => {
   const id = context.req.param("id");
 
-  if (context.env.DB) {
-    try {
-      await context.env.DB.prepare(
-        "UPDATE artworks SET like_count = like_count + 1 WHERE id = ?"
-      )
-        .bind(id)
-        .run();
-      const updated = await getArtworkFromD1(context.env.DB, id);
-      if (updated) {
-        return context.json({ artwork: updated.artwork });
-      }
-    } catch (error) {
-      console.warn("Unable to persist like", error);
-    }
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to like artwork." }, 401);
+  }
+  if (!user.emailVerified) {
+    return context.json({ message: "Verify your email before liking artwork." }, 403);
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
   }
 
-  const seed = seedArtworks.find((item) => item.id === id);
-  if (!seed) {
+  try {
+    await context.env.DB.prepare(
+      "UPDATE artworks SET like_count = like_count + 1 WHERE id = ?"
+    )
+      .bind(id)
+      .run();
+    const updated = await getArtworkFromD1(context.env.DB, id, user.id);
+    if (updated) {
+      return context.json({ artwork: updated.artwork });
+    }
+  } catch (error) {
+    console.warn("Unable to persist like", error);
+  }
+
+  return context.json({ message: "Artwork not found" }, 404);
+});
+
+app.post("/api/artworks/:id/bookmark", async (context) => {
+  const id = context.req.param("id");
+
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to bookmark artwork." }, 401);
+  }
+
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  const artworkExists = await context.env.DB.prepare(
+    "SELECT id FROM artworks WHERE id = ? LIMIT 1"
+  )
+    .bind(id)
+    .first<{ id: string }>();
+  if (!artworkExists) {
     return context.json({ message: "Artwork not found" }, 404);
   }
 
-  return context.json({
-    artwork: {
-      ...seed,
-      likeCount: seed.likeCount + 1
-    }
-  });
+  const existing = await context.env.DB.prepare(
+    "SELECT artwork_id FROM user_bookmarks WHERE user_id = ? AND artwork_id = ? LIMIT 1"
+  )
+    .bind(user.id, id)
+    .first<{ artwork_id: string }>();
+
+  if (existing) {
+    await context.env.DB.batch([
+      context.env.DB.prepare(
+        "DELETE FROM user_bookmarks WHERE user_id = ? AND artwork_id = ?"
+      ).bind(user.id, id),
+      context.env.DB.prepare(
+        "UPDATE artworks SET bookmark_count = MAX(bookmark_count - 1, 0) WHERE id = ?"
+      ).bind(id)
+    ]);
+  } else {
+    await context.env.DB.batch([
+      context.env.DB.prepare(
+        "INSERT INTO user_bookmarks (user_id, artwork_id) VALUES (?, ?)"
+      ).bind(user.id, id),
+      context.env.DB.prepare(
+        "UPDATE artworks SET bookmark_count = bookmark_count + 1 WHERE id = ?"
+      ).bind(id)
+    ]);
+  }
+
+  const updated = await getArtworkFromD1(context.env.DB, id, user.id);
+  if (!updated) {
+    return context.json({ message: "Artwork not found" }, 404);
+  }
+
+  return context.json({ artwork: updated.artwork });
 });
 
 app.post("/api/upload", async (context) => {
+  if (!context.env.DB || !context.env.ARTWORKS) {
+    return context.json(
+      { message: "D1 and R2 bindings are required to publish artwork." },
+      503
+    );
+  }
+
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to publish artwork." }, 401);
+  }
+  if (!user.emailVerified) {
+    return context.json({ message: "Verify your email before publishing artwork." }, 403);
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
   const body = await context.req.parseBody();
   const file = body.file;
 
@@ -1028,9 +1391,15 @@ app.post("/api/upload", async (context) => {
   if (!(file instanceof File)) {
     return context.json({ message: "Artwork file is required" }, 400);
   }
+  if (file.size > maxUploadBytes) {
+    return context.json({ message: "Artwork file must be 10 MB or smaller." }, 413);
+  }
+  const extension = allowedUploadTypes.get(file.type);
+  if (!extension) {
+    return context.json({ message: "Artwork file must be JPEG, PNG, WebP, or GIF." }, 415);
+  }
 
   const id = `art_${crypto.randomUUID().replaceAll("-", "")}`;
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "bin";
   const objectKey = `artworks/${id}.${extension}`;
   const objectUrl = `/media/${objectKey}`;
   const tags = parsed.data.tags
@@ -1040,16 +1409,59 @@ app.post("/api/upload", async (context) => {
     .slice(0, 12);
   const now = new Date().toISOString();
 
-  if (context.env.ARTWORKS) {
-    await context.env.ARTWORKS.put(objectKey, file.stream(), {
-      httpMetadata: {
-        contentType: file.type || "application/octet-stream"
-      },
-      customMetadata: {
-        title: parsed.data.title
+  await context.env.ARTWORKS.put(objectKey, file.stream(), {
+    httpMetadata: {
+      contentType: file.type || "application/octet-stream"
+    },
+    customMetadata: {
+      title: parsed.data.title
+    }
+  });
+
+  await context.env.DB.prepare(
+    `INSERT INTO creators (id, handle, display_name, avatar_url, bio)
+     VALUES (?, ?, ?, '', '')
+     ON CONFLICT(id) DO UPDATE SET
+       handle = excluded.handle,
+       display_name = excluded.display_name`
+  )
+    .bind(user.id, user.username, user.displayName)
+    .run();
+
+  const creatorRow = await context.env.DB.prepare(
+    `SELECT id, handle, display_name, avatar_url, bio, follower_count, following
+     FROM creators WHERE id = ? LIMIT 1`
+  )
+    .bind(user.id)
+    .first<{
+      id: string;
+      handle: string;
+      display_name: string;
+      avatar_url: string;
+      bio: string;
+      follower_count: number;
+      following: number;
+    }>();
+
+  const creator: Creator = creatorRow
+    ? {
+        id: creatorRow.id,
+        handle: creatorRow.handle,
+        displayName: creatorRow.display_name,
+        avatarUrl: creatorRow.avatar_url,
+        bio: creatorRow.bio,
+        followerCount: creatorRow.follower_count,
+        following: Boolean(creatorRow.following)
       }
-    });
-  }
+    : {
+        id: user.id,
+        handle: user.username,
+        displayName: user.displayName,
+        avatarUrl: "",
+        bio: "",
+        followerCount: 0,
+        following: false
+      };
 
   const artwork: Artwork = {
     id,
@@ -1060,66 +1472,61 @@ app.post("/api/upload", async (context) => {
     width: 1200,
     height: 1600,
     dominantColor: "#0f766e",
-    creator: seedCreators[0],
+    creator,
     tags: tags.length > 0 ? tags : ["original"],
     likeCount: 0,
     bookmarkCount: 0,
+    bookmarked: false,
     viewCount: 0,
     commentCount: 0,
     createdAt: now,
     mature: parsed.data.mature === "true"
   };
 
-  let persisted = false;
-  if (context.env.DB && context.env.ARTWORKS) {
-    await context.env.DB.prepare(
-      `INSERT INTO artworks (
-        id,
-        creator_id,
-        title,
-        caption,
-        image_url,
-        thumbnail_url,
-        width,
-        height,
-        dominant_color,
-        tags_json,
-        like_count,
-        bookmark_count,
-        view_count,
-        comment_count,
-        created_at,
-        mature
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  await context.env.DB.prepare(
+    `INSERT INTO artworks (
+      id,
+      creator_id,
+      title,
+      caption,
+      image_url,
+      thumbnail_url,
+      width,
+      height,
+      dominant_color,
+      tags_json,
+      like_count,
+      bookmark_count,
+      view_count,
+      comment_count,
+      created_at,
+      mature
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      artwork.id,
+      artwork.creator.id,
+      artwork.title,
+      artwork.caption,
+      artwork.imageUrl,
+      artwork.thumbnailUrl,
+      artwork.width,
+      artwork.height,
+      artwork.dominantColor,
+      JSON.stringify(artwork.tags),
+      artwork.likeCount,
+      artwork.bookmarkCount,
+      artwork.viewCount,
+      artwork.commentCount,
+      artwork.createdAt,
+      artwork.mature ? 1 : 0
     )
-      .bind(
-        artwork.id,
-        artwork.creator.id,
-        artwork.title,
-        artwork.caption,
-        artwork.imageUrl,
-        artwork.thumbnailUrl,
-        artwork.width,
-        artwork.height,
-        artwork.dominantColor,
-        JSON.stringify(artwork.tags),
-        artwork.likeCount,
-        artwork.bookmarkCount,
-        artwork.viewCount,
-        artwork.commentCount,
-        artwork.createdAt,
-        artwork.mature ? 1 : 0
-      )
-      .run();
-    persisted = true;
-  }
+    .run();
 
   return context.json<UploadResponse>({
     artwork,
-    persisted,
-    message: persisted
-      ? "Artwork published."
-      : "Artwork accepted for this demo session."
+    persisted: true,
+    message: "Artwork published."
   });
 });
 
@@ -1129,6 +1536,9 @@ app.get("/media/*", async (context) => {
   }
 
   const key = context.req.path.replace(/^\/media\//, "");
+  if (!key.startsWith("artworks/") || key.includes("..")) {
+    return context.json({ message: "Object not found" }, 404);
+  }
   const object = await context.env.ARTWORKS.get(key);
   if (!object) {
     return context.json({ message: "Object not found" }, 404);

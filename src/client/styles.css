@@ -609,6 +609,29 @@ h1 {
   color: var(--red);
 }
 
+.bookmark-button.is-active,
+.secondary-button.is-active {
+  border-color: rgba(250, 158, 188, 0.78);
+  background: linear-gradient(135deg, #ffffff, #fbe0ec);
+  color: var(--blue-dark);
+  box-shadow: var(--sticker-shadow);
+}
+
+.secondary-button.is-active span {
+  color: var(--muted);
+}
+
+.empty-feed {
+  margin: 28px 0 0;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--muted);
+  font-weight: 800;
+  text-align: center;
+}
+
 .right-rail {
   display: grid;
   gap: 16px;
@@ -780,9 +803,15 @@ h1 {
   color: var(--muted);
 }
 
+.dashboard-message {
+  margin-top: 8px;
+  color: var(--blue-dark) !important;
+  font-weight: 800;
+}
+
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 18px;
 }
@@ -911,6 +940,38 @@ h1 {
 }
 
 .recent-row span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.admin-user-row {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.admin-user-row:first-of-type {
+  border-top: 0;
+}
+
+.admin-user-row strong,
+.admin-user-row span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user-row strong {
+  color: var(--purple);
+  font-size: 0.9rem;
+}
+
+.admin-user-row span {
   margin-top: 3px;
   color: var(--muted);
   font-size: 0.8rem;
