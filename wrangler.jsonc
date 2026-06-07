@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nehub",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-06-06",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "upload_source_maps": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "nehub-db",
+      "database_id": "replace-with-cloudflare-d1-database-id"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARTWORKS",
+      "bucket_name": "nehub-artworks"
+    }
+  ],
+  "send_email": [
+    {
+      "name": "EMAIL"
+    }
+  ],
+  "vars": {
+    "PUBLIC_APP_NAME": "NEHub",
+    "PUBLIC_APP_URL": "http://localhost:8787",
+    "PUBLIC_TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+    "AUTH_EMAIL_FROM": "verify@nehub.local"
+  }
+}
