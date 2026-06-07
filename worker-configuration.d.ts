@@ -9,4 +9,5 @@ interface Env {
   AUTH_EMAIL_FROM: string;
   TURNSTILE_SECRET_KEY?: string;
   ADMIN_BOOTSTRAP_PASSWORD?: string;
+  MATURE_RESTRICTED_REGIONS?: string;
 }

@@ -10,10 +10,15 @@ import type {
   AdminStatsResponse,
   Artwork,
   ArtworkResponse,
+  BookmarkVisibility,
   Comment,
   Creator,
   GalleryResponse,
+  MatureAccess,
+  PrivacySecuritySettingsResponse,
+  ProfileSettingsResponse,
   SortMode,
+  UserProfileResponse,
   UploadResponse
 } from "../shared/types";
 type Bindings = Env;
@@ -65,6 +70,26 @@ const loginSchema = z.object({
 
 const resendVerificationSchema = z.object({
   turnstileToken: z.string().min(1).max(4096)
+});
+
+const profileSettingsSchema = z.object({
+  displayName: z.string().trim().min(2).max(60),
+  username: z.string().trim().toLowerCase().min(3).max(32).regex(/^[a-z0-9_-]+$/),
+  avatarUrl: z.string().trim().max(500).optional().default(""),
+  bio: z.string().trim().max(500).optional().default("")
+});
+
+const privacySecuritySchema = z.object({
+  bookmarkDefaultVisibility: z.enum(["public", "private"]),
+  dateOfBirth: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable(),
+  matureContentEnabled: z.boolean()
+});
+
+const bookmarkSchema = z.object({
+  visibility: z.enum(["public", "private"]).optional()
 });
 
 const json = <T>(data: T, init?: ResponseInit) =>
@@ -409,8 +434,25 @@ type UserRow = {
   password_hash: string;
   role: string;
   email_verified_at: string | null;
+  date_of_birth: string | null;
+  mature_content_enabled: number;
+  bookmark_default_visibility: string;
   created_at: string;
   updated_at: string;
+};
+
+type CurrentUser = AuthUser & {
+  dateOfBirth: string | null;
+  matureContentEnabled: boolean;
+  bookmarkDefaultVisibility: BookmarkVisibility;
+  createdAt: string;
+};
+
+type ProfileUserRow = UserRow & {
+  avatar_url: string | null;
+  bio: string | null;
+  follower_count: number | null;
+  following: number | null;
 };
 
 type TurnstileResponse = {
@@ -447,6 +489,7 @@ const artworkFromRow = (row: ArtworkRow): Artwork => ({
   likeCount: row.like_count,
   bookmarkCount: row.bookmark_count,
   bookmarked: false,
+  bookmarkVisibility: null,
   viewCount: row.view_count,
   commentCount: row.comment_count,
   createdAt: row.created_at,
@@ -476,6 +519,26 @@ const authUserFromRow = (row: UserRow): AuthUser => ({
   displayName: row.display_name,
   role: row.role === "admin" ? "admin" : "member",
   emailVerified: Boolean(row.email_verified_at)
+});
+
+const asBookmarkVisibility = (value: string | null | undefined): BookmarkVisibility =>
+  value === "private" ? "private" : "public";
+
+const currentUserFromRow = (row: UserRow): CurrentUser => ({
+  ...authUserFromRow(row),
+  dateOfBirth: row.date_of_birth,
+  matureContentEnabled: Boolean(row.mature_content_enabled),
+  bookmarkDefaultVisibility: asBookmarkVisibility(row.bookmark_default_visibility),
+  createdAt: row.created_at
+});
+
+const publicAuthUser = (user: AuthUser): AuthUser => ({
+  id: user.id,
+  email: user.email,
+  username: user.username,
+  displayName: user.displayName,
+  role: user.role,
+  emailVerified: user.emailVerified
 });
 
 const requireD1 = (db: D1Database | undefined) => {
@@ -647,6 +710,9 @@ const getCurrentUser = async (db: D1Database | undefined, request: Request) => {
         users.password_hash,
         users.role,
         users.email_verified_at,
+        users.date_of_birth,
+        users.mature_content_enabled,
+        users.bookmark_default_visibility,
         users.created_at,
         users.updated_at
        FROM auth_sessions
@@ -667,7 +733,7 @@ const getCurrentUser = async (db: D1Database | undefined, request: Request) => {
     .bind(tokenHash)
     .run();
 
-  return authUserFromRow(row);
+  return currentUserFromRow(row);
 };
 
 const parseJson = async <T>(context: AppContext, schema: z.ZodType<T>) => {
@@ -696,6 +762,87 @@ const requireAdmin = async (context: AppContext) => {
   }
   return { db: context.env.DB, user };
 };
+
+const parseRestrictedRegions = (value: string | undefined) =>
+  new Set(
+    (value ?? "")
+      .split(",")
+      .map((region) => region.trim().toUpperCase())
+      .filter(Boolean)
+  );
+
+const requestCountry = (context: AppContext) => {
+  const cfCountry = context.req.raw.cf?.country;
+  const headerCountry = context.req.header("CF-IPCountry");
+  const hostname = new URL(context.req.url).hostname;
+  const localRequest =
+    hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  const country =
+    localRequest && typeof headerCountry === "string"
+      ? headerCountry
+      : typeof cfCountry === "string"
+        ? cfCountry
+        : typeof headerCountry === "string"
+          ? headerCountry
+          : "";
+  return /^[A-Z]{2}$/i.test(country) ? country.toUpperCase() : null;
+};
+
+const isAdultDate = (dateOfBirth: string | null) => {
+  if (!dateOfBirth || !/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
+    return false;
+  }
+  const birthDate = new Date(`${dateOfBirth}T00:00:00.000Z`);
+  if (Number.isNaN(birthDate.getTime()) || birthDate.getTime() > Date.now()) {
+    return false;
+  }
+  const today = new Date();
+  let age = today.getUTCFullYear() - birthDate.getUTCFullYear();
+  const monthDelta = today.getUTCMonth() - birthDate.getUTCMonth();
+  if (
+    monthDelta < 0 ||
+    (monthDelta === 0 && today.getUTCDate() < birthDate.getUTCDate())
+  ) {
+    age -= 1;
+  }
+  return age >= 18;
+};
+
+const matureAccessFor = (
+  context: AppContext,
+  user: CurrentUser | undefined
+): MatureAccess => {
+  const country = requestCountry(context);
+  const restrictedRegion = country
+    ? parseRestrictedRegions(context.env.MATURE_RESTRICTED_REGIONS).has(country)
+    : false;
+  const signedIn = Boolean(user);
+  const ageVerified = Boolean(user && isAdultDate(user.dateOfBirth));
+  const enabled = Boolean(user?.matureContentEnabled);
+  const allowed = signedIn && ageVerified && enabled && !restrictedRegion;
+  const reason: MatureAccess["reason"] = allowed
+    ? "allowed"
+    : restrictedRegion
+      ? "region_restricted"
+      : !signedIn
+        ? "sign_in_required"
+        : !ageVerified
+          ? "age_verification_required"
+          : "disabled";
+
+  return {
+    allowed,
+    signedIn,
+    ageVerified,
+    enabled,
+    restrictedRegion,
+    country,
+    reason
+  };
+};
+
+const filterMatureArtworks = (artworks: Artwork[], matureAccess: MatureAccess) =>
+  matureAccess.allowed ? artworks : artworks.filter((artwork) => !artwork.mature);
 
 const artworkSelect = `
   SELECT
@@ -745,17 +892,20 @@ const withViewerBookmarks = async (
     const placeholders = artworks.map(() => "?").join(", ");
     const result = await db
       .prepare(
-        `SELECT artwork_id
+        `SELECT artwork_id, visibility
          FROM user_bookmarks
          WHERE user_id = ?
            AND artwork_id IN (${placeholders})`
       )
       .bind(viewerId, ...artworks.map((artwork) => artwork.id))
-      .all<{ artwork_id: string }>();
-    const bookmarkedIds = new Set(result.results.map((row) => row.artwork_id));
+      .all<{ artwork_id: string; visibility: string }>();
+    const bookmarkVisibilityById = new Map(
+      result.results.map((row) => [row.artwork_id, asBookmarkVisibility(row.visibility)])
+    );
     return artworks.map((artwork) => ({
       ...artwork,
-      bookmarked: bookmarkedIds.has(artwork.id)
+      bookmarked: bookmarkVisibilityById.has(artwork.id),
+      bookmarkVisibility: bookmarkVisibilityById.get(artwork.id) ?? null
     }));
   } catch (error) {
     console.warn("Unable to read viewer bookmarks", error);
@@ -848,6 +998,99 @@ const getArtworkFromD1 = async (db: D1Database, id: string, viewerId?: string) =
   };
 };
 
+const profileFromRow = (
+  row: ProfileUserRow,
+  ownProfile: boolean
+): UserProfileResponse["profile"] => ({
+  id: row.id,
+  username: row.username,
+  displayName: row.display_name,
+  avatarUrl: row.avatar_url ?? "",
+  bio: row.bio ?? "",
+  followerCount: row.follower_count ?? 0,
+  following: Boolean(row.following),
+  joinedAt: row.created_at,
+  ownProfile
+});
+
+const getProfileUser = async (db: D1Database, username: string) =>
+  db
+    .prepare(
+      `SELECT
+        users.id,
+        users.email,
+        users.username,
+        users.display_name,
+        users.password_hash,
+        users.role,
+        users.email_verified_at,
+        users.date_of_birth,
+        users.mature_content_enabled,
+        users.bookmark_default_visibility,
+        users.created_at,
+        users.updated_at,
+        creators.avatar_url,
+        creators.bio,
+        creators.follower_count,
+        creators.following
+       FROM users
+       LEFT JOIN creators ON creators.id = users.id
+       WHERE lower(users.username) = ?
+       LIMIT 1`
+    )
+    .bind(username.toLowerCase())
+    .first<ProfileUserRow>();
+
+const getArtworksByCreator = async (
+  db: D1Database,
+  creatorId: string,
+  viewerId?: string
+) => {
+  const result = await db
+    .prepare(`${artworkSelect} WHERE artworks.creator_id = ? ORDER BY datetime(artworks.created_at) DESC`)
+    .bind(creatorId)
+    .all<ArtworkRow>();
+  return withViewerBookmarks(db, viewerId, result.results.map(artworkFromRow));
+};
+
+const getBookmarkedArtworks = async (
+  db: D1Database,
+  userId: string,
+  visibility: BookmarkVisibility,
+  viewerId?: string
+) => {
+  const result = await db
+    .prepare(
+      `${artworkSelect}
+       JOIN user_bookmarks ON user_bookmarks.artwork_id = artworks.id
+       WHERE user_bookmarks.user_id = ?
+         AND user_bookmarks.visibility = ?
+       ORDER BY datetime(user_bookmarks.created_at) DESC`
+    )
+    .bind(userId, visibility)
+    .all<ArtworkRow>();
+  return withViewerBookmarks(db, viewerId, result.results.map(artworkFromRow));
+};
+
+const ensureCreatorProfile = async (
+  db: D1Database,
+  user: CurrentUser,
+  profile: { username: string; displayName: string; avatarUrl: string; bio: string }
+) => {
+  await db
+    .prepare(
+      `INSERT INTO creators (id, handle, display_name, avatar_url, bio)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         handle = excluded.handle,
+         display_name = excluded.display_name,
+         avatar_url = excluded.avatar_url,
+         bio = excluded.bio`
+    )
+    .bind(user.id, profile.username, profile.displayName, profile.avatarUrl, profile.bio)
+    .run();
+};
+
 app.get("/api/auth/config", (context) =>
   context.json<AuthConfigResponse>({
     turnstileSiteKey: context.env.PUBLIC_TURNSTILE_SITE_KEY
@@ -862,7 +1105,10 @@ app.get("/api/auth/session", async (context) => {
     context.header("Set-Cookie", clearSessionCookie(context), { append: true });
     context.header("Set-Cookie", clearCsrfCookie(context), { append: true });
   }
-  return context.json<AuthSessionResponse>({ user: user ?? null, csrfToken });
+  return context.json<AuthSessionResponse>({
+    user: user ? publicAuthUser(user) : null,
+    csrfToken
+  });
 });
 
 app.post("/api/auth/register", async (context) => {
@@ -909,6 +1155,9 @@ app.post("/api/auth/register", async (context) => {
       password_hash,
       role,
       email_verified_at,
+      date_of_birth,
+      mature_content_enabled,
+      bookmark_default_visibility,
       created_at,
       updated_at
      FROM users
@@ -964,6 +1213,9 @@ app.post("/api/auth/login", async (context) => {
       password_hash,
       role,
       email_verified_at,
+      date_of_birth,
+      mature_content_enabled,
+      bookmark_default_visibility,
       created_at,
       updated_at
      FROM users
@@ -1045,7 +1297,7 @@ app.post("/api/auth/resend-verification", async (context) => {
   }
 
   if (user.emailVerified) {
-    return context.json({ message: "Your email is already verified.", user });
+    return context.json({ message: "Your email is already verified.", user: publicAuthUser(user) });
   }
 
   const turnstile = await verifyTurnstile(context, parsed.data.turnstileToken, "resend");
@@ -1055,7 +1307,7 @@ app.post("/api/auth/resend-verification", async (context) => {
 
   const verificationToken = await createVerificationToken(context.env.DB, user.id);
   await sendVerificationEmail(context.env, user, verificationToken);
-  return context.json({ message: "Verification email sent.", user });
+  return context.json({ message: "Verification email sent.", user: publicAuthUser(user) });
 });
 
 app.get("/api/auth/verify-email", async (context) => {
@@ -1079,6 +1331,9 @@ app.get("/api/auth/verify-email", async (context) => {
       users.password_hash,
       users.role,
       users.email_verified_at,
+      users.date_of_birth,
+      users.mature_content_enabled,
+      users.bookmark_default_visibility,
       users.created_at,
       users.updated_at
      FROM email_verification_tokens
@@ -1154,6 +1409,9 @@ app.get("/api/admin/stats", async (context) => {
           display_name,
           role,
           email_verified_at,
+          date_of_birth,
+          mature_content_enabled,
+          bookmark_default_visibility,
           created_at,
           updated_at
          FROM users
@@ -1212,6 +1470,193 @@ app.get("/api/admin/stats", async (context) => {
   });
 });
 
+app.get("/api/users/:username/profile", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+
+  const username = decodeURIComponent(context.req.param("username")).replace(/^@/, "");
+  const viewer = await getCurrentUser(context.env.DB, context.req.raw);
+  const matureAccess = matureAccessFor(context, viewer);
+  const profileUser = await getProfileUser(context.env.DB, username);
+  if (!profileUser) {
+    return context.json({ message: "User not found." }, 404);
+  }
+
+  const ownProfile = viewer?.id === profileUser.id;
+  const [rawArtworks, rawPublicBookmarks, rawPrivateBookmarks] = await Promise.all([
+    getArtworksByCreator(context.env.DB, profileUser.id, viewer?.id),
+    getBookmarkedArtworks(context.env.DB, profileUser.id, "public", viewer?.id),
+    ownProfile
+      ? getBookmarkedArtworks(context.env.DB, profileUser.id, "private", viewer?.id)
+      : Promise.resolve([])
+  ]);
+  const artworks = filterMatureArtworks(rawArtworks, matureAccess);
+  const publicBookmarks = filterMatureArtworks(rawPublicBookmarks, matureAccess);
+  const privateBookmarks = filterMatureArtworks(rawPrivateBookmarks, matureAccess);
+
+  return context.json<UserProfileResponse>({
+    profile: profileFromRow(profileUser, ownProfile),
+    artworks,
+    publicBookmarks,
+    privateBookmarks,
+    stats: {
+      artworks: artworks.length,
+      publicBookmarks: publicBookmarks.length,
+      privateBookmarks: privateBookmarks.length,
+      totalLikes: artworks.reduce((sum, artwork) => sum + artwork.likeCount, 0),
+      totalViews: artworks.reduce((sum, artwork) => sum + artwork.viewCount, 0)
+    },
+    matureAccess
+  });
+});
+
+app.get("/api/settings/profile", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to edit your profile." }, 401);
+  }
+
+  const profileUser = await getProfileUser(context.env.DB, user.username);
+  return context.json<ProfileSettingsResponse>({
+    user: publicAuthUser(user),
+    profile: {
+      username: user.username,
+      displayName: user.displayName,
+      avatarUrl: profileUser?.avatar_url ?? "",
+      bio: profileUser?.bio ?? ""
+    }
+  });
+});
+
+app.put("/api/settings/profile", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to edit your profile." }, 401);
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  const parsed = await parseJson(context, profileSettingsSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Profile details are invalid." }, 400);
+  }
+
+  try {
+    await context.env.DB.prepare(
+      `UPDATE users
+       SET username = ?, display_name = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`
+    )
+      .bind(parsed.data.username, parsed.data.displayName, user.id)
+      .run();
+    await ensureCreatorProfile(context.env.DB, user, parsed.data);
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return context.json({ message: "That username is already in use." }, 409);
+    }
+    throw error;
+  }
+
+  const updated = await getProfileUser(context.env.DB, parsed.data.username);
+  if (!updated) {
+    return context.json({ message: "Profile could not be loaded." }, 500);
+  }
+
+  return context.json<ProfileSettingsResponse>({
+    user: authUserFromRow(updated),
+    profile: {
+      username: updated.username,
+      displayName: updated.display_name,
+      avatarUrl: updated.avatar_url ?? "",
+      bio: updated.bio ?? ""
+    }
+  });
+});
+
+app.get("/api/settings/privacy-security", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to edit privacy settings." }, 401);
+  }
+
+  return context.json<PrivacySecuritySettingsResponse>({
+    user: publicAuthUser(user),
+    privacy: {
+      bookmarkDefaultVisibility: user.bookmarkDefaultVisibility,
+      dateOfBirth: user.dateOfBirth,
+      matureContentEnabled: user.matureContentEnabled
+    },
+    matureAccess: matureAccessFor(context, user)
+  });
+});
+
+app.put("/api/settings/privacy-security", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to edit privacy settings." }, 401);
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  const parsed = await parseJson(context, privacySecuritySchema);
+  if (!parsed.success) {
+    return context.json({ message: "Privacy settings are invalid." }, 400);
+  }
+  if (parsed.data.dateOfBirth && !/^\d{4}-\d{2}-\d{2}$/.test(parsed.data.dateOfBirth)) {
+    return context.json({ message: "Date of birth is invalid." }, 400);
+  }
+  const matureContentEnabled =
+    parsed.data.matureContentEnabled && isAdultDate(parsed.data.dateOfBirth);
+
+  await context.env.DB.prepare(
+    `UPDATE users
+     SET bookmark_default_visibility = ?,
+         date_of_birth = ?,
+         mature_content_enabled = ?,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  )
+    .bind(
+      parsed.data.bookmarkDefaultVisibility,
+      parsed.data.dateOfBirth,
+      matureContentEnabled ? 1 : 0,
+      user.id
+    )
+    .run();
+
+  const updated = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!updated) {
+    return context.json({ message: "Settings could not be loaded." }, 500);
+  }
+
+  return context.json<PrivacySecuritySettingsResponse>({
+    user: publicAuthUser(updated),
+    privacy: {
+      bookmarkDefaultVisibility: updated.bookmarkDefaultVisibility,
+      dateOfBirth: updated.dateOfBirth,
+      matureContentEnabled: updated.matureContentEnabled
+    },
+    matureAccess: matureAccessFor(context, updated)
+  });
+});
+
 app.get("/api/health", (context) =>
   context.json({
     ok: true,
@@ -1228,8 +1673,9 @@ app.get("/api/gallery", async (context) => {
   const search = context.req.query("q") ?? "";
   const tag = context.req.query("tag") ?? "";
   const viewer = await getCurrentUser(context.env.DB, context.req.raw);
+  const matureAccess = matureAccessFor(context, viewer);
   const d1Gallery = await maybeGetD1Gallery(context.env.DB, viewer?.id);
-  const allArtworks = d1Gallery?.artworks ?? [];
+  const allArtworks = filterMatureArtworks(d1Gallery?.artworks ?? [], matureAccess);
   const creators = d1Gallery?.creators ?? [];
   const artworks = filterAndSort(allArtworks, search, tag, sort);
 
@@ -1237,7 +1683,8 @@ app.get("/api/gallery", async (context) => {
     artworks,
     creators,
     tags: tagCounts(allArtworks),
-    source: d1Gallery ? "d1" : "empty"
+    source: d1Gallery ? "d1" : "empty",
+    matureAccess
   });
 });
 
@@ -1247,8 +1694,12 @@ app.get("/api/artworks/:id", async (context) => {
   if (context.env.DB) {
     try {
       const viewer = await getCurrentUser(context.env.DB, context.req.raw);
+      const matureAccess = matureAccessFor(context, viewer);
       const d1Artwork = await getArtworkFromD1(context.env.DB, id, viewer?.id);
       if (d1Artwork) {
+        if (d1Artwork.artwork.mature && !matureAccess.allowed) {
+          return context.json({ message: "Artwork not found" }, 404);
+        }
         return context.json<ArtworkResponse>({ ...d1Artwork, source: "d1" });
       }
     } catch (error) {
@@ -1275,6 +1726,18 @@ app.post("/api/artworks/:id/like", async (context) => {
   const csrfError = await validateCsrf(context);
   if (csrfError) {
     return csrfError;
+  }
+
+  const artworkExists = await context.env.DB.prepare(
+    "SELECT id, mature FROM artworks WHERE id = ? LIMIT 1"
+  )
+    .bind(id)
+    .first<{ id: string; mature: number }>();
+  if (!artworkExists) {
+    return context.json({ message: "Artwork not found" }, 404);
+  }
+  if (artworkExists.mature && !matureAccessFor(context, user).allowed) {
+    return context.json({ message: "Artwork not found" }, 404);
   }
 
   try {
@@ -1311,12 +1774,23 @@ app.post("/api/artworks/:id/bookmark", async (context) => {
     return csrfError;
   }
 
+  const parsed = context.req.header("content-type")?.includes("application/json")
+    ? bookmarkSchema.safeParse(await context.req.json().catch(() => ({})))
+    : bookmarkSchema.safeParse({});
+  if (!parsed.success) {
+    return context.json({ message: "Bookmark settings are invalid." }, 400);
+  }
+  const visibility = parsed.data.visibility ?? user.bookmarkDefaultVisibility;
+
   const artworkExists = await context.env.DB.prepare(
-    "SELECT id FROM artworks WHERE id = ? LIMIT 1"
+    "SELECT id, mature FROM artworks WHERE id = ? LIMIT 1"
   )
     .bind(id)
-    .first<{ id: string }>();
+    .first<{ id: string; mature: number }>();
   if (!artworkExists) {
+    return context.json({ message: "Artwork not found" }, 404);
+  }
+  if (artworkExists.mature && !matureAccessFor(context, user).allowed) {
     return context.json({ message: "Artwork not found" }, 404);
   }
 
@@ -1327,19 +1801,27 @@ app.post("/api/artworks/:id/bookmark", async (context) => {
     .first<{ artwork_id: string }>();
 
   if (existing) {
-    await context.env.DB.batch([
-      context.env.DB.prepare(
-        "DELETE FROM user_bookmarks WHERE user_id = ? AND artwork_id = ?"
-      ).bind(user.id, id),
-      context.env.DB.prepare(
-        "UPDATE artworks SET bookmark_count = MAX(bookmark_count - 1, 0) WHERE id = ?"
-      ).bind(id)
-    ]);
+    if (parsed.data.visibility) {
+      await context.env.DB.prepare(
+        "UPDATE user_bookmarks SET visibility = ? WHERE user_id = ? AND artwork_id = ?"
+      )
+        .bind(visibility, user.id, id)
+        .run();
+    } else {
+      await context.env.DB.batch([
+        context.env.DB.prepare(
+          "DELETE FROM user_bookmarks WHERE user_id = ? AND artwork_id = ?"
+        ).bind(user.id, id),
+        context.env.DB.prepare(
+          "UPDATE artworks SET bookmark_count = MAX(bookmark_count - 1, 0) WHERE id = ?"
+        ).bind(id)
+      ]);
+    }
   } else {
     await context.env.DB.batch([
       context.env.DB.prepare(
-        "INSERT INTO user_bookmarks (user_id, artwork_id) VALUES (?, ?)"
-      ).bind(user.id, id),
+        "INSERT INTO user_bookmarks (user_id, artwork_id, visibility) VALUES (?, ?, ?)"
+      ).bind(user.id, id, visibility),
       context.env.DB.prepare(
         "UPDATE artworks SET bookmark_count = bookmark_count + 1 WHERE id = ?"
       ).bind(id)
@@ -1386,6 +1868,9 @@ app.post("/api/upload", async (context) => {
 
   if (!parsed.success) {
     return context.json({ message: "Upload metadata is invalid" }, 400);
+  }
+  if (parsed.data.mature === "true" && !matureAccessFor(context, user).allowed) {
+    return context.json({ message: "Verify your age before publishing mature artwork." }, 403);
   }
 
   if (!(file instanceof File)) {
@@ -1477,6 +1962,7 @@ app.post("/api/upload", async (context) => {
     likeCount: 0,
     bookmarkCount: 0,
     bookmarked: false,
+    bookmarkVisibility: null,
     viewCount: 0,
     commentCount: 0,
     createdAt: now,
@@ -1538,6 +2024,20 @@ app.get("/media/*", async (context) => {
   const key = context.req.path.replace(/^\/media\//, "");
   if (!key.startsWith("artworks/") || key.includes("..")) {
     return context.json({ message: "Object not found" }, 404);
+  }
+  if (context.env.DB) {
+    const artworkId = key.replace(/^artworks\//, "").replace(/\.[^.]+$/, "");
+    const artwork = await context.env.DB.prepare(
+      "SELECT id, mature FROM artworks WHERE id = ? LIMIT 1"
+    )
+      .bind(artworkId)
+      .first<{ id: string; mature: number }>();
+    if (artwork?.mature) {
+      const viewer = await getCurrentUser(context.env.DB, context.req.raw);
+      if (!matureAccessFor(context, viewer).allowed) {
+        return context.json({ message: "Object not found" }, 404);
+      }
+    }
   }
   const object = await context.env.ARTWORKS.get(key);
   if (!object) {

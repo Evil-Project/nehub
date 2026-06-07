@@ -35,6 +35,7 @@
     "PUBLIC_APP_NAME": "NEHub",
     "PUBLIC_APP_URL": "http://localhost:8787",
     "PUBLIC_TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
-    "AUTH_EMAIL_FROM": "verify@nehub.local"
+    "AUTH_EMAIL_FROM": "verify@nehub.local",
+    "MATURE_RESTRICTED_REGIONS": ""
   }
 }

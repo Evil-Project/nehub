@@ -1,4 +1,5 @@
 export type SortMode = "latest" | "popular" | "rising" | "following" | "bookmarks";
+export type BookmarkVisibility = "public" | "private";
 
 export type Creator = {
   id: string;
@@ -31,6 +32,7 @@ export type Artwork = {
   likeCount: number;
   bookmarkCount: number;
   bookmarked: boolean;
+  bookmarkVisibility: BookmarkVisibility | null;
   viewCount: number;
   commentCount: number;
   createdAt: string;
@@ -42,6 +44,7 @@ export type GalleryResponse = {
   tags: { name: string; count: number }[];
   creators: Creator[];
   source: "d1" | "empty";
+  matureAccess: MatureAccess;
 };
 
 export type ArtworkResponse = {
@@ -63,6 +66,21 @@ export type AuthUser = {
   displayName: string;
   role: "member" | "admin";
   emailVerified: boolean;
+};
+
+export type MatureAccess = {
+  allowed: boolean;
+  signedIn: boolean;
+  ageVerified: boolean;
+  enabled: boolean;
+  restrictedRegion: boolean;
+  country: string | null;
+  reason:
+    | "allowed"
+    | "sign_in_required"
+    | "age_verification_required"
+    | "disabled"
+    | "region_restricted";
 };
 
 export type AuthConfigResponse = {
@@ -109,3 +127,52 @@ export type AdminStatsResponse = {
     createdAt: string;
   }>;
 };
+
+export type PublicProfile = {
+  id: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string;
+  bio: string;
+  followerCount: number;
+  following: boolean;
+  joinedAt: string;
+  ownProfile: boolean;
+};
+
+export type UserProfileResponse = {
+  profile: PublicProfile;
+  artworks: Artwork[];
+  publicBookmarks: Artwork[];
+  privateBookmarks: Artwork[];
+  stats: {
+    artworks: number;
+    publicBookmarks: number;
+    privateBookmarks: number;
+    totalLikes: number;
+    totalViews: number;
+  };
+  matureAccess: MatureAccess;
+};
+
+export type ProfileSettingsResponse = {
+  user: AuthUser;
+  profile: {
+    username: string;
+    displayName: string;
+    avatarUrl: string;
+    bio: string;
+  };
+};
+
+export type PrivacySecuritySettingsResponse = {
+  user: AuthUser;
+  privacy: {
+    bookmarkDefaultVisibility: BookmarkVisibility;
+    dateOfBirth: string | null;
+    matureContentEnabled: boolean;
+  };
+  matureAccess: MatureAccess;
+};
+
+export type SettingsResponse = ProfileSettingsResponse | PrivacySecuritySettingsResponse;

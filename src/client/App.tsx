@@ -1,29 +1,38 @@
 import {
   Activity,
+  AtSign,
   BarChart3,
   Bell,
   Bookmark,
+  Calendar,
   ChevronDown,
   Cloud,
   Database,
   Eye,
+  EyeOff,
+  FileText,
   Flame,
   Grid3X3,
   HardDrive,
   Heart,
   Home,
   ImageUp,
+  Images,
+  KeyRound,
+  Lock,
   LogIn,
   LogOut,
   MailCheck,
   MessageCircle,
   Search,
   Server,
+  Settings,
   Shield,
   ShieldCheck,
   Sparkles,
   TrendingUp,
   Trophy,
+  UserCog,
   UserPlus,
   UserRound,
   X
@@ -38,8 +47,13 @@ import type {
   AdminStatsResponse,
   Artwork,
   ArtworkResponse,
+  BookmarkVisibility,
   GalleryResponse,
+  MatureAccess,
+  PrivacySecuritySettingsResponse,
+  ProfileSettingsResponse,
   SortMode,
+  UserProfileResponse,
   UploadResponse
 } from "../shared/types";
 
@@ -69,25 +83,80 @@ const dateFormat = new Intl.DateTimeFormat("en", {
   day: "numeric"
 });
 
+const fullDateFormat = new Intl.DateTimeFormat("en", {
+  month: "long",
+  day: "numeric",
+  year: "numeric"
+});
+
 const formatCount = (value: number) => numberFormat.format(value);
 
 const classNames = (...values: Array<string | false | null | undefined>) =>
   values.filter(Boolean).join(" ");
 
 const csrfHeaderName = "x-csrf-token";
+const policyUpdatedDate = "June 7, 2026";
 
-type ViewMode = "home" | "dashboard";
+const matureAccessLabel = (matureAccess: MatureAccess | null) => {
+  if (!matureAccess) {
+    return "Mature access is checking.";
+  }
+  if (matureAccess.allowed) {
+    return "Mature content is visible.";
+  }
+  if (matureAccess.reason === "region_restricted") {
+    return matureAccess.country
+      ? `Mature content is hidden in ${matureAccess.country}.`
+      : "Mature content is hidden in this region.";
+  }
+  if (matureAccess.reason === "sign_in_required") {
+    return "Sign in and verify your age to view mature content.";
+  }
+  if (matureAccess.reason === "age_verification_required") {
+    return "Verify your age to view mature content.";
+  }
+  return "Mature content is off.";
+};
+
+type ViewMode =
+  | "home"
+  | "dashboard"
+  | "profile"
+  | "profileSettings"
+  | "privacySecurity"
+  | "terms"
+  | "privacy";
 type AuthMode = "login" | "register";
 type TurnstileAction = AuthMode | "resend";
 
-const getInitialView = (): ViewMode => {
+const getInitialRoute = (): { view: ViewMode; username: string } => {
   if (typeof window === "undefined") {
-    return "home";
+    return { view: "home", username: "" };
   }
-  return window.location.hash === "#dashboard" ? "dashboard" : "home";
+  if (window.location.hash === "#dashboard") {
+    return { view: "dashboard", username: "" };
+  }
+  const pathname = decodeURIComponent(window.location.pathname);
+  if (pathname.startsWith("/@")) {
+    return { view: "profile", username: pathname.slice(2).replace(/^\/+|\/+$/g, "") };
+  }
+  if (pathname === "/settings/profile") {
+    return { view: "profileSettings", username: "" };
+  }
+  if (pathname === "/settings/privacy-security") {
+    return { view: "privacySecurity", username: "" };
+  }
+  if (pathname === "/terms") {
+    return { view: "terms", username: "" };
+  }
+  if (pathname === "/privacy") {
+    return { view: "privacy", username: "" };
+  }
+  return { view: "home", username: "" };
 };
 
 function App() {
+  const initialRoute = useMemo(getInitialRoute, []);
   const [gallery, setGallery] = useState<GalleryResponse | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [adminStats, setAdminStats] = useState<AdminStatsResponse | null>(null);
@@ -99,7 +168,8 @@ function App() {
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [authNotice, setAuthNotice] = useState("");
-  const [view, setView] = useState<ViewMode>(getInitialView);
+  const [view, setView] = useState<ViewMode>(initialRoute.view);
+  const [profileUsername, setProfileUsername] = useState(initialRoute.username);
   const [sort, setSort] = useState<SortMode>("latest");
   const [query, setQuery] = useState("");
   const [activeTag, setActiveTag] = useState("");
@@ -109,6 +179,7 @@ function App() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
   const [postAuthSort, setPostAuthSort] = useState<SortMode | null>(null);
+  const [contentAccessRevision, setContentAccessRevision] = useState(0);
 
   const galleryUrl = useMemo(() => {
     const params = new URLSearchParams();
@@ -139,7 +210,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [currentUser?.id, galleryUrl]);
+  }, [contentAccessRevision, currentUser?.id, galleryUrl]);
 
   useEffect(() => {
     let cancelled = false;
@@ -240,12 +311,18 @@ function App() {
   }, [authReady, currentUser?.role, view]);
 
   useEffect(() => {
-    const handleHashChange = () => {
-      setView(getInitialView());
+    const handleRouteChange = () => {
+      const route = getInitialRoute();
+      setView(route.view);
+      setProfileUsername(route.username);
     };
 
-    window.addEventListener("hashchange", handleHashChange);
-    return () => window.removeEventListener("hashchange", handleHashChange);
+    window.addEventListener("hashchange", handleRouteChange);
+    window.addEventListener("popstate", handleRouteChange);
+    return () => {
+      window.removeEventListener("hashchange", handleRouteChange);
+      window.removeEventListener("popstate", handleRouteChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -289,12 +366,17 @@ function App() {
     : `${formatCount(totalLikes)} likes across ${formatCount(totalViews)} views`;
   const filterLabel = isBookmarksView ? "All bookmarks" : "All work";
 
-  const showHome = (nextSort: SortMode) => {
-    setView("home");
-    setSort(nextSort);
-    if (window.location.hash) {
-      window.history.pushState(null, "", window.location.pathname + window.location.search);
+  const pushRoute = (path: string, nextView: ViewMode, username = "") => {
+    setView(nextView);
+    setProfileUsername(username);
+    if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== path) {
+      window.history.pushState(null, "", path);
     }
+  };
+
+  const showHome = (nextSort: SortMode) => {
+    pushRoute("/", "home");
+    setSort(nextSort);
   };
 
   const showBookmarks = () => {
@@ -314,10 +396,35 @@ function App() {
       openAuth("login");
       return;
     }
-    setView("dashboard");
-    if (window.location.hash !== "#dashboard") {
-      window.location.hash = "dashboard";
+    pushRoute("/#dashboard", "dashboard");
+  };
+
+  const showProfile = (username: string) => {
+    const cleaned = username.replace(/^@/, "").trim();
+    if (!cleaned) {
+      return;
     }
+    pushRoute(`/@${encodeURIComponent(cleaned)}`, "profile", cleaned);
+  };
+
+  const showProfileSettings = () => {
+    if (!currentUser) {
+      openAuth("login");
+      return;
+    }
+    pushRoute("/settings/profile", "profileSettings");
+  };
+
+  const showPrivacySecurity = () => {
+    if (!currentUser) {
+      openAuth("login");
+      return;
+    }
+    pushRoute("/settings/privacy-security", "privacySecurity");
+  };
+
+  const showPolicy = (nextView: "terms" | "privacy") => {
+    pushRoute(nextView === "terms" ? "/terms" : "/privacy", nextView);
   };
 
   const openAuth = (mode: AuthMode) => {
@@ -328,7 +435,7 @@ function App() {
 
   const openUpload = () => {
     if (!currentUser) {
-      openAuth("register");
+      openAuth("login");
       return;
     }
     setUploadOpen(true);
@@ -358,7 +465,7 @@ function App() {
       setCurrentUser(null);
       setCsrfToken("");
       setAdminStats(null);
-      if (view === "dashboard" || sort === "bookmarks") {
+      if (view === "dashboard" || view === "profileSettings" || view === "privacySecurity" || sort === "bookmarks") {
         showHome("latest");
       }
     }
@@ -430,15 +537,20 @@ function App() {
     syncArtwork(likedArtwork);
   };
 
-  const handleBookmark = async (artwork: Artwork) => {
+  const handleBookmark = async (artwork: Artwork, visibility?: BookmarkVisibility) => {
     if (!currentUser) {
       openAuth("login");
       return;
     }
+    const headers: Record<string, string> = csrfToken ? { [csrfHeaderName]: csrfToken } : {};
+    if (visibility) {
+      headers["content-type"] = "application/json";
+    }
     const response = await fetch(`/api/artworks/${artwork.id}/bookmark`, {
       method: "POST",
       credentials: "include",
-      headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
+      headers,
+      body: visibility ? JSON.stringify({ visibility }) : undefined
     });
     const payload = (await response.json()) as { artwork?: Artwork; message?: string };
     if (!response.ok || !payload.artwork) {
@@ -477,6 +589,12 @@ function App() {
     });
     setUploadMessage(payload.message);
     form.reset();
+  };
+
+  const handleSettingsUser = (user: AuthUser) => {
+    setCurrentUser(user);
+    setAuthNotice("Settings saved.");
+    setContentAccessRevision((revision) => revision + 1);
   };
 
   return (
@@ -525,6 +643,8 @@ function App() {
               onLogin={() => openAuth("login")}
               onRegister={() => openAuth("register")}
               onLogout={handleLogout}
+              onProfile={() => currentUser && showProfile(currentUser.username)}
+              onSettings={showProfileSettings}
             />
           </div>
         </div>
@@ -564,6 +684,37 @@ function App() {
             <Bookmark size={18} />
             Bookmarks
           </button>
+          {currentUser ? (
+            <>
+              <button
+                className={classNames(
+                  "menu-item",
+                  view === "profile" && profileUsername.toLowerCase() === currentUser.username.toLowerCase() && "is-active"
+                )}
+                type="button"
+                onClick={() => showProfile(currentUser.username)}
+              >
+                <UserRound size={18} />
+                Profile
+              </button>
+              <button
+                className={classNames("menu-item", view === "profileSettings" && "is-active")}
+                type="button"
+                onClick={showProfileSettings}
+              >
+                <UserCog size={18} />
+                Profile settings
+              </button>
+              <button
+                className={classNames("menu-item", view === "privacySecurity" && "is-active")}
+                type="button"
+                onClick={showPrivacySecurity}
+              >
+                <KeyRound size={18} />
+                Privacy
+              </button>
+            </>
+          ) : null}
           {currentUser?.role === "admin" ? (
             <button
               className={classNames("menu-item", view === "dashboard" && "is-active")}
@@ -574,6 +725,22 @@ function App() {
               Dashboard
             </button>
           ) : null}
+          <button
+            className={classNames("menu-item", view === "terms" && "is-active")}
+            type="button"
+            onClick={() => showPolicy("terms")}
+          >
+            <FileText size={18} />
+            Terms
+          </button>
+          <button
+            className={classNames("menu-item", view === "privacy" && "is-active")}
+            type="button"
+            onClick={() => showPolicy("privacy")}
+          >
+            <Shield size={18} />
+            Policy
+          </button>
         </aside>
 
         {view === "dashboard" ? (
@@ -589,6 +756,38 @@ function App() {
             totalViews={totalViews}
             onUpload={openUpload}
           />
+        ) : view === "profile" ? (
+          <ProfilePage
+            username={profileUsername}
+            currentUser={currentUser}
+            onAuthRequired={() => openAuth("login")}
+            onBookmark={handleBookmark}
+            onOpenProfile={showProfile}
+            onOpenPrivacySecurity={showPrivacySecurity}
+            onOpenProfileSettings={showProfileSettings}
+            onSelectArtwork={setSelectedArtwork}
+          />
+        ) : view === "profileSettings" ? (
+          <ProfileSettingsPage
+            csrfToken={csrfToken}
+            currentUser={currentUser}
+            onAuthRequired={() => openAuth("login")}
+            onOpenPrivacySecurity={showPrivacySecurity}
+            onOpenProfile={showProfile}
+            onSaved={handleSettingsUser}
+          />
+        ) : view === "privacySecurity" ? (
+          <PrivacySecurityPage
+            csrfToken={csrfToken}
+            currentUser={currentUser}
+            onAuthRequired={() => openAuth("login")}
+            onOpenProfileSettings={showProfileSettings}
+            onSaved={handleSettingsUser}
+          />
+        ) : view === "terms" ? (
+          <PolicyPage kind="terms" onOpenPrivacy={() => showPolicy("privacy")} />
+        ) : view === "privacy" ? (
+          <PolicyPage kind="privacy" onOpenTerms={() => showPolicy("terms")} />
         ) : (
           <>
             <section className="feed-main">
@@ -601,6 +800,11 @@ function App() {
                   setDashboardMessage("");
                 }}
                 onResend={handleResendVerification}
+              />
+              <MatureAccessNotice
+                matureAccess={gallery?.matureAccess ?? null}
+                onLogin={() => openAuth("login")}
+                onPrivacySecurity={showPrivacySecurity}
               />
               <div className="section-heading">
                 <div>
@@ -659,6 +863,7 @@ function App() {
                     index={index}
                     onSelect={setSelectedArtwork}
                     onBookmark={handleBookmark}
+                    onOpenProfile={showProfile}
                   />
                 ))}
               </div>
@@ -700,16 +905,21 @@ function App() {
                   Recommended users
                 </div>
                 {(gallery?.creators ?? []).slice(0, 5).map((creator) => (
-                  <div className="creator-row" key={creator.id}>
+                  <button
+                    className="creator-row creator-row-link"
+                    key={creator.id}
+                    type="button"
+                    onClick={() => showProfile(creator.handle)}
+                  >
                     <img src={creator.avatarUrl} alt="" />
                     <div>
                       <strong>{creator.displayName}</strong>
                       <span>@{creator.handle}</span>
                     </div>
-                    <button type="button" aria-label={`Follow ${creator.displayName}`}>
+                    <span className="icon-button creator-row-icon" aria-label={`Open ${creator.displayName}`}>
                       <UserPlus size={15} />
-                    </button>
-                  </div>
+                    </span>
+                  </button>
                 ))}
               </section>
             </aside>
@@ -725,13 +935,16 @@ function App() {
           onClose={() => setSelectedArtwork(null)}
           onLike={handleLike}
           onBookmark={handleBookmark}
+          onOpenProfile={showProfile}
         />
       ) : null}
 
       <UploadDrawer
         open={uploadOpen}
         message={uploadMessage}
+        matureAccess={gallery?.matureAccess ?? null}
         onClose={() => setUploadOpen(false)}
+        onOpenPrivacySecurity={showPrivacySecurity}
         onSubmit={handleUpload}
       />
 
@@ -753,9 +966,18 @@ type AccountControlProps = {
   onLogin: () => void;
   onRegister: () => void;
   onLogout: () => void;
+  onProfile: () => void;
+  onSettings: () => void;
 };
 
-function AccountControl({ user, onLogin, onRegister, onLogout }: AccountControlProps) {
+function AccountControl({
+  user,
+  onLogin,
+  onRegister,
+  onLogout,
+  onProfile,
+  onSettings
+}: AccountControlProps) {
   if (!user) {
     return (
       <div className="auth-actions">
@@ -772,10 +994,15 @@ function AccountControl({ user, onLogin, onRegister, onLogout }: AccountControlP
   }
 
   return (
-    <div className="account-chip">
+    <div className="account-chip" title={user.displayName}>
       <span className={classNames("verify-dot", (user.emailVerified || user.role === "admin") && "is-verified")} />
-      <span className="account-name">{user.displayName}</span>
+      <button className="account-name" type="button" onClick={onProfile}>
+        {user.displayName}
+      </button>
       <small>{user.role === "admin" ? "Admin" : user.emailVerified ? "Verified" : "Pending"}</small>
+      <button className="icon-button account-settings" type="button" onClick={onSettings} aria-label="Account settings">
+        <Settings size={16} />
+      </button>
       <button className="icon-button account-logout" type="button" onClick={onLogout} aria-label="Sign out">
         <LogOut size={16} />
       </button>
@@ -848,6 +1075,45 @@ function AccountNotice({
         </button>
       )}
       {resendMessage ? <p className="auth-inline-message">{resendMessage}</p> : null}
+    </section>
+  );
+}
+
+type MatureAccessNoticeProps = {
+  matureAccess: MatureAccess | null;
+  onLogin: () => void;
+  onPrivacySecurity: () => void;
+};
+
+function MatureAccessNotice({
+  matureAccess,
+  onLogin,
+  onPrivacySecurity
+}: MatureAccessNoticeProps) {
+  if (!matureAccess || matureAccess.allowed) {
+    return null;
+  }
+
+  const action =
+    matureAccess.reason === "sign_in_required" ? (
+      <button className="secondary-button" type="button" onClick={onLogin}>
+        <LogIn size={16} />
+        Sign in
+      </button>
+    ) : matureAccess.reason === "region_restricted" ? null : (
+      <button className="secondary-button" type="button" onClick={onPrivacySecurity}>
+        <KeyRound size={16} />
+        Verify age
+      </button>
+    );
+
+  return (
+    <section className="mature-access-strip" aria-live="polite">
+      <div>
+        <EyeOff size={18} />
+        <span>{matureAccessLabel(matureAccess)}</span>
+      </div>
+      {action}
     </section>
   );
 }
@@ -1281,6 +1547,712 @@ function Dashboard({
   );
 }
 
+type ProfilePageProps = {
+  username: string;
+  currentUser: AuthUser | null;
+  onAuthRequired: () => void;
+  onBookmark: (artwork: Artwork, visibility?: BookmarkVisibility) => void;
+  onOpenProfile: (username: string) => void;
+  onOpenPrivacySecurity: () => void;
+  onOpenProfileSettings: () => void;
+  onSelectArtwork: (artwork: Artwork) => void;
+};
+
+type ProfileTab = "works" | "public" | "private";
+
+function ProfilePage({
+  username,
+  currentUser,
+  onAuthRequired,
+  onBookmark,
+  onOpenProfile,
+  onOpenPrivacySecurity,
+  onOpenProfileSettings,
+  onSelectArtwork
+}: ProfilePageProps) {
+  const [profileData, setProfileData] = useState<UserProfileResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
+  const [activeTab, setActiveTab] = useState<ProfileTab>("works");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setMessage("");
+    setProfileData(null);
+    setActiveTab("works");
+
+    if (!username) {
+      setLoading(false);
+      setMessage("User not found.");
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    fetch(`/api/users/${encodeURIComponent(username)}/profile`, { credentials: "include" })
+      .then(async (response) => {
+        const payload = (await response.json()) as UserProfileResponse | { message?: string };
+        if (!response.ok || !("profile" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ?? "Profile could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setProfileData(payload);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setMessage(error instanceof Error ? error.message : "Profile could not be loaded.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id, username]);
+
+  const profile = profileData?.profile;
+  const ownProfile = Boolean(profile?.ownProfile);
+  const tabs: Array<{ id: ProfileTab; label: string; count: number; icon: typeof Images }> = profileData
+    ? [
+        { id: "works", label: "Works", count: profileData.stats.artworks, icon: Images },
+        {
+          id: "public",
+          label: "Public bookmarks",
+          count: profileData.stats.publicBookmarks,
+          icon: Bookmark
+        },
+        ...(ownProfile
+          ? [
+              {
+                id: "private" as const,
+                label: "Private bookmarks",
+                count: profileData.stats.privateBookmarks,
+                icon: Lock
+              }
+            ]
+          : [])
+      ]
+    : [];
+  const visibleArtworks =
+    activeTab === "public"
+      ? profileData?.publicBookmarks ?? []
+      : activeTab === "private"
+        ? profileData?.privateBookmarks ?? []
+        : profileData?.artworks ?? [];
+
+  return (
+    <section className="content-main profile-page">
+      {loading ? <p className="empty-feed">Loading profile.</p> : null}
+      {message ? <p className="empty-feed">{message}</p> : null}
+      {profile && profileData ? (
+        <>
+          <div className="profile-hero">
+            {profile.avatarUrl ? (
+              <img className="profile-avatar" src={profile.avatarUrl} alt="" />
+            ) : (
+              <div className="profile-avatar profile-avatar-fallback">
+                {profile.displayName.slice(0, 1).toUpperCase()}
+              </div>
+            )}
+            <div className="profile-copy">
+              <p className="eyebrow">Creator profile</p>
+              <h1>{profile.displayName}</h1>
+              <div className="profile-handle">
+                <AtSign size={15} />
+                {profile.username}
+              </div>
+              {profile.bio ? <p>{profile.bio}</p> : null}
+              <div className="profile-meta">
+                <span>{formatCount(profile.followerCount)} followers</span>
+                <span>{formatCount(profileData.stats.totalLikes)} likes</span>
+                <span>{formatCount(profileData.stats.totalViews)} views</span>
+                <span>Joined {fullDateFormat.format(new Date(profile.joinedAt))}</span>
+              </div>
+            </div>
+            {ownProfile ? (
+              <div className="profile-actions">
+                <button className="secondary-button" type="button" onClick={onOpenProfileSettings}>
+                  <UserCog size={16} />
+                  Edit profile
+                </button>
+                <button className="secondary-button" type="button" onClick={onOpenPrivacySecurity}>
+                  <KeyRound size={16} />
+                  Privacy
+                </button>
+              </div>
+            ) : currentUser ? (
+              <button className="secondary-button profile-follow-button" type="button">
+                <UserPlus size={16} />
+                Follow
+              </button>
+            ) : (
+              <button className="secondary-button profile-follow-button" type="button" onClick={onAuthRequired}>
+                <LogIn size={16} />
+                Sign in
+              </button>
+            )}
+          </div>
+
+          <MatureAccessNotice
+            matureAccess={profileData.matureAccess}
+            onLogin={onAuthRequired}
+            onPrivacySecurity={onOpenPrivacySecurity}
+          />
+
+          <div className="profile-tabs" aria-label="Profile sections">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.id}
+                  className={classNames(activeTab === tab.id && "is-active")}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  <Icon size={16} />
+                  {tab.label}
+                  <span>{formatCount(tab.count)}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="art-grid profile-art-grid">
+            {visibleArtworks.map((artwork, index) => (
+              <ArtworkCard
+                key={artwork.id}
+                artwork={artwork}
+                index={index}
+                onBookmark={onBookmark}
+                onOpenProfile={onOpenProfile}
+                onSelect={onSelectArtwork}
+              />
+            ))}
+          </div>
+          {visibleArtworks.length === 0 ? (
+            <p className="empty-feed">No works in this section.</p>
+          ) : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+type ProfileSettingsPageProps = {
+  csrfToken: string;
+  currentUser: AuthUser | null;
+  onAuthRequired: () => void;
+  onOpenPrivacySecurity: () => void;
+  onOpenProfile: (username: string) => void;
+  onSaved: (user: AuthUser) => void;
+};
+
+function ProfileSettingsPage({
+  csrfToken,
+  currentUser,
+  onAuthRequired,
+  onOpenPrivacySecurity,
+  onOpenProfile,
+  onSaved
+}: ProfileSettingsPageProps) {
+  const [settings, setSettings] = useState<ProfileSettingsResponse | null>(null);
+  const [formState, setFormState] = useState({
+    username: "",
+    displayName: "",
+    avatarUrl: "",
+    bio: ""
+  });
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setLoading(false);
+      onAuthRequired();
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setMessage("");
+    fetch("/api/settings/profile", { credentials: "include" })
+      .then(async (response) => {
+        const payload = (await response.json()) as ProfileSettingsResponse | { message?: string };
+        if (!response.ok || !("profile" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ??
+              "Profile settings could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setSettings(payload);
+          setFormState(payload.profile);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setMessage(error instanceof Error ? error.message : "Profile settings could not be loaded.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaving(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/settings/profile", {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          [csrfHeaderName]: csrfToken
+        },
+        body: JSON.stringify(formState)
+      });
+      const payload = (await response.json()) as ProfileSettingsResponse | { message?: string };
+      if (!response.ok || !("profile" in payload)) {
+        throw new Error(
+          ("message" in payload ? payload.message : undefined) ?? "Profile could not be saved."
+        );
+      }
+      setSettings(payload);
+      setFormState(payload.profile);
+      onSaved(payload.user);
+      setMessage("Profile saved.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Profile could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="content-main settings-page">
+      <div className="settings-heading">
+        <div>
+          <p className="eyebrow">Account</p>
+          <h1>Profile settings</h1>
+        </div>
+        <button className="secondary-button" type="button" onClick={onOpenPrivacySecurity}>
+          <KeyRound size={16} />
+          Privacy
+        </button>
+      </div>
+      {loading ? <p className="empty-feed">Loading settings.</p> : null}
+      {!currentUser ? (
+        <button className="primary-button" type="button" onClick={onAuthRequired}>
+          <LogIn size={17} />
+          Sign in
+        </button>
+      ) : null}
+      {settings ? (
+        <form className="settings-form" onSubmit={handleSubmit}>
+          <label>
+            Display name
+            <input
+              value={formState.displayName}
+              minLength={2}
+              maxLength={60}
+              onChange={(event) => setFormState((current) => ({ ...current, displayName: event.target.value }))}
+              required
+            />
+          </label>
+          <label>
+            Username
+            <input
+              value={formState.username}
+              minLength={3}
+              maxLength={32}
+              pattern="[a-z0-9_-]+"
+              onChange={(event) => setFormState((current) => ({ ...current, username: event.target.value.toLowerCase() }))}
+              required
+            />
+          </label>
+          <label>
+            Avatar URL
+            <input
+              value={formState.avatarUrl}
+              maxLength={500}
+              onChange={(event) => setFormState((current) => ({ ...current, avatarUrl: event.target.value }))}
+            />
+          </label>
+          <label>
+            Bio
+            <textarea
+              value={formState.bio}
+              maxLength={500}
+              rows={5}
+              onChange={(event) => setFormState((current) => ({ ...current, bio: event.target.value }))}
+            />
+          </label>
+          <div className="settings-actions">
+            <button className="primary-button" type="submit" disabled={saving}>
+              <Settings size={17} />
+              {saving ? "Saving" : "Save profile"}
+            </button>
+            <button className="secondary-button" type="button" onClick={() => onOpenProfile(formState.username)}>
+              <UserRound size={16} />
+              View profile
+            </button>
+          </div>
+        </form>
+      ) : null}
+      {message ? <p className="settings-message">{message}</p> : null}
+    </section>
+  );
+}
+
+type PrivacySecurityPageProps = {
+  csrfToken: string;
+  currentUser: AuthUser | null;
+  onAuthRequired: () => void;
+  onOpenProfileSettings: () => void;
+  onSaved: (user: AuthUser) => void;
+};
+
+function PrivacySecurityPage({
+  csrfToken,
+  currentUser,
+  onAuthRequired,
+  onOpenProfileSettings,
+  onSaved
+}: PrivacySecurityPageProps) {
+  const [settings, setSettings] = useState<PrivacySecuritySettingsResponse | null>(null);
+  const [bookmarkDefaultVisibility, setBookmarkDefaultVisibility] =
+    useState<BookmarkVisibility>("public");
+  const [dateOfBirth, setDateOfBirth] = useState("");
+  const [matureContentEnabled, setMatureContentEnabled] = useState(false);
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setLoading(false);
+      onAuthRequired();
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setMessage("");
+    fetch("/api/settings/privacy-security", { credentials: "include" })
+      .then(async (response) => {
+        const payload = (await response.json()) as PrivacySecuritySettingsResponse | { message?: string };
+        if (!response.ok || !("privacy" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ??
+              "Privacy settings could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setSettings(payload);
+          setBookmarkDefaultVisibility(payload.privacy.bookmarkDefaultVisibility);
+          setDateOfBirth(payload.privacy.dateOfBirth ?? "");
+          setMatureContentEnabled(payload.privacy.matureContentEnabled);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setMessage(error instanceof Error ? error.message : "Privacy settings could not be loaded.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaving(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/settings/privacy-security", {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          [csrfHeaderName]: csrfToken
+        },
+        body: JSON.stringify({
+          bookmarkDefaultVisibility,
+          dateOfBirth: dateOfBirth || null,
+          matureContentEnabled
+        })
+      });
+      const payload = (await response.json()) as PrivacySecuritySettingsResponse | { message?: string };
+      if (!response.ok || !("privacy" in payload)) {
+        throw new Error(
+          ("message" in payload ? payload.message : undefined) ??
+            "Privacy settings could not be saved."
+        );
+      }
+      setSettings(payload);
+      setBookmarkDefaultVisibility(payload.privacy.bookmarkDefaultVisibility);
+      setDateOfBirth(payload.privacy.dateOfBirth ?? "");
+      setMatureContentEnabled(payload.privacy.matureContentEnabled);
+      onSaved(payload.user);
+      setMessage("Privacy settings saved.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Privacy settings could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const matureAccess = settings?.matureAccess ?? null;
+
+  return (
+    <section className="content-main settings-page">
+      <div className="settings-heading">
+        <div>
+          <p className="eyebrow">Account</p>
+          <h1>Privacy & security</h1>
+        </div>
+        <button className="secondary-button" type="button" onClick={onOpenProfileSettings}>
+          <UserCog size={16} />
+          Profile
+        </button>
+      </div>
+      {loading ? <p className="empty-feed">Loading settings.</p> : null}
+      {!currentUser ? (
+        <button className="primary-button" type="button" onClick={onAuthRequired}>
+          <LogIn size={17} />
+          Sign in
+        </button>
+      ) : null}
+      {settings ? (
+        <form className="settings-form privacy-form" onSubmit={handleSubmit}>
+          <section className="settings-panel">
+            <div className="panel-title">
+              <Bookmark size={18} />
+              Bookmark default
+            </div>
+            <div className="segmented-control" aria-label="Default bookmark visibility">
+              <button
+                className={classNames(bookmarkDefaultVisibility === "public" && "is-active")}
+                type="button"
+                onClick={() => setBookmarkDefaultVisibility("public")}
+              >
+                <Eye size={16} />
+                Public
+              </button>
+              <button
+                className={classNames(bookmarkDefaultVisibility === "private" && "is-active")}
+                type="button"
+                onClick={() => setBookmarkDefaultVisibility("private")}
+              >
+                <Lock size={16} />
+                Private
+              </button>
+            </div>
+          </section>
+
+          <section className="settings-panel">
+            <div className="panel-title">
+              <Calendar size={18} />
+              Mature access
+            </div>
+            <label>
+              Date of birth
+              <input
+                value={dateOfBirth}
+                type="date"
+                max={new Date().toISOString().slice(0, 10)}
+                onChange={(event) => setDateOfBirth(event.target.value)}
+              />
+            </label>
+            <label className="toggle-row settings-toggle">
+              <span>Show mature content</span>
+              <input
+                checked={matureContentEnabled}
+                type="checkbox"
+                onChange={(event) => setMatureContentEnabled(event.target.checked)}
+              />
+            </label>
+            <MatureAccessStatus matureAccess={matureAccess} />
+          </section>
+
+          <div className="settings-actions">
+            <button className="primary-button" type="submit" disabled={saving}>
+              <ShieldCheck size={17} />
+              {saving ? "Saving" : "Save privacy"}
+            </button>
+          </div>
+        </form>
+      ) : null}
+      {message ? <p className="settings-message">{message}</p> : null}
+    </section>
+  );
+}
+
+type MatureAccessStatusProps = {
+  matureAccess: MatureAccess | null;
+};
+
+function MatureAccessStatus({ matureAccess }: MatureAccessStatusProps) {
+  if (!matureAccess) {
+    return null;
+  }
+
+  return (
+    <div className="mature-status">
+      <div className={classNames("mature-status-heading", matureAccess.allowed && "is-active")}>
+        {matureAccess.allowed ? <Eye size={18} /> : <EyeOff size={18} />}
+        <strong>{matureAccessLabel(matureAccess)}</strong>
+      </div>
+      <div className="mature-status-grid">
+        <StatusPill active={matureAccess.signedIn} label="Signed in" />
+        <StatusPill active={matureAccess.ageVerified} label="Age verified" />
+        <StatusPill active={matureAccess.enabled} label="Enabled" />
+        <StatusPill active={!matureAccess.restrictedRegion} label={matureAccess.country ?? "Region"} />
+      </div>
+    </div>
+  );
+}
+
+type StatusPillProps = {
+  active: boolean;
+  label: string;
+};
+
+function StatusPill({ active, label }: StatusPillProps) {
+  return (
+    <span className={classNames("status-pill", active && "is-active")}>
+      {active ? <ShieldCheck size={14} /> : <EyeOff size={14} />}
+      {label}
+    </span>
+  );
+}
+
+type PolicyPageProps =
+  | { kind: "terms"; onOpenPrivacy: () => void; onOpenTerms?: never }
+  | { kind: "privacy"; onOpenTerms: () => void; onOpenPrivacy?: never };
+
+function PolicyPage(props: PolicyPageProps) {
+  const isTerms = props.kind === "terms";
+  const sections = isTerms
+    ? [
+        {
+          title: "Eligibility and accounts",
+          body:
+            "You must be able to form a binding agreement in your location. Keep your login credentials secure and maintain a verified email address for publishing, liking, bookmarking, and account recovery."
+        },
+        {
+          title: "User content",
+          body:
+            "You keep ownership of artwork you publish. By posting, you grant NEHub a worldwide, non-exclusive license to host, store, resize, display, and distribute that content inside the service."
+        },
+        {
+          title: "Mature content",
+          body:
+            "Mature content may only be viewed or published by signed-in users who provide an adult date of birth, enable mature viewing, and access the service from a permitted region."
+        },
+        {
+          title: "Prohibited activity",
+          body:
+            "Do not upload unlawful, abusive, exploitative, infringing, malicious, or non-consensual content. Do not bypass access controls, scrape accounts, attack Cloudflare services, or interfere with other users."
+        },
+        {
+          title: "Moderation and availability",
+          body:
+            "NEHub may remove content, restrict accounts, change features, or suspend the service when needed for security, legal, operational, or community-protection reasons."
+        }
+      ]
+    : [
+        {
+          title: "Information we collect",
+          body:
+            "NEHub stores account email, username, display name, password hash, verification status, profile details, date of birth for age checks, bookmark settings, uploads, likes, comments, and session metadata."
+        },
+        {
+          title: "Cloudflare processing",
+          body:
+            "The service runs on Cloudflare Workers, D1, R2, Turnstile, Email Routing Workers, and standard Cloudflare request logs. Cloudflare may process IP address, country, device, and security-signal data."
+        },
+        {
+          title: "How data is used",
+          body:
+            "Data is used to operate accounts, verify email, protect forms with Turnstile, show artwork feeds, enforce bookmark privacy, enforce mature-content age and regional restrictions, and troubleshoot abuse or security issues."
+        },
+        {
+          title: "Visibility choices",
+          body:
+            "Public bookmarks can appear on your profile. Private bookmarks are visible only to your signed-in account. Mature content is hidden unless the access checks in the Terms are satisfied."
+        },
+        {
+          title: "Retention and requests",
+          body:
+            "Account, content, and security records are retained while needed to provide the service, meet legal duties, and resolve abuse. Contact the site operator to request access, correction, export, or deletion."
+        }
+      ];
+
+  return (
+    <section className="content-main policy-page">
+      <div className="policy-heading">
+        <p className="eyebrow">NEHub</p>
+        <h1>{isTerms ? "Terms of Use" : "Privacy Policy"}</h1>
+        <p>Last updated {policyUpdatedDate}</p>
+      </div>
+      <div className="policy-grid">
+        {sections.map((section) => (
+          <article className="policy-section" key={section.title}>
+            <h2>{section.title}</h2>
+            <p>{section.body}</p>
+          </article>
+        ))}
+      </div>
+      <div className="policy-switch">
+        {isTerms ? (
+          <button className="secondary-button" type="button" onClick={props.onOpenPrivacy}>
+            <Shield size={16} />
+            Privacy Policy
+          </button>
+        ) : (
+          <button className="secondary-button" type="button" onClick={props.onOpenTerms}>
+            <FileText size={16} />
+            Terms of Use
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
 type StatusCardProps = {
   icon: ReactNode;
   label: string;
@@ -1320,10 +2292,17 @@ type ArtworkCardProps = {
   artwork: Artwork;
   index: number;
   onSelect: (artwork: Artwork) => void;
-  onBookmark: (artwork: Artwork) => void;
+  onBookmark: (artwork: Artwork, visibility?: BookmarkVisibility) => void;
+  onOpenProfile: (username: string) => void;
 };
 
-function ArtworkCard({ artwork, index, onSelect, onBookmark }: ArtworkCardProps) {
+function ArtworkCard({
+  artwork,
+  index,
+  onSelect,
+  onBookmark,
+  onOpenProfile
+}: ArtworkCardProps) {
   return (
     <article
       className="art-card"
@@ -1339,10 +2318,10 @@ function ArtworkCard({ artwork, index, onSelect, onBookmark }: ArtworkCardProps)
       </button>
       <div className="art-card-body">
         <h3>{artwork.title}</h3>
-        <div className="creator-mini">
+        <button className="creator-mini creator-mini-link" type="button" onClick={() => onOpenProfile(artwork.creator.handle)}>
           <img src={artwork.creator.avatarUrl} alt="" />
           <span>{artwork.creator.displayName}</span>
-        </div>
+        </button>
       </div>
       <div className="art-stats">
         <span>
@@ -1391,7 +2370,8 @@ type ArtworkDialogProps = {
   loading: boolean;
   onClose: () => void;
   onLike: (artwork: Artwork) => void;
-  onBookmark: (artwork: Artwork) => void;
+  onBookmark: (artwork: Artwork, visibility?: BookmarkVisibility) => void;
+  onOpenProfile: (username: string) => void;
 };
 
 function ArtworkDialog({
@@ -1400,7 +2380,8 @@ function ArtworkDialog({
   loading,
   onClose,
   onLike,
-  onBookmark
+  onBookmark,
+  onOpenProfile
 }: ArtworkDialogProps) {
   const artwork = detail?.artwork ?? fallbackArtwork;
 
@@ -1414,13 +2395,13 @@ function ArtworkDialog({
           <img src={artwork.imageUrl} alt={artwork.title} />
         </div>
         <aside className="modal-detail">
-          <div className="artist-block">
+          <button className="artist-block artist-block-link" type="button" onClick={() => onOpenProfile(artwork.creator.handle)}>
             <img src={artwork.creator.avatarUrl} alt="" />
             <div>
               <strong>{artwork.creator.displayName}</strong>
               <span>@{artwork.creator.handle}</span>
             </div>
-          </div>
+          </button>
           <h2>{artwork.title}</h2>
           <p>{artwork.caption}</p>
           <div className="tag-row modal-tags">
@@ -1443,6 +2424,24 @@ function ArtworkDialog({
               <Bookmark size={17} fill={artwork.bookmarked ? "currentColor" : "none"} />
               {artwork.bookmarked ? "Bookmarked" : "Bookmark"}
               <span>{formatCount(artwork.bookmarkCount)}</span>
+            </button>
+          </div>
+          <div className="bookmark-privacy-control" aria-label="Bookmark visibility">
+            <button
+              className={classNames(artwork.bookmarkVisibility === "public" && "is-active")}
+              type="button"
+              onClick={() => onBookmark(artwork, "public")}
+            >
+              <Eye size={15} />
+              Public
+            </button>
+            <button
+              className={classNames(artwork.bookmarkVisibility === "private" && "is-active")}
+              type="button"
+              onClick={() => onBookmark(artwork, "private")}
+            >
+              <Lock size={15} />
+              Private
             </button>
           </div>
           <div className="comment-list">
@@ -1470,13 +2469,23 @@ function ArtworkDialog({
 type UploadDrawerProps = {
   open: boolean;
   message: string;
+  matureAccess: MatureAccess | null;
   onClose: () => void;
+  onOpenPrivacySecurity: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 };
 
-function UploadDrawer({ open, message, onClose, onSubmit }: UploadDrawerProps) {
+function UploadDrawer({
+  open,
+  message,
+  matureAccess,
+  onClose,
+  onOpenPrivacySecurity,
+  onSubmit
+}: UploadDrawerProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [fileName, setFileName] = useState("Choose image");
+  const matureBlocked = matureAccess ? !matureAccess.allowed : true;
 
   return (
     <div className={classNames("drawer-backdrop", open && "is-open")}>
@@ -1505,8 +2514,17 @@ function UploadDrawer({ open, message, onClose, onSubmit }: UploadDrawerProps) {
           </label>
           <label className="toggle-row">
             <span>Mature content</span>
-            <input name="mature" type="checkbox" value="true" />
+            <input name="mature" type="checkbox" value="true" disabled={matureBlocked} />
           </label>
+          {matureBlocked ? (
+            <div className="inline-alert">
+              <EyeOff size={16} />
+              <span>{matureAccessLabel(matureAccess)}</span>
+              <button className="text-button" type="button" onClick={onOpenPrivacySecurity}>
+                Settings
+              </button>
+            </div>
+          ) : null}
           <button
             className="file-picker"
             type="button"
