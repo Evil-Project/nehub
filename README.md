@@ -189,7 +189,7 @@ Add these repository secrets before using the workflow:
 - `CLOUDFLARE_API_TOKEN`: Cloudflare API token with permission to create/read D1 databases, create/read R2 buckets, deploy Workers, and upload Worker secrets.
 - `TURNSTILE_SECRET_KEY`: production Turnstile secret key.
 
-Optional secret:
+Optional repository variable:
 
 - `CLOUDFLARE_ACCOUNT_ID`: Cloudflare account ID for the target account. This is only required when the API token can access more than one Cloudflare account.
 
