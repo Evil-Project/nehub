@@ -1,0 +1,67 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      D1_DATABASE_NAME: ${{ vars.D1_DATABASE_NAME }}
+      D1_LOCATION: ${{ vars.D1_LOCATION }}
+      R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME }}
+      R2_LOCATION: ${{ vars.R2_LOCATION }}
+      PUBLIC_APP_NAME: ${{ vars.PUBLIC_APP_NAME }}
+      PUBLIC_APP_URL: ${{ vars.PUBLIC_APP_URL }}
+      PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.PUBLIC_TURNSTILE_SITE_KEY }}
+      AUTH_EMAIL_FROM: ${{ vars.AUTH_EMAIL_FROM }}
+      MATURE_RESTRICTED_REGIONS: ${{ vars.MATURE_RESTRICTED_REGIONS }}
+      TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
+      CI_PRODUCTION_DEPLOY: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      - name: Build
+        run: npm run build
+
+      - name: Provision Cloudflare resources
+        id: provision
+        run: node scripts/provision-cloudflare.mjs
+
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply "${{ steps.provision.outputs.d1_database_name }}" --remote --config "${{ steps.provision.outputs.wrangler_config }}"
+
+      - name: Deploy Worker
+        run: |
+          if [ "${{ steps.provision.outputs.has_secrets }}" = "true" ]; then
+            npx wrangler deploy --config "${{ steps.provision.outputs.wrangler_config }}" --secrets-file "${{ steps.provision.outputs.secrets_file }}"
+          else
+            npx wrangler deploy --config "${{ steps.provision.outputs.wrangler_config }}"
+          fi
