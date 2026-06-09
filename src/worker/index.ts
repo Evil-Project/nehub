@@ -2464,14 +2464,21 @@ const verifyTurnstile = async (
     formData.append("remoteip", remoteIp);
   }
 
-  const response = await fetch(
-    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-    {
-      method: "POST",
-      body: formData
-    }
-  );
-  const result = (await response.json()) as TurnstileResponse;
+  let result: TurnstileResponse;
+  try {
+    const response = await fetch(
+      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+      {
+        method: "POST",
+        body: formData
+      }
+    );
+    result = (await response.json()) as TurnstileResponse;
+  } catch (error) {
+    console.warn("Unable to verify Turnstile challenge", error);
+    return { ok: false, message: "Challenge verification is temporarily unavailable." };
+  }
+
   if (!result.success) {
     return { ok: false, message: "Turnstile challenge failed." };
   }
@@ -2745,21 +2752,41 @@ const createEmailChangeToken = async (
 
 const createSession = async (db: D1Database, context: AppContext, userId: string) => {
   const token = randomToken(32);
-  await db
-    .prepare(
-      `INSERT INTO auth_sessions
-        (id, user_id, session_hash, expires_at, user_agent, client_ip_hash)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    )
-    .bind(
-      `ses_${crypto.randomUUID().replaceAll("-", "")}`,
-      userId,
-      await sha256(token),
-      toIsoAfterSeconds(sessionDurationSeconds),
-      requestUserAgent(context),
-      await sha256(requestClientIp(context))
-    )
-    .run();
+  const sessionId = `ses_${crypto.randomUUID().replaceAll("-", "")}`;
+  const sessionHash = await sha256(token);
+  const expiresAt = toIsoAfterSeconds(sessionDurationSeconds);
+  try {
+    await db
+      .prepare(
+        `INSERT INTO auth_sessions
+          (id, user_id, session_hash, expires_at, user_agent, client_ip_hash)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        sessionId,
+        userId,
+        sessionHash,
+        expiresAt,
+        requestUserAgent(context),
+        await sha256(requestClientIp(context))
+      )
+      .run();
+  } catch (error) {
+    if (!isMissingColumnError(error, ["user_agent", "client_ip_hash"])) {
+      throw error;
+    }
+    console.warn(
+      "auth_sessions metadata columns are missing; run the latest D1 migrations."
+    );
+    await db
+      .prepare(
+        `INSERT INTO auth_sessions
+          (id, user_id, session_hash, expires_at)
+         VALUES (?, ?, ?, ?)`
+      )
+      .bind(sessionId, userId, sessionHash, expiresAt)
+      .run();
+  }
   return token;
 };
 
@@ -2867,6 +2894,14 @@ const authUnavailable = (context: AppContext) =>
 const isUniqueConstraintError = (error: unknown) =>
   error instanceof Error &&
   /unique|constraint|users\.email|users\.username/i.test(error.message);
+
+const isMissingColumnError = (error: unknown, columnNames: string[]) =>
+  error instanceof Error &&
+  columnNames.some((columnName) =>
+    new RegExp(`no such column: .*\\b${columnName}\\b|table .* has no column named ${columnName}`, "i").test(
+      error.message
+    )
+  );
 
 const requireAdmin = async (context: AppContext) => {
   if (!context.env.DB) {
