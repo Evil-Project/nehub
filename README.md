@@ -188,6 +188,7 @@ Add these repository secrets before using the workflow:
 
 - `CLOUDFLARE_API_TOKEN`: Cloudflare API token with permission to create/read D1 databases, create/read R2 buckets, deploy Workers, and upload Worker secrets.
 - `TURNSTILE_SECRET_KEY`: production Turnstile secret key.
+- `ADMIN_BOOTSTRAP_PASSWORD`: first-run password for the default admin account. Use a strong unique value, then remove or rotate it after the first successful admin login.
 
 Optional repository variable:
 
@@ -212,7 +213,7 @@ The workflow installs dependencies with `npm ci`, runs `npm run check`, builds w
 
 Provisioning is idempotent and automatic on the first run. The script infers the Cloudflare account ID when possible, reuses an existing D1 database or R2 bucket by name, creates missing ones, writes a temporary CI Wrangler config with the discovered D1 database ID, and deploys the Worker vars from that generated config.
 
-Cloudflare Email Routing and the Turnstile widget still need to exist in the Cloudflare account. The workflow publishes their configured production values, but it does not create Email Routing, generate Turnstile keys, or deploy `ADMIN_BOOTSTRAP_PASSWORD`.
+Cloudflare Email Routing and the Turnstile widget still need to exist in the Cloudflare account. The workflow publishes their configured production values, uploads `ADMIN_BOOTSTRAP_PASSWORD` from the GitHub secret when set, but it does not create Email Routing or generate Turnstile keys.
 
 ## API Surface
 

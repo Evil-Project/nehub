@@ -298,7 +298,7 @@ mkdirSync(dirname(ciConfigPath), { recursive: true });
 writeFileSync(ciConfigPath, `${JSON.stringify(ciConfig, null, 2)}\n`);
 
 const secrets = {};
-for (const key of ["TURNSTILE_SECRET_KEY"]) {
+for (const key of ["TURNSTILE_SECRET_KEY", "ADMIN_BOOTSTRAP_PASSWORD"]) {
   const value = getEnv(key);
   if (value) {
     secrets[key] = value;
