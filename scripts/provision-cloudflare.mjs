@@ -29,6 +29,15 @@ const runWrangler = (args, options = {}) => {
   return result;
 };
 
+const runWranglerWithHint = (args, hint, options = {}) => {
+  try {
+    return runWrangler(args, options);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message}\n\n${hint}`);
+  }
+};
+
 const getEnv = (name, fallback = "") => {
   const value = process.env[name];
   return value && value.trim() ? value.trim() : fallback;
@@ -74,16 +83,57 @@ const assertCloudflareAccountId = (value) => {
   }
 };
 
-const resolveCloudflareAccountId = () => {
-  const configuredAccountId = getEnv("CLOUDFLARE_ACCOUNT_ID");
-  if (configuredAccountId) {
-    assertCloudflareAccountId(configuredAccountId);
-    return configuredAccountId;
+const getCloudflareAccounts = (required) => {
+  const result = runWrangler(["whoami", "--json"], {
+    allowFailure: !required,
+    capture: true
+  });
+
+  if (result.status !== 0) {
+    return [];
   }
 
-  const result = runWrangler(["whoami", "--json"], { capture: true });
   const payload = JSON.parse(result.stdout || "{}");
-  const accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+  return Array.isArray(payload.accounts) ? payload.accounts : [];
+};
+
+const resolveCloudflareAccountId = () => {
+  const configuredAccountId = getEnv("CLOUDFLARE_ACCOUNT_ID");
+  const configuredAccountIdIsValid =
+    configuredAccountId && /^[0-9a-f]{32}$/i.test(configuredAccountId);
+  const accounts = getCloudflareAccounts(!configuredAccountIdIsValid);
+
+  if (configuredAccountId) {
+    if (!configuredAccountIdIsValid) {
+      if (accounts.length === 1 && accounts[0]?.id) {
+        process.env.CLOUDFLARE_ACCOUNT_ID = accounts[0].id;
+        console.log(
+          `Ignoring invalid CLOUDFLARE_ACCOUNT_ID and using Cloudflare account ${accounts[0].name ?? accounts[0].id}`
+        );
+        return accounts[0].id;
+      }
+      assertCloudflareAccountId(configuredAccountId);
+    }
+
+    if (accounts.length === 0 || accounts.some((account) => account.id === configuredAccountId)) {
+      return configuredAccountId;
+    }
+
+    if (accounts.length === 1 && accounts[0]?.id) {
+      process.env.CLOUDFLARE_ACCOUNT_ID = accounts[0].id;
+      console.log(
+        `Ignoring CLOUDFLARE_ACCOUNT_ID because the token only has access to ${accounts[0].name ?? accounts[0].id}`
+      );
+      return accounts[0].id;
+    }
+
+    const accountList = accounts
+      .map((account) => `${account.name ?? "Unnamed account"} (${account.id})`)
+      .join(", ");
+    throw new Error(
+      `CLOUDFLARE_ACCOUNT_ID does not match an account available to the token. Available accounts: ${accountList}`
+    );
+  }
 
   if (accounts.length === 1 && accounts[0]?.id) {
     process.env.CLOUDFLARE_ACCOUNT_ID = accounts[0].id;
@@ -179,7 +229,11 @@ if (isProductionDeploy) {
 }
 
 const findD1Database = () => {
-  const result = runWrangler(["d1", "list", "--json"], { capture: true });
+  const result = runWranglerWithHint(
+    ["d1", "list", "--json"],
+    "Automatic first-run provisioning needs the Cloudflare API token to include D1 read/edit access for the target account.",
+    { capture: true }
+  );
   const databases = JSON.parse(result.stdout || "[]");
   return databases.find((database) => database.name === databaseName);
 };
@@ -190,7 +244,10 @@ if (!database) {
   if (d1Location) {
     args.push("--location", d1Location);
   }
-  runWrangler(args);
+  runWranglerWithHint(
+    args,
+    "Automatic first-run provisioning needs the Cloudflare API token to include D1 edit access for the target account."
+  );
   database = findD1Database();
 }
 
@@ -199,17 +256,24 @@ if (!databaseId) {
   throw new Error(`Could not resolve D1 database ID for ${databaseName}`);
 }
 
-const bucketInfo = runWrangler(["r2", "bucket", "info", bucketName], {
-  allowFailure: true,
-  capture: true
-});
+const bucketInfo = runWranglerWithHint(
+  ["r2", "bucket", "info", bucketName],
+  "Automatic first-run provisioning needs the Cloudflare API token to include R2 read/edit access for the target account.",
+  {
+    allowFailure: true,
+    capture: true
+  }
+);
 
 if (bucketInfo.status !== 0) {
   const args = ["r2", "bucket", "create", bucketName];
   if (r2Location) {
     args.push("--location", r2Location);
   }
-  runWrangler(args);
+  runWranglerWithHint(
+    args,
+    "Automatic first-run provisioning needs the Cloudflare API token to include R2 edit access for the target account."
+  );
 }
 
 const ciConfig = {
