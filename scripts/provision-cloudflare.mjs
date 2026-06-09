@@ -18,7 +18,12 @@ const runWrangler = (args, options = {}) => {
   });
 
   if (!options.allowFailure && result.status !== 0) {
-    throw new Error(`wrangler ${args.join(" ")} failed`);
+    const stderr = result.stderr?.trim();
+    const stdout = result.stdout?.trim();
+    const detail = [stderr, stdout].filter(Boolean).join("\n");
+    throw new Error(
+      [`wrangler ${args.join(" ")} failed`, detail].filter(Boolean).join("\n")
+    );
   }
 
   return result;
@@ -61,6 +66,45 @@ const assertProductionValue = (name, value) => {
   }
 };
 
+const assertCloudflareAccountId = (value) => {
+  if (!/^[0-9a-f]{32}$/i.test(value)) {
+    throw new Error(
+      "CLOUDFLARE_ACCOUNT_ID must be the 32-character Cloudflare account ID, not an account name, email, or zone ID"
+    );
+  }
+};
+
+const resolveCloudflareAccountId = () => {
+  const configuredAccountId = getEnv("CLOUDFLARE_ACCOUNT_ID");
+  if (configuredAccountId) {
+    assertCloudflareAccountId(configuredAccountId);
+    return configuredAccountId;
+  }
+
+  const result = runWrangler(["whoami", "--json"], { capture: true });
+  const payload = JSON.parse(result.stdout || "{}");
+  const accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+
+  if (accounts.length === 1 && accounts[0]?.id) {
+    process.env.CLOUDFLARE_ACCOUNT_ID = accounts[0].id;
+    console.log(`Using Cloudflare account ${accounts[0].name ?? accounts[0].id}`);
+    return accounts[0].id;
+  }
+
+  if (accounts.length > 1) {
+    const accountList = accounts
+      .map((account) => `${account.name ?? "Unnamed account"} (${account.id})`)
+      .join(", ");
+    throw new Error(
+      `CLOUDFLARE_ACCOUNT_ID must be set when the token can access multiple accounts: ${accountList}`
+    );
+  }
+
+  throw new Error(
+    "CLOUDFLARE_ACCOUNT_ID could not be inferred. Check CLOUDFLARE_API_TOKEN permissions or set CLOUDFLARE_ACCOUNT_ID explicitly."
+  );
+};
+
 const writeGithubOutput = (outputs) => {
   const outputFile = process.env.GITHUB_OUTPUT;
   if (!outputFile) {
@@ -69,6 +113,16 @@ const writeGithubOutput = (outputs) => {
 
   const lines = Object.entries(outputs).map(([key, value]) => `${key}=${value}`);
   writeFileSync(outputFile, `${lines.join("\n")}\n`, { flag: "a" });
+};
+
+const writeGithubEnv = (values) => {
+  const envFile = process.env.GITHUB_ENV;
+  if (!envFile) {
+    return;
+  }
+
+  const lines = Object.entries(values).map(([key, value]) => `${key}=${value}`);
+  writeFileSync(envFile, `${lines.join("\n")}\n`, { flag: "a" });
 };
 
 const config = JSON.parse(stripJsonc(readFileSync(sourceConfigPath, "utf8")));
@@ -109,9 +163,11 @@ const vars = {
   )
 };
 
+let accountId = "";
 if (isProductionDeploy) {
   requireEnv("CLOUDFLARE_API_TOKEN");
-  requireEnv("CLOUDFLARE_ACCOUNT_ID");
+  accountId = resolveCloudflareAccountId();
+  writeGithubEnv({ CLOUDFLARE_ACCOUNT_ID: accountId });
   assertProductionValue("TURNSTILE_SECRET_KEY", requireEnv("TURNSTILE_SECRET_KEY"));
   assertProductionValue("PUBLIC_APP_URL", vars.PUBLIC_APP_URL);
   assertProductionValue("PUBLIC_TURNSTILE_SITE_KEY", vars.PUBLIC_TURNSTILE_SITE_KEY);
@@ -195,6 +251,7 @@ writeGithubOutput({
   wrangler_config: ciConfigPath,
   secrets_file: hasSecrets ? ciSecretsPath : "",
   has_secrets: hasSecrets ? "true" : "false",
+  cloudflare_account_id: accountId,
   d1_database_name: databaseName,
   r2_bucket_name: bucketName
 });
