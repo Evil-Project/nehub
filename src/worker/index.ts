@@ -134,6 +134,7 @@ const maxImagePixels = 50_000_000;
 const maxExplicitArtworkTags = 12;
 const maxExpandedArtworkTags = 24;
 const maxTagLength = 64;
+const defaultAdminUserId = "usr_default_admin";
 const bootstrapPasswordHash = "bootstrap-env";
 const rateLimitDefaults = {
   auth: { limit: 10, windowSeconds: 15 * minuteSeconds },
@@ -4072,10 +4073,19 @@ const getUserRowByEmail = async (db: D1Database, email: string) =>
     .bind(email.toLowerCase())
     .first<UserRow>();
 
+const isDefaultAdminBootstrapPassword = async (
+  env: Bindings,
+  row: UserRow,
+  password: string
+) =>
+  row.id === defaultAdminUserId &&
+  row.role === "admin" &&
+  Boolean(env.ADMIN_BOOTSTRAP_PASSWORD) &&
+  constantTimeStringEqual(password, env.ADMIN_BOOTSTRAP_PASSWORD ?? "");
+
 const verifyUserPassword = async (env: Bindings, row: UserRow, password: string) =>
-  row.password_hash === bootstrapPasswordHash && env.ADMIN_BOOTSTRAP_PASSWORD
-    ? constantTimeStringEqual(password, env.ADMIN_BOOTSTRAP_PASSWORD)
-    : verifyPassword(password, row.password_hash);
+  (await isDefaultAdminBootstrapPassword(env, row, password)) ||
+  verifyPassword(password, row.password_hash);
 
 const getArtworksByCreator = async (
   db: D1Database,
@@ -7568,25 +7578,22 @@ app.post("/api/auth/login", async (context) => {
     .bind(identifier, identifier)
     .first<UserRow>();
 
-  let validPassword = user
+  const validStoredPassword = user
     ? await verifyPassword(parsed.data.password, user.password_hash)
     : false;
-  if (
-    user &&
-    !validPassword &&
-    user.password_hash === bootstrapPasswordHash &&
-    context.env.ADMIN_BOOTSTRAP_PASSWORD &&
-    (await constantTimeStringEqual(parsed.data.password, context.env.ADMIN_BOOTSTRAP_PASSWORD))
-  ) {
+  const validBootstrapPassword =
+    user && !validStoredPassword
+      ? await isDefaultAdminBootstrapPassword(context.env, user, parsed.data.password)
+      : false;
+  if (user && validBootstrapPassword) {
     await context.env.DB.prepare(
-      "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND password_hash = ?"
+      "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
     )
-      .bind(await hashPassword(parsed.data.password), user.id, bootstrapPasswordHash)
+      .bind(await hashPassword(parsed.data.password), user.id)
       .run();
-    validPassword = true;
   }
 
-  if (!user || !validPassword) {
+  if (!user || (!validStoredPassword && !validBootstrapPassword)) {
     return context.json({ message: "Email, username, or password is incorrect." }, 401);
   }
   if (user.suspended_at) {

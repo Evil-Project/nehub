@@ -59,7 +59,7 @@ The default administrator account is:
 - Email or username: `admin@nehub.local` or `admin`
 - Password: the `ADMIN_BOOTSTRAP_PASSWORD` value on the first successful login
 
-After the first successful admin login, the Worker stores a normal password hash in local D1. If the account was already bootstrapped earlier, keep using the saved local password instead of changing the `ADMIN_BOOTSTRAP_PASSWORD` value.
+After a successful admin bootstrap login, the Worker stores a normal password hash in local D1. If the default admin account is inaccessible later, start Wrangler with a new `ADMIN_BOOTSTRAP_PASSWORD` value and sign in with that value to recover access.
 
 Browser checks:
 
@@ -165,7 +165,7 @@ The schema creates a locked default administrator account:
 
 - Email or username: `admin@nehub.local` or `admin`
 
-Set `ADMIN_BOOTSTRAP_PASSWORD` only for the first admin login. After a successful login, the Worker stores a normal password hash in D1. Use a strong unique password and remove or rotate the bootstrap secret before exposing a deployed environment.
+Set `ADMIN_BOOTSTRAP_PASSWORD` for the first admin login. After a successful bootstrap login, the Worker stores a normal password hash in D1. Use a strong unique password and remove the bootstrap secret before exposing a deployed environment; set a new value only when the default admin account needs recovery.
 
 Apply the schema:
 
