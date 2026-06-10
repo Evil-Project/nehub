@@ -830,26 +830,33 @@ const verifyPassword = async (password: string, storedHash: string) => {
     return false;
   }
 
-  const salt = fromBase64Url(saltValue);
-  const expected = fromBase64Url(hashValue);
-  const key = await crypto.subtle.importKey(
-    "raw",
-    textEncoder.encode(password),
-    "PBKDF2",
-    false,
-    ["deriveBits"]
-  );
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: "PBKDF2",
-      hash: "SHA-256",
-      salt,
-      iterations
-    },
-    key,
-    expected.length * 8
-  );
-  return constantTimeEqual(new Uint8Array(bits), expected);
+  try {
+    const salt = fromBase64Url(saltValue);
+    const expected = fromBase64Url(hashValue);
+    if (salt.length === 0 || expected.length === 0) {
+      return false;
+    }
+    const key = await crypto.subtle.importKey(
+      "raw",
+      textEncoder.encode(password),
+      "PBKDF2",
+      false,
+      ["deriveBits"]
+    );
+    const bits = await crypto.subtle.deriveBits(
+      {
+        name: "PBKDF2",
+        hash: "SHA-256",
+        salt,
+        iterations
+      },
+      key,
+      expected.length * 8
+    );
+    return constantTimeEqual(new Uint8Array(bits), expected);
+  } catch {
+    return false;
+  }
 };
 
 const getCookie = (request: Request, name: string) => {

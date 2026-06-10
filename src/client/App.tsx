@@ -212,12 +212,9 @@ const profileVisibilityOptions: {
   { value: "private", label: "Private", icon: Lock }
 ];
 
-const sortOptions: { value: SortMode; label: string; icon: typeof Grid3X3 }[] = [
+const homeSortOptions: { value: SortMode; label: string; icon: typeof Grid3X3 }[] = [
   { value: "latest", label: "Latest", icon: Grid3X3 },
-  { value: "following", label: "Following", icon: Sparkles },
-  { value: "subscriptions", label: "Tags", icon: Bell },
-  { value: "popular", label: "Popular", icon: Flame },
-  { value: "rising", label: "Rising", icon: TrendingUp }
+  { value: "following", label: "Following", icon: Sparkles }
 ];
 
 const collectionDiscoverySortOptions: {
@@ -3040,18 +3037,14 @@ function App() {
               </div>
 
               <div className="work-tabs" aria-label="Sort artwork">
-                {sortOptions.map((option) => {
+                {homeSortOptions.map((option) => {
                   const Icon = option.icon;
                   return (
                     <button
                       key={option.value}
                       className={classNames("work-tab", sort === option.value && "is-active")}
                       type="button"
-                      onClick={() =>
-                        option.value === "subscriptions"
-                          ? showTagSubscriptions()
-                          : setSort(option.value)
-                      }
+                      onClick={() => setSort(option.value)}
                     >
                       <Icon size={16} />
                       {option.label}
