@@ -3493,6 +3493,10 @@ h1 {
   max-width: 720px;
 }
 
+.settings-page > .settings-form + .settings-form {
+  margin-top: 14px;
+}
+
 .settings-form label {
   display: grid;
   gap: 7px;
@@ -3535,6 +3539,15 @@ h1 {
   box-shadow: var(--shadow);
 }
 
+.settings-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-panel .panel-title {
+  margin-bottom: 0;
+}
+
 .danger-settings-panel {
   border-color: rgba(220, 38, 38, 0.24);
   background: rgba(255, 241, 242, 0.68);
@@ -3557,13 +3570,17 @@ h1 {
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 4px;
+  margin-top: 0;
 }
 
 .settings-message {
   margin: 14px 0 0;
   color: var(--blue-dark);
   font-weight: 800;
+}
+
+.settings-panel .settings-message {
+  margin: 0;
 }
 
 .settings-help {
@@ -3576,8 +3593,8 @@ h1 {
 
 .notification-preference-list {
   display: grid;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 4px;
+  margin-top: 0;
 }
 
 .notification-preference-list .toggle-row span {
@@ -3587,6 +3604,16 @@ h1 {
   gap: 8px;
   color: var(--blue-dark);
   overflow-wrap: anywhere;
+}
+
+.notification-preference-list .settings-toggle {
+  min-height: 36px;
+}
+
+.password-field-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .session-list {
@@ -4359,6 +4386,10 @@ h1 {
   .settings-heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .password-field-grid {
+    grid-template-columns: 1fr;
   }
 
   .feed-controls,

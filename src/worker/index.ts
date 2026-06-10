@@ -116,6 +116,11 @@ type AppContext = Context<{ Bindings: Bindings }>;
 
 const app = new Hono<{ Bindings: Bindings }>();
 
+app.onError((error, context) => {
+  console.error("Unhandled Worker error", error);
+  return context.json({ message: "Internal server error." }, 500);
+});
+
 const sessionCookieName = "nehub_session";
 const csrfCookieName = "nehub_csrf";
 const csrfHeaderName = "x-csrf-token";
@@ -867,7 +872,12 @@ const getCookie = (request: Request, name: string) => {
   for (const part of header.split(";")) {
     const [rawKey, ...rawValue] = part.trim().split("=");
     if (rawKey === name) {
-      return decodeURIComponent(rawValue.join("="));
+      const value = rawValue.join("=");
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
     }
   }
   return undefined;
@@ -7593,11 +7603,15 @@ app.post("/api/auth/login", async (context) => {
       ? await isDefaultAdminBootstrapPassword(context.env, user, parsed.data.password)
       : false;
   if (user && validBootstrapPassword) {
-    await context.env.DB.prepare(
-      "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-    )
-      .bind(await hashPassword(parsed.data.password), user.id)
-      .run();
+    try {
+      await context.env.DB.prepare(
+        "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+      )
+        .bind(await hashPassword(parsed.data.password), user.id)
+        .run();
+    } catch (error) {
+      console.warn("Unable to persist default admin bootstrap password hash", error);
+    }
   }
 
   if (!user || (!validStoredPassword && !validBootstrapPassword)) {
@@ -7607,9 +7621,18 @@ app.post("/api/auth/login", async (context) => {
     return context.json({ message: "This account is suspended." }, 403);
   }
 
-  const sessionToken = await createSession(context.env.DB, context, user.id);
-  context.header("Set-Cookie", sessionCookie(context, sessionToken), { append: true });
-  const csrfToken = await issueCsrfToken(context, sessionToken);
+  let sessionToken: string;
+  let csrfToken: string;
+  try {
+    sessionToken = await createSession(context.env.DB, context, user.id);
+    context.header("Set-Cookie", sessionCookie(context, sessionToken), { append: true });
+    csrfToken = await issueCsrfToken(context, sessionToken);
+  } catch (error) {
+    console.error("Unable to create login session", error);
+    context.header("Set-Cookie", clearSessionCookie(context), { append: true });
+    context.header("Set-Cookie", clearCsrfCookie(context), { append: true });
+    return context.json({ message: "Unable to create login session." }, 500);
+  }
 
   return context.json<AuthResponse>({
     user: authUserFromRow(user),

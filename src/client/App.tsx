@@ -8645,6 +8645,63 @@ function PrivacySecurityPage({
             </div>
           </form>
 
+          <form className="settings-form password-form" onSubmit={handlePasswordSubmit}>
+            <section className="settings-panel">
+              <div className="panel-title">
+                <KeyRound size={18} />
+                Password
+              </div>
+              <div className="password-field-grid">
+                <label>
+                  Current password
+                  <input
+                    value={currentPassword}
+                    type="password"
+                    autoComplete="current-password"
+                    maxLength={160}
+                    onChange={(event) => setCurrentPassword(event.target.value)}
+                    required
+                  />
+                </label>
+                <label>
+                  New password
+                  <input
+                    value={newPassword}
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={10}
+                    maxLength={160}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                    required
+                  />
+                </label>
+                <label>
+                  Confirm new password
+                  <input
+                    value={confirmPassword}
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={10}
+                    maxLength={160}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
+                    required
+                  />
+                </label>
+              </div>
+              <p className="settings-help">
+                Changing your password keeps this browser signed in and revokes other active
+                sessions.
+              </p>
+              <div className="settings-actions">
+                <button className="secondary-button" type="submit" disabled={passwordSaving}>
+                  <KeyRound size={17} />
+                  {passwordSaving ? "Saving" : "Change password"}
+                </button>
+              </div>
+              {passwordMessage ? <p className="settings-message">{passwordMessage}</p> : null}
+            </section>
+          </form>
+
           <form
             className="settings-form notification-preferences-form"
             onSubmit={handleNotificationPreferencesSubmit}
@@ -8811,60 +8868,6 @@ function PrivacySecurityPage({
             </div>
           </section>
 
-          <form className="settings-form password-form" onSubmit={handlePasswordSubmit}>
-            <section className="settings-panel">
-              <div className="panel-title">
-                <KeyRound size={18} />
-                Password
-              </div>
-              <label>
-                Current password
-                <input
-                  value={currentPassword}
-                  type="password"
-                  autoComplete="current-password"
-                  maxLength={160}
-                  onChange={(event) => setCurrentPassword(event.target.value)}
-                  required
-                />
-              </label>
-              <label>
-                New password
-                <input
-                  value={newPassword}
-                  type="password"
-                  autoComplete="new-password"
-                  minLength={10}
-                  maxLength={160}
-                  onChange={(event) => setNewPassword(event.target.value)}
-                  required
-                />
-              </label>
-              <label>
-                Confirm new password
-                <input
-                  value={confirmPassword}
-                  type="password"
-                  autoComplete="new-password"
-                  minLength={10}
-                  maxLength={160}
-                  onChange={(event) => setConfirmPassword(event.target.value)}
-                  required
-                />
-              </label>
-              <p className="settings-help">
-                Changing your password keeps this browser signed in and revokes other active
-                sessions.
-              </p>
-              <div className="settings-actions">
-                <button className="secondary-button" type="submit" disabled={passwordSaving}>
-                  <KeyRound size={17} />
-                  {passwordSaving ? "Saving" : "Change password"}
-                </button>
-              </div>
-            </section>
-          </form>
-
           <form className="settings-form email-change-form" onSubmit={handleEmailChangeSubmit}>
             <section className="settings-panel">
               <div className="panel-title">
@@ -9027,7 +9030,6 @@ function PrivacySecurityPage({
       {notificationPreferencesMessage ? (
         <p className="settings-message">{notificationPreferencesMessage}</p>
       ) : null}
-      {passwordMessage ? <p className="settings-message">{passwordMessage}</p> : null}
       {emailChangeMessage ? <p className="settings-message">{emailChangeMessage}</p> : null}
       {blockedUsersMessage ? <p className="settings-message">{blockedUsersMessage}</p> : null}
       {exportMessage ? <p className="settings-message">{exportMessage}</p> : null}
