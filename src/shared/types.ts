@@ -721,6 +721,7 @@ export type PublicProfile = {
   username: string;
   displayName: string;
   avatarUrl: string;
+  websiteUrl: string;
   bio: string;
   followerCount: number;
   following: boolean;
@@ -776,6 +777,7 @@ export type ProfileSettingsResponse = {
     username: string;
     displayName: string;
     avatarUrl: string;
+    websiteUrl: string;
     bio: string;
   };
   message?: string;
@@ -800,6 +802,7 @@ export type AccountExportResponse = {
     username: string;
     displayName: string;
     avatarUrl: string;
+    websiteUrl: string;
     bio: string;
     joinedAt: string;
   };

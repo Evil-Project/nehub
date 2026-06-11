@@ -1,0 +1,1 @@
+ALTER TABLE creators ADD COLUMN website_url TEXT NOT NULL DEFAULT '';

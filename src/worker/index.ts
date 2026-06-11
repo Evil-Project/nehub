@@ -481,10 +481,29 @@ const passwordResetConfirmSchema = z.object({
   turnstileToken: z.string().min(1).max(4096)
 });
 
+const websiteUrlSchema = z
+  .string()
+  .trim()
+  .max(500)
+  .optional()
+  .default("")
+  .refine((value) => {
+    if (!value) {
+      return true;
+    }
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" || url.protocol === "http:";
+    } catch {
+      return false;
+    }
+  });
+
 const profileSettingsSchema = z.object({
   displayName: z.string().trim().min(2).max(60),
   username: z.string().trim().toLowerCase().min(3).max(32).regex(/^[a-z0-9_-]+$/),
   avatarUrl: z.string().trim().max(500).optional().default(""),
+  websiteUrl: websiteUrlSchema,
   bio: z.string().trim().max(500).optional().default("")
 });
 
@@ -1869,6 +1888,7 @@ type CurrentUser = AuthUser & {
 
 type ProfileUserRow = UserRow & {
   avatar_url: string | null;
+  website_url: string | null;
   bio: string | null;
   follower_count: number | null;
   following: number | null;
@@ -4239,6 +4259,7 @@ const profileFromRow = (
   username: row.username,
   displayName: row.display_name,
   avatarUrl: row.avatar_url ?? "",
+  websiteUrl: row.website_url ?? "",
   bio: row.bio ?? "",
   followerCount: row.follower_count ?? 0,
   following: Boolean(row.following),
@@ -4298,6 +4319,7 @@ const getProfileUser = async (db: D1Database, username: string) =>
         users.created_at,
         users.updated_at,
         creators.avatar_url,
+        creators.website_url,
         creators.bio,
         creators.follower_count,
         creators.following
@@ -5075,19 +5097,20 @@ const getArtworksByIds = async (
 const ensureCreatorProfile = async (
   db: D1Database,
   user: CurrentUser,
-  profile: { username: string; displayName: string; avatarUrl: string; bio: string }
+  profile: { username: string; displayName: string; avatarUrl: string; websiteUrl: string; bio: string }
 ) => {
   await db
     .prepare(
-      `INSERT INTO creators (id, handle, display_name, avatar_url, bio)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO creators (id, handle, display_name, avatar_url, bio, website_url)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          handle = excluded.handle,
          display_name = excluded.display_name,
          avatar_url = excluded.avatar_url,
-         bio = excluded.bio`
+         bio = excluded.bio,
+         website_url = excluded.website_url`
     )
-    .bind(user.id, profile.username, profile.displayName, profile.avatarUrl, profile.bio)
+    .bind(user.id, profile.username, profile.displayName, profile.avatarUrl, profile.bio, profile.websiteUrl)
     .run();
 };
 
@@ -10073,6 +10096,7 @@ app.get("/api/settings/profile", async (context) => {
       username: user.username,
       displayName: user.displayName,
       avatarUrl: profileUser?.avatar_url ?? "",
+      websiteUrl: profileUser?.website_url ?? "",
       bio: profileUser?.bio ?? ""
     }
   });
@@ -10132,6 +10156,7 @@ app.put("/api/settings/profile", async (context) => {
       username: updated.username,
       displayName: updated.display_name,
       avatarUrl: updated.avatar_url ?? "",
+      websiteUrl: updated.website_url ?? "",
       bio: updated.bio ?? ""
     }
   });
@@ -10204,6 +10229,7 @@ app.post("/api/settings/profile/avatar", async (context) => {
     username: user.username,
     displayName: user.displayName,
     avatarUrl: objectUrl,
+    websiteUrl: previousProfile?.website_url ?? "",
     bio: previousProfile?.bio ?? ""
   });
   await reindexCreatorSearchIndex(db, user.id);
@@ -10229,6 +10255,7 @@ app.post("/api/settings/profile/avatar", async (context) => {
       username: updated.username,
       displayName: updated.display_name,
       avatarUrl: updated.avatar_url ?? "",
+      websiteUrl: updated.website_url ?? "",
       bio: updated.bio ?? ""
     },
     message: "Profile picture uploaded."
@@ -10537,6 +10564,7 @@ app.get("/api/settings/export", async (context) => {
       username: profile?.username ?? user.username,
       displayName: profile?.display_name ?? user.displayName,
       avatarUrl: profile?.avatar_url ?? "",
+      websiteUrl: profile?.website_url ?? "",
       bio: profile?.bio ?? "",
       joinedAt: profile?.created_at ?? user.createdAt
     },
@@ -10825,24 +10853,27 @@ app.get("/api/settings/email/confirm", async (context) => {
     return context.redirect("/?emailChanged=invalid", 302);
   }
 
-  const existing = await getUserRowByEmail(context.env.DB, row.new_email);
-  if (existing && existing.id !== row.id) {
-    return context.redirect("/?emailChanged=invalid", 302);
-  }
-
   const activeSessionHash = await currentSessionHash(context);
   const activeSession = activeSessionHash
     ? await context.env.DB.prepare(
-        "SELECT id FROM auth_sessions WHERE user_id = ? AND session_hash = ? LIMIT 1"
+        `SELECT id
+         FROM auth_sessions
+         WHERE user_id = ?
+           AND session_hash = ?
+           AND datetime(expires_at) > datetime('now')
+         LIMIT 1`
       )
         .bind(row.id, activeSessionHash)
         .first<{ id: string }>()
     : null;
-  const sessionCleanup = activeSession
-    ? context.env.DB.prepare(
-        "DELETE FROM auth_sessions WHERE user_id = ? AND session_hash <> ?"
-      ).bind(row.id, activeSessionHash)
-    : context.env.DB.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(row.id);
+  if (!activeSession) {
+    return context.redirect("/?emailChanged=security", 302);
+  }
+
+  const existing = await getUserRowByEmail(context.env.DB, row.new_email);
+  if (existing && existing.id !== row.id) {
+    return context.redirect("/?emailChanged=invalid", 302);
+  }
 
   await context.env.DB.batch([
     context.env.DB.prepare(
@@ -10861,7 +10892,9 @@ app.get("/api/settings/email/confirm", async (context) => {
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`
     ).bind(row.new_email, row.id),
-    sessionCleanup
+    context.env.DB.prepare(
+      "DELETE FROM auth_sessions WHERE user_id = ? AND session_hash <> ?"
+    ).bind(row.id, activeSessionHash)
   ]);
 
   await sendSecurityNoticeEmail(context.env, authUserFromRow(row), "Email changed", [
@@ -10880,10 +10913,6 @@ app.get("/api/settings/email/confirm", async (context) => {
     ]
   );
 
-  if (!activeSession) {
-    context.header("Set-Cookie", clearSessionCookie(context), { append: true });
-    context.header("Set-Cookie", clearCsrfCookie(context), { append: true });
-  }
   return context.redirect("/?emailChanged=1", 302);
 });
 

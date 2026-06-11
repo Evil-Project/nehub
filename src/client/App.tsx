@@ -275,6 +275,16 @@ const fullDateFormat = new Intl.DateTimeFormat("en", {
 
 const formatCount = (value: number) => numberFormat.format(value);
 
+const formatFileSize = (bytes: number) => {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${Math.ceil(bytes / 1024)} KB`;
+  }
+  return `${bytes} B`;
+};
+
 const formatDateTime = (value: string) => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "Unknown" : fullDateFormat.format(date);
@@ -330,16 +340,12 @@ const matureAccessLabel = (matureAccess: MatureAccess | null) => {
   return "Mature content is off.";
 };
 
-function DefaultAvatar({
-  className,
-  size = 16
-}: {
-  className?: string;
-  size?: number;
-}) {
+const avatarInitial = (value: string) => value.trim().slice(0, 1).toUpperCase() || "?";
+
+function DefaultAvatar({ className, name }: { className?: string; name: string }) {
   return (
     <span className={classNames("default-avatar", className)} aria-hidden="true">
-      <UserRound size={size} />
+      {avatarInitial(name)}
     </span>
   );
 }
@@ -747,6 +753,8 @@ function App() {
     }
     if (emailChanged === "1") {
       setAuthNotice("Email change confirmed. Your sign-in email was updated successfully.");
+    } else if (emailChanged === "security") {
+      setAuthNotice("Sign in to the requesting account before confirming an email change.");
     } else if (emailChanged === "invalid") {
       setAuthNotice("Email change link is invalid or expired.");
     }
@@ -2646,7 +2654,7 @@ function App() {
     }
   };
 
-  const handleUpload = async (event: FormEvent<HTMLFormElement>) => {
+  const handleUpload = async (event: FormEvent<HTMLFormElement>, files?: File[]) => {
     event.preventDefault();
     if (uploadSubmitting) {
       return false;
@@ -2656,6 +2664,10 @@ function App() {
     setUploadSubmitting(true);
     const form = event.currentTarget;
     const formData = new FormData(form);
+    if (files) {
+      formData.delete("files");
+      files.forEach((file) => formData.append("files", file));
+    }
     try {
       const payload = await new Promise<UploadResponse | { message: string }>((resolve, reject) => {
         const request = new XMLHttpRequest();
@@ -2805,9 +2817,13 @@ function App() {
                         onMouseDown={(event) => event.preventDefault()}
                         onClick={() => openSuggestedCreator(creator.handle)}
                       >
-                        <span className="search-suggestion-avatar">
-                          {creator.avatarUrl ? <img src={creator.avatarUrl} alt="" /> : creator.displayName.slice(0, 1)}
-                        </span>
+                        {creator.avatarUrl ? (
+                          <span className="search-suggestion-avatar">
+                            <img src={creator.avatarUrl} alt="" />
+                          </span>
+                        ) : (
+                          <DefaultAvatar className="search-suggestion-avatar" name={creator.displayName} />
+                        )}
                         <span>
                           <strong>{creator.displayName}</strong>
                           <small>@{creator.handle}</small>
@@ -3439,9 +3455,7 @@ function App() {
                     {creator.avatarUrl ? (
                       <img src={creator.avatarUrl} alt="" />
                     ) : (
-                      <div className="creator-row-avatar-fallback" aria-hidden="true">
-                        {creator.displayName.slice(0, 1).toUpperCase()}
-                      </div>
+                      <DefaultAvatar className="creator-row-avatar-fallback" name={creator.displayName} />
                     )}
                     <div>
                       <strong>{creator.displayName}</strong>
@@ -7879,9 +7893,7 @@ function ProfilePage({
             {profile.avatarUrl ? (
               <img className="profile-avatar" src={profile.avatarUrl} alt="" />
             ) : (
-              <div className="profile-avatar profile-avatar-fallback">
-                {profile.displayName.slice(0, 1).toUpperCase()}
-              </div>
+              <DefaultAvatar className="profile-avatar profile-avatar-fallback" name={profile.displayName} />
             )}
             <div className="profile-copy">
               <p className="eyebrow">Creator profile</p>
@@ -7890,6 +7902,17 @@ function ProfilePage({
                 <AtSign size={15} />
                 {profile.username}
               </div>
+              {profile.websiteUrl ? (
+                <a
+                  className="profile-website"
+                  href={profile.websiteUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <Cloud size={15} />
+                  Website
+                </a>
+              ) : null}
               {ownProfile ? (
                 <span className="profile-visibility-badge">
                   {profile.profileVisibility === "members"
@@ -8059,9 +8082,7 @@ function ProfilePage({
                         {creator.avatarUrl ? (
                           <img src={creator.avatarUrl} alt="" />
                         ) : (
-                          <span className="profile-follow-avatar-fallback">
-                            {creator.displayName.slice(0, 1).toUpperCase()}
-                          </span>
+                          <DefaultAvatar className="profile-follow-avatar-fallback" name={creator.displayName} />
                         )}
                         <span>
                           <strong>{creator.displayName}</strong>
@@ -8262,6 +8283,7 @@ function ProfileSettingsPage({
     username: "",
     displayName: "",
     avatarUrl: "",
+    websiteUrl: "",
     bio: ""
   });
   const [message, setMessage] = useState("");
@@ -8385,7 +8407,7 @@ function ProfileSettingsPage({
       }
     }
   };
-  const avatarInitial = (formState.displayName || formState.username || currentUser?.displayName || "U")
+  const profileInitial = (formState.displayName || formState.username || currentUser?.displayName || "U")
     .slice(0, 1)
     .toUpperCase();
 
@@ -8412,7 +8434,7 @@ function ProfileSettingsPage({
         <form className="settings-form" onSubmit={handleSubmit}>
           <div className="profile-avatar-upload">
             <div className="profile-avatar-upload-preview" aria-hidden="true">
-              {formState.avatarUrl ? <img src={formState.avatarUrl} alt="" /> : <span>{avatarInitial}</span>}
+              {formState.avatarUrl ? <img src={formState.avatarUrl} alt="" /> : <span>{profileInitial}</span>}
             </div>
             <div className="profile-avatar-upload-copy">
               <strong>Profile picture</strong>
@@ -8462,11 +8484,13 @@ function ProfileSettingsPage({
             />
           </label>
           <label>
-            Avatar URL
+            Website URL
             <input
-              value={formState.avatarUrl}
+              value={formState.websiteUrl}
               maxLength={500}
-              onChange={(event) => setFormState((current) => ({ ...current, avatarUrl: event.target.value }))}
+              placeholder="https://example.com"
+              type="url"
+              onChange={(event) => setFormState((current) => ({ ...current, websiteUrl: event.target.value }))}
             />
           </label>
           <label>
@@ -9778,7 +9802,7 @@ function ArtworkCard({
           {artwork.creator.avatarUrl ? (
             <img src={artwork.creator.avatarUrl} alt="" />
           ) : (
-            <DefaultAvatar className="creator-mini-avatar" size={12} />
+            <DefaultAvatar className="creator-mini-avatar" name={artwork.creator.displayName} />
           )}
           <span>{artwork.creator.displayName}</span>
         </button>
@@ -9799,7 +9823,7 @@ function ArtworkCard({
         <button
           className={classNames("bookmark-button", artwork.bookmarked && "is-active")}
           type="button"
-          onClick={() => onBookmark(artwork)}
+          onClick={() => onBookmark(artwork, artwork.bookmarked ? undefined : "public")}
           aria-label={artwork.bookmarked ? `Remove bookmark ${artwork.title}` : `Bookmark ${artwork.title}`}
         >
           <Bookmark size={15} fill={artwork.bookmarked ? "currentColor" : "none"} />
@@ -10475,7 +10499,7 @@ function ArtworkDialog({
             {artwork.creator.avatarUrl ? (
               <img src={artwork.creator.avatarUrl} alt="" />
             ) : (
-              <DefaultAvatar className="artist-block-avatar" size={18} />
+              <DefaultAvatar className="artist-block-avatar" name={artwork.creator.displayName} />
             )}
             <div>
               <strong>{artwork.creator.displayName}</strong>
@@ -10513,7 +10537,7 @@ function ArtworkDialog({
             <button
               className={classNames("secondary-button", artwork.bookmarked && "is-active")}
               type="button"
-              onClick={() => onBookmark(artwork)}
+              onClick={() => onBookmark(artwork, artwork.bookmarked ? undefined : "public")}
             >
               <Bookmark size={17} fill={artwork.bookmarked ? "currentColor" : "none"} />
               {artwork.bookmarked ? "Bookmarked" : "Bookmark"}
@@ -10528,10 +10552,6 @@ function ArtworkDialog({
                 <button className="secondary-button" type="button" onClick={() => setEditing((value) => !value)}>
                   <Settings size={17} />
                   Edit
-                </button>
-                <button className="danger-button" type="button" onClick={() => onDelete(artwork)}>
-                  <X size={17} />
-                  Delete
                 </button>
               </>
             ) : null}
@@ -10736,27 +10756,13 @@ function ArtworkDialog({
                 <button className="secondary-button" type="button" onClick={() => setEditing(false)}>
                   Cancel
                 </button>
+                <button className="danger-button" type="button" onClick={() => onDelete(artwork)}>
+                  <Trash2 size={17} />
+                  Delete
+                </button>
               </div>
             </form>
           ) : null}
-          <div className="bookmark-privacy-control" aria-label="Bookmark visibility">
-            <button
-              className={classNames(artwork.bookmarkVisibility === "public" && "is-active")}
-              type="button"
-              onClick={() => onBookmark(artwork, "public")}
-            >
-              <Eye size={15} />
-              Public
-            </button>
-            <button
-              className={classNames(artwork.bookmarkVisibility === "private" && "is-active")}
-              type="button"
-              onClick={() => onBookmark(artwork, "private")}
-            >
-              <Lock size={15} />
-              Private
-            </button>
-          </div>
           {currentUser ? (
             <section className="collection-control">
               <div className="panel-title">
@@ -10953,7 +10959,7 @@ type UploadDrawerProps = {
   progress: number;
   onClose: () => void;
   onOpenPrivacySecurity: () => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => boolean | Promise<boolean>;
+  onSubmit: (event: FormEvent<HTMLFormElement>, files: File[]) => boolean | Promise<boolean>;
 };
 
 type TagChipEditorProps = {
@@ -11106,21 +11112,56 @@ function UploadDrawer({
   onSubmit
 }: UploadDrawerProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [fileName, setFileName] = useState("Choose image");
-  const [selectedFileCount, setSelectedFileCount] = useState(0);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [turnstileToken, setTurnstileToken] = useState("");
   const [tags, setTags] = useState(["original", "study"]);
   const matureBlocked = matureAccess ? !matureAccess.allowed : true;
   const [localMessage, setLocalMessage] = useState("");
   const storage = currentUser?.storage ?? null;
+  const selectedFileCount = selectedFiles.length;
   const selectedOverStorage = Boolean(
     storage && selectedFileCount > 0 && selectedFileCount > storage.remainingImages
   );
+  const remainingSelectionSlots = Math.max(0, 8 - selectedFiles.length);
+
+  const syncFileInput = (files: File[]) => {
+    if (!fileInputRef.current) {
+      return;
+    }
+    try {
+      const dataTransfer = new DataTransfer();
+      files.forEach((file) => dataTransfer.items.add(file));
+      fileInputRef.current.files = dataTransfer.files;
+    } catch {
+      if (files.length === 0) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
+
+  const updateSelectedFiles = (files: File[]) => {
+    const nextFiles = files.slice(0, 8);
+    setSelectedFiles(nextFiles);
+    syncFileInput(nextFiles);
+    if (files.length > 8) {
+      setLocalMessage("Upload 8 pages or fewer.");
+    } else if (storage && nextFiles.length > storage.remainingImages) {
+      setLocalMessage(
+        `You have ${storage.remainingImages} image slot${storage.remainingImages === 1 ? "" : "s"} available.`
+      );
+    } else if (localMessage) {
+      setLocalMessage("");
+    }
+  };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLocalMessage("");
     if (uploading) {
+      return;
+    }
+    if (selectedFileCount === 0) {
+      setLocalMessage("Add at least one page.");
       return;
     }
     if (storage && selectedFileCount > storage.remainingImages) {
@@ -11133,13 +11174,12 @@ function UploadDrawer({
       setLocalMessage("Complete the check first.");
       return;
     }
-    const published = await onSubmit(event);
+    const published = await onSubmit(event, selectedFiles);
     setTurnstileToken("");
     window.turnstile?.reset();
     if (published) {
       setTags(["original", "study"]);
-      setFileName("Choose image");
-      setSelectedFileCount(0);
+      updateSelectedFiles([]);
     }
   };
 
@@ -11212,15 +11252,44 @@ function UploadDrawer({
               </span>
             </div>
           ) : null}
-          <button
-            className="file-picker"
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-          >
-            <ImageUp size={18} />
-            {fileName}
-          </button>
+          <section className="upload-pages-editor" aria-label="Artwork pages">
+            <div className="image-order-header">
+              <strong>Pages</strong>
+              <span>{selectedFiles.length} / 8 selected</span>
+            </div>
+            <div className="upload-page-list">
+              {selectedFiles.map((file, index) => (
+                <div className="upload-page-row" key={`${file.name}-${file.lastModified}-${index}`}>
+                  <span>Page {index + 1}</span>
+                  <strong>{file.name}</strong>
+                  <small>{formatFileSize(file.size)}</small>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Remove page ${index + 1}`}
+                    onClick={() =>
+                      updateSelectedFiles(selectedFiles.filter((_, fileIndex) => fileIndex !== index))
+                    }
+                    disabled={uploading}
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+              ))}
+              {selectedFiles.length === 0 ? (
+                <p className="muted">Add one or more image pages.</p>
+              ) : null}
+            </div>
+            <button
+              className="file-picker"
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading || remainingSelectionSlots === 0}
+            >
+              <ImageUp size={18} />
+              {remainingSelectionSlots === 0 ? "Page limit reached" : "Add pages"}
+            </button>
+          </section>
           <input
             ref={fileInputRef}
             className="visually-hidden"
@@ -11228,25 +11297,10 @@ function UploadDrawer({
             type="file"
             accept="image/*"
             multiple
-            required
             disabled={uploading}
             onChange={(event) => {
               const files = Array.from(event.target.files ?? []);
-              if (files.length === 0) {
-                setFileName("Choose image");
-              } else if (files.length === 1) {
-                setFileName(files[0].name);
-              } else {
-                setFileName(`${files.length} images selected`);
-              }
-              setSelectedFileCount(files.length);
-              if (storage && files.length > storage.remainingImages) {
-                setLocalMessage(
-                  `You have ${storage.remainingImages} image slot${storage.remainingImages === 1 ? "" : "s"} available.`
-                );
-              } else if (localMessage) {
-                setLocalMessage("");
-              }
+              updateSelectedFiles([...selectedFiles, ...files]);
             }}
           />
           <input name="turnstileToken" type="hidden" value={turnstileToken} />
@@ -11257,10 +11311,12 @@ function UploadDrawer({
               <strong>{uploading ? `${Math.max(1, Math.min(progress || 1, 99))}%` : "Complete"}</strong>
             </div>
           ) : null}
-          <button className="primary-button" type="submit" disabled={uploading}>
-            <ImageUp size={18} />
-            {uploading ? "Uploading" : "Publish"}
-          </button>
+          {!uploading ? (
+            <button className="primary-button" type="submit">
+              <ImageUp size={18} />
+              Publish
+            </button>
+          ) : null}
           {localMessage || message ? (
             <p className="upload-message">{localMessage || message}</p>
           ) : null}
