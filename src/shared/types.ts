@@ -591,6 +591,18 @@ export type AuthResponse = {
   message: string;
 };
 
+export type MfaMethod = "totp" | "email";
+
+export type MfaRequiredResponse = {
+  mfaRequired: true;
+  mfaToken: string;
+  methods: MfaMethod[];
+  maskedEmail: string;
+  message: string;
+};
+
+export type AuthLoginResponse = AuthResponse | MfaRequiredResponse;
+
 export type AccountSession = {
   id: string;
   current: boolean;
@@ -621,6 +633,67 @@ export type PasswordResetConfirmResponse = {
 export type EmailChangeRequestResponse = {
   pendingEmail: string;
   message: string;
+};
+
+export type PasskeySummary = {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+};
+
+export type SecuritySettingsResponse = {
+  twoStep: {
+    totpEnabled: boolean;
+    emailEnabled: boolean;
+  };
+  passkeys: PasskeySummary[];
+  message?: string;
+};
+
+export type TotpSetupResponse = {
+  secret: string;
+  otpauthUrl: string;
+  message: string;
+};
+
+export type PasskeyCredentialDescriptor = {
+  type: "public-key";
+  id: string;
+  transports?: string[];
+};
+
+export type PasskeyRegistrationOptionsResponse = {
+  publicKey: {
+    challenge: string;
+    rp: {
+      id: string;
+      name: string;
+    };
+    user: {
+      id: string;
+      name: string;
+      displayName: string;
+    };
+    pubKeyCredParams: { type: "public-key"; alg: number }[];
+    timeout: number;
+    attestation: "none";
+    authenticatorSelection: {
+      residentKey: "preferred";
+      userVerification: "preferred";
+    };
+    excludeCredentials: PasskeyCredentialDescriptor[];
+  };
+};
+
+export type PasskeyAuthenticationOptionsResponse = {
+  publicKey: {
+    challenge: string;
+    rpId: string;
+    timeout: number;
+    userVerification: "preferred";
+    allowCredentials?: PasskeyCredentialDescriptor[];
+  };
 };
 
 export type AdminUserSummary = {

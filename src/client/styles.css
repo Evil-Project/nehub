@@ -3811,6 +3811,47 @@ h1 {
   margin-top: 0;
 }
 
+.security-option-list,
+.security-setup-form {
+  display: grid;
+  gap: 10px;
+}
+
+.security-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.security-option div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.security-option strong {
+  color: var(--purple);
+  overflow-wrap: anywhere;
+}
+
+.security-option span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.passkey-create-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
 .settings-message {
   margin: 14px 0 0;
   color: var(--blue-dark);
@@ -4792,6 +4833,11 @@ h1 {
     grid-template-columns: 1fr;
   }
 
+  .security-option,
+  .passkey-create-row {
+    grid-template-columns: 1fr;
+  }
+
   .feed-controls,
   .rating-filter {
     width: 100%;
@@ -4806,6 +4852,8 @@ h1 {
   .upload-form .primary-button,
   .dashboard-heading .primary-button,
   .settings-heading .secondary-button,
+  .security-option .secondary-button,
+  .passkey-create-row .secondary-button,
   .settings-actions .primary-button,
   .settings-actions .secondary-button {
     width: 100%;

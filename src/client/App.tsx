@@ -58,6 +58,7 @@ import type {
   AdminArtworkReviewsResponse,
   AdminAuditLogResponse,
   AuthConfigResponse,
+  AuthLoginResponse,
   AuthResponse,
   AuthSessionResponse,
   AuthSessionsResponse,
@@ -115,8 +116,11 @@ import type {
   NotificationsResponse,
   PasswordChangeResponse,
   EmailChangeRequestResponse,
+  MfaMethod,
   PasswordResetConfirmResponse,
   PasswordResetRequestResponse,
+  PasskeyAuthenticationOptionsResponse,
+  PasskeyRegistrationOptionsResponse,
   PrivacySecuritySettingsResponse,
   ProfileFollowListResponse,
   ProfileVisibility,
@@ -129,6 +133,7 @@ import type {
   ReorderArtworkImagesResponse,
   RevokeSessionsResponse,
   SearchSuggestionsResponse,
+  SecuritySettingsResponse,
   SeriesVisibility,
   SortMode,
   TagAlias,
@@ -143,7 +148,8 @@ import type {
   UpdateArtworkResponse,
   UnblockUserResponse,
   UploadResponse,
-  UserRole
+  UserRole,
+  TotpSetupResponse
 } from "../shared/types";
 
 type HealthResponse = {
@@ -319,6 +325,84 @@ const classNames = (...values: Array<string | false | null | undefined>) =>
 const csrfHeaderName = "x-csrf-token";
 const policyUpdatedDate = "June 7, 2026";
 
+const arrayBufferToBase64Url = (buffer: ArrayBuffer) => {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+};
+
+const base64UrlToArrayBuffer = (value: string) => {
+  const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
+};
+
+const passkeyCreationOptions = (
+  response: PasskeyRegistrationOptionsResponse
+): PublicKeyCredentialCreationOptions => ({
+  ...response.publicKey,
+  challenge: base64UrlToArrayBuffer(response.publicKey.challenge),
+  user: {
+    ...response.publicKey.user,
+    id: base64UrlToArrayBuffer(response.publicKey.user.id)
+  },
+  excludeCredentials: response.publicKey.excludeCredentials.map((credential) => ({
+    ...credential,
+    id: base64UrlToArrayBuffer(credential.id),
+    transports: credential.transports as AuthenticatorTransport[] | undefined
+  }))
+});
+
+const passkeyRequestOptions = (
+  response: PasskeyAuthenticationOptionsResponse
+): PublicKeyCredentialRequestOptions => ({
+  ...response.publicKey,
+  challenge: base64UrlToArrayBuffer(response.publicKey.challenge),
+  allowCredentials: response.publicKey.allowCredentials?.map((credential) => ({
+    ...credential,
+    id: base64UrlToArrayBuffer(credential.id),
+    transports: credential.transports as AuthenticatorTransport[] | undefined
+  }))
+});
+
+const passkeyCreationPayload = (credential: PublicKeyCredential, name: string) => {
+  const response = credential.response as AuthenticatorAttestationResponse;
+  return {
+    id: credential.id,
+    rawId: arrayBufferToBase64Url(credential.rawId),
+    type: credential.type,
+    response: {
+      clientDataJSON: arrayBufferToBase64Url(response.clientDataJSON),
+      attestationObject: arrayBufferToBase64Url(response.attestationObject)
+    },
+    transports: response.getTransports?.() ?? [],
+    name
+  };
+};
+
+const passkeyAssertionPayload = (credential: PublicKeyCredential) => {
+  const response = credential.response as AuthenticatorAssertionResponse;
+  return {
+    id: credential.id,
+    rawId: arrayBufferToBase64Url(credential.rawId),
+    type: credential.type,
+    response: {
+      clientDataJSON: arrayBufferToBase64Url(response.clientDataJSON),
+      authenticatorData: arrayBufferToBase64Url(response.authenticatorData),
+      signature: arrayBufferToBase64Url(response.signature),
+      userHandle: response.userHandle ? arrayBufferToBase64Url(response.userHandle) : null
+    }
+  };
+};
+
 const matureAccessLabel = (matureAccess: MatureAccess | null) => {
   if (!matureAccess) {
     return "Mature access is checking.";
@@ -382,7 +466,7 @@ type ViewMode =
   | "terms"
   | "privacy";
 type AuthMode = "login" | "register";
-type AuthFlow = "auth" | "resetRequest" | "resetConfirm";
+type AuthFlow = "auth" | "resetRequest" | "resetConfirm" | "mfa";
 type TurnstileAction =
   | AuthMode
   | "resend"
@@ -3787,10 +3871,19 @@ function AuthDialog({
 }: AuthDialogProps) {
   const [flow, setFlow] = useState<AuthFlow>(initialResetToken ? "resetConfirm" : "auth");
   const [resetToken, setResetToken] = useState(initialResetToken);
+  const [mfaToken, setMfaToken] = useState("");
+  const [mfaMethods, setMfaMethods] = useState<MfaMethod[]>([]);
+  const [mfaMethod, setMfaMethod] = useState<MfaMethod>("totp");
   const [turnstileToken, setTurnstileToken] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const isRegister = mode === "register";
+
+  const clearMfaState = () => {
+    setMfaToken("");
+    setMfaMethods([]);
+    setMfaMethod("totp");
+  };
 
   useEffect(() => {
     if (initialResetToken) {
@@ -3798,6 +3891,7 @@ function AuthDialog({
       setFlow("resetConfirm");
       setMessage("");
       setTurnstileToken("");
+      clearMfaState();
     }
   }, [initialResetToken]);
 
@@ -3805,6 +3899,7 @@ function AuthDialog({
     setFlow("auth");
     setMessage("");
     setTurnstileToken("");
+    clearMfaState();
     onModeChange(nextMode);
   };
 
@@ -3812,6 +3907,9 @@ function AuthDialog({
     setFlow(nextFlow);
     setMessage("");
     setTurnstileToken("");
+    if (nextFlow !== "mfa") {
+      clearMfaState();
+    }
   };
 
   const handleResetRequestSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -3909,6 +4007,90 @@ function AuthDialog({
     }
   };
 
+  const handleMfaSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (submitting) {
+      return;
+    }
+    const formData = new FormData(event.currentTarget);
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/auth/mfa/verify", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          mfaToken,
+          method: mfaMethod,
+          code: String(formData.get("code") ?? "")
+        })
+      });
+      const payload = (await response.json()) as AuthResponse | { message?: string };
+      if (!response.ok || !("user" in payload)) {
+        throw new Error(payload.message ?? "Verification failed.");
+      }
+      clearMfaState();
+      onSuccess(payload);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Verification failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handlePasskeySignIn = async () => {
+    if (submitting) {
+      return;
+    }
+    if (!window.PublicKeyCredential || !navigator.credentials) {
+      setMessage("Passkeys are not available in this browser.");
+      return;
+    }
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const optionsResponse = await fetch("/api/auth/passkey/options", {
+        method: "POST",
+        credentials: "include"
+      });
+      const optionsPayload = (await optionsResponse.json()) as
+        | PasskeyAuthenticationOptionsResponse
+        | { message?: string };
+      if (!optionsResponse.ok || !("publicKey" in optionsPayload)) {
+        throw new Error(
+          ("message" in optionsPayload ? optionsPayload.message : undefined) ??
+            "Passkey sign-in could not start."
+        );
+      }
+      const credential = await navigator.credentials.get({
+        publicKey: passkeyRequestOptions(optionsPayload)
+      });
+      if (!(credential instanceof PublicKeyCredential)) {
+        throw new Error("Passkey sign-in was cancelled.");
+      }
+      const verifyResponse = await fetch("/api/auth/passkey/verify", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify(passkeyAssertionPayload(credential))
+      });
+      const payload = (await verifyResponse.json()) as AuthResponse | { message?: string };
+      if (!verifyResponse.ok || !("user" in payload)) {
+        throw new Error(payload.message ?? "Passkey sign-in failed.");
+      }
+      onSuccess(payload);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Passkey sign-in failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (submitting) {
@@ -3947,9 +4129,26 @@ function AuthDialog({
         },
         body: JSON.stringify(body)
       });
-      const payload = (await response.json()) as AuthResponse | { message: string };
-      if (!response.ok || !("user" in payload)) {
+      const payload = (await response.json()) as AuthLoginResponse | { message?: string };
+      if (!response.ok) {
+        setMessage(payload.message ?? "Authentication failed.");
+        setTurnstileToken("");
+        window.turnstile?.reset();
+        return;
+      }
+      if ("mfaRequired" in payload) {
+        setMfaToken(payload.mfaToken);
+        setMfaMethods(payload.methods);
+        setMfaMethod(payload.methods[0] ?? "totp");
+        setFlow("mfa");
         setMessage(payload.message);
+        setTurnstileToken("");
+        window.turnstile?.reset();
+        form.reset();
+        return;
+      }
+      if (!("user" in payload)) {
+        setMessage(payload.message ?? "Authentication failed.");
         setTurnstileToken("");
         window.turnstile?.reset();
         return;
@@ -3965,6 +4164,7 @@ function AuthDialog({
 
   const isResetRequest = flow === "resetRequest";
   const isResetConfirm = flow === "resetConfirm";
+  const isMfa = flow === "mfa";
 
   return (
     <div className="modal-backdrop auth-backdrop" role="dialog" aria-modal="true">
@@ -3980,6 +4180,8 @@ function AuthDialog({
           <h2>
             {isResetConfirm
               ? "Set new password"
+              : isMfa
+                ? "Verify sign-in"
               : isResetRequest
                 ? "Reset password"
                 : isRegister
@@ -4061,6 +4263,17 @@ function AuthDialog({
                 </button>
                 {!isRegister ? (
                   <button
+                    className="secondary-button auth-submit"
+                    type="button"
+                    disabled={submitting}
+                    onClick={() => void handlePasskeySignIn()}
+                  >
+                    <KeyRound size={17} />
+                    Sign in with passkey
+                  </button>
+                ) : null}
+                {!isRegister ? (
+                  <button
                     className="text-button"
                     type="button"
                     onClick={() => handleFlowChange("resetRequest")}
@@ -4138,6 +4351,46 @@ function AuthDialog({
               <button className="primary-button auth-submit" type="submit" disabled={submitting}>
                 <KeyRound size={17} />
                 {submitting ? "Saving" : "Reset password"}
+              </button>
+              <button className="text-button" type="button" onClick={() => handleFlowChange("auth")}>
+                Back to sign in
+              </button>
+              {message ? <p className="auth-message">{message}</p> : null}
+            </form>
+          ) : null}
+
+          {isMfa ? (
+            <form className="auth-form" onSubmit={handleMfaSubmit}>
+              {mfaMethods.length > 1 ? (
+                <div className="segmented-control" aria-label="Verification method">
+                  {mfaMethods.map((method) => (
+                    <button
+                      className={classNames(mfaMethod === method && "is-active")}
+                      key={method}
+                      type="button"
+                      onClick={() => setMfaMethod(method)}
+                    >
+                      {method === "email" ? <MailCheck size={16} /> : <KeyRound size={16} />}
+                      {method === "email" ? "Email" : "Authenticator"}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <label>
+                {mfaMethod === "email" ? "Email code" : "Authenticator code"}
+                <input
+                  name="code"
+                  inputMode="numeric"
+                  pattern="[0-9]{6}"
+                  minLength={6}
+                  maxLength={6}
+                  autoComplete="one-time-code"
+                  required
+                />
+              </label>
+              <button className="primary-button auth-submit" type="submit" disabled={submitting}>
+                {mfaMethod === "email" ? <MailCheck size={17} /> : <KeyRound size={17} />}
+                {submitting ? "Verifying" : "Verify"}
               </button>
               <button className="text-button" type="button" onClick={() => handleFlowChange("auth")}>
                 Back to sign in
@@ -8429,6 +8682,7 @@ function ProfileSettingsPage({
         </button>
       </div>
       {loading ? <p className="empty-feed">Loading settings.</p> : null}
+      {message ? <p className="settings-message">{message}</p> : null}
       {!currentUser ? (
         <button className="primary-button" type="button" onClick={onAuthRequired}>
           <LogIn size={17} />
@@ -8548,6 +8802,7 @@ function PrivacySecurityPage({
   onAccountDeactivated
 }: PrivacySecurityPageProps) {
   const [settings, setSettings] = useState<PrivacySecuritySettingsResponse | null>(null);
+  const [securitySettings, setSecuritySettings] = useState<SecuritySettingsResponse | null>(null);
   const [sessionsData, setSessionsData] = useState<AuthSessionsResponse | null>(null);
   const [blockedUsersData, setBlockedUsersData] = useState<BlockedUsersResponse | null>(null);
   const [notificationPreferences, setNotificationPreferences] = useState({
@@ -8577,7 +8832,12 @@ function PrivacySecurityPage({
   const [notificationPreferencesMessage, setNotificationPreferencesMessage] = useState("");
   const [exportMessage, setExportMessage] = useState("");
   const [deactivationMessage, setDeactivationMessage] = useState("");
+  const [securityMessage, setSecurityMessage] = useState("");
+  const [totpSetup, setTotpSetup] = useState<TotpSetupResponse | null>(null);
+  const [totpCode, setTotpCode] = useState("");
+  const [passkeyName, setPasskeyName] = useState("My passkey");
   const [loading, setLoading] = useState(true);
+  const [securityLoading, setSecurityLoading] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [blockedUsersLoading, setBlockedUsersLoading] = useState(false);
   const [notificationPreferencesLoading, setNotificationPreferencesLoading] = useState(false);
@@ -8587,6 +8847,7 @@ function PrivacySecurityPage({
   const [emailChangeSaving, setEmailChangeSaving] = useState(false);
   const [exportingData, setExportingData] = useState(false);
   const [deactivatingAccount, setDeactivatingAccount] = useState(false);
+  const [securitySaving, setSecuritySaving] = useState(false);
   const [sessionSaving, setSessionSaving] = useState<string | null>(null);
   const [unblockingUser, setUnblockingUser] = useState<string | null>(null);
 
@@ -8680,6 +8941,30 @@ function PrivacySecurityPage({
     }
   }, [currentUser]);
 
+  const loadSecuritySettings = useCallback(async () => {
+    if (!currentUser) {
+      setSecuritySettings(null);
+      setSecurityLoading(false);
+      return;
+    }
+    setSecurityLoading(true);
+    setSecurityMessage("");
+    try {
+      const response = await fetch("/api/settings/security", { credentials: "include" });
+      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      if (!response.ok || !("twoStep" in payload)) {
+        throw new Error(payload.message ?? "Account security settings could not be loaded.");
+      }
+      setSecuritySettings(payload);
+    } catch (error) {
+      setSecurityMessage(
+        error instanceof Error ? error.message : "Account security settings could not be loaded."
+      );
+    } finally {
+      setSecurityLoading(false);
+    }
+  }, [currentUser]);
+
   useEffect(() => {
     if (!currentUser) {
       setLoading(false);
@@ -8739,14 +9024,34 @@ function PrivacySecurityPage({
     void loadNotificationPreferences();
   }, [loadNotificationPreferences]);
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  useEffect(() => {
+    void loadSecuritySettings();
+  }, [loadSecuritySettings]);
+
+  const scrollSettingsToTop = () => {
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  };
+
+  const savePrivacySettings = async (
+    overrides: Partial<PrivacySecuritySettingsResponse["privacy"]> = {},
+    nextMessage = "Privacy settings saved."
+  ) => {
     if (saving) {
-      return;
+      return false;
     }
     setSaving(true);
     setMessage("");
     try {
+      const nextPrivacy = {
+        bookmarkDefaultVisibility,
+        profileVisibility,
+        dateOfBirth: dateOfBirth || null,
+        matureContentEnabled,
+        mutedTags: parseTagListInput(mutedTagsInput),
+        ...overrides
+      };
       const response = await fetch("/api/settings/privacy-security", {
         method: "PUT",
         credentials: "include",
@@ -8754,13 +9059,7 @@ function PrivacySecurityPage({
           "content-type": "application/json",
           [csrfHeaderName]: csrfToken
         },
-        body: JSON.stringify({
-          bookmarkDefaultVisibility,
-          profileVisibility,
-          dateOfBirth: dateOfBirth || null,
-          matureContentEnabled,
-          mutedTags: parseTagListInput(mutedTagsInput)
-        })
+        body: JSON.stringify(nextPrivacy)
       });
       const payload = (await response.json()) as PrivacySecuritySettingsResponse | { message?: string };
       if (!response.ok || !("privacy" in payload)) {
@@ -8775,14 +9074,42 @@ function PrivacySecurityPage({
       setDateOfBirth(payload.privacy.dateOfBirth ?? "");
       setMatureContentEnabled(payload.privacy.matureContentEnabled);
       setMutedTagsInput(payload.privacy.mutedTags.join(", "));
-      const nextMessage = "Privacy settings saved.";
       onSaved(payload.user, nextMessage);
       setMessage(nextMessage);
+      scrollSettingsToTop();
+      return true;
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Privacy settings could not be saved.");
+      return false;
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleMatureAccessSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await savePrivacySettings({}, "Mature access saved.");
+  };
+
+  const handleMutedTagsSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await savePrivacySettings({}, "Muted tags saved.");
+  };
+
+  const handleBookmarkDefaultVisibilityChange = (value: BookmarkVisibility) => {
+    if (value === bookmarkDefaultVisibility || saving) {
+      return;
+    }
+    setBookmarkDefaultVisibility(value);
+    void savePrivacySettings({ bookmarkDefaultVisibility: value }, "Bookmark default saved.");
+  };
+
+  const handleProfileVisibilityChange = (value: ProfileVisibility) => {
+    if (value === profileVisibility || saving) {
+      return;
+    }
+    setProfileVisibility(value);
+    void savePrivacySettings({ profileVisibility: value }, "Profile visibility saved.");
   };
 
   const handleNotificationPreferencesSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -8903,6 +9230,215 @@ function PrivacySecurityPage({
     }
   };
 
+  const applySecuritySettingsResponse = (payload: SecuritySettingsResponse) => {
+    setSecuritySettings(payload);
+    if (payload.message) {
+      setSecurityMessage(payload.message);
+      onNotice(payload.message);
+    }
+  };
+
+  const handleTotpStart = async () => {
+    if (securitySaving) {
+      return;
+    }
+    setSecuritySaving(true);
+    setSecurityMessage("");
+    try {
+      const response = await fetch("/api/settings/security/totp/start", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          [csrfHeaderName]: csrfToken
+        }
+      });
+      const payload = (await response.json()) as TotpSetupResponse | { message?: string };
+      if (!response.ok || !("secret" in payload)) {
+        throw new Error(payload.message ?? "Authenticator setup could not start.");
+      }
+      setTotpSetup(payload);
+      setTotpCode("");
+      setSecurityMessage(payload.message);
+    } catch (error) {
+      setSecurityMessage(error instanceof Error ? error.message : "Authenticator setup could not start.");
+    } finally {
+      setSecuritySaving(false);
+    }
+  };
+
+  const handleTotpConfirm = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (securitySaving) {
+      return;
+    }
+    setSecuritySaving(true);
+    setSecurityMessage("");
+    try {
+      const response = await fetch("/api/settings/security/totp/confirm", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          [csrfHeaderName]: csrfToken
+        },
+        body: JSON.stringify({ code: totpCode })
+      });
+      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      if (!response.ok || !("twoStep" in payload)) {
+        throw new Error(payload.message ?? "Authenticator code could not be confirmed.");
+      }
+      setTotpSetup(null);
+      setTotpCode("");
+      applySecuritySettingsResponse(payload);
+    } catch (error) {
+      setSecurityMessage(
+        error instanceof Error ? error.message : "Authenticator code could not be confirmed."
+      );
+    } finally {
+      setSecuritySaving(false);
+    }
+  };
+
+  const handleTotpDisable = async () => {
+    if (securitySaving) {
+      return;
+    }
+    setSecuritySaving(true);
+    setSecurityMessage("");
+    try {
+      const response = await fetch("/api/settings/security/totp", {
+        method: "DELETE",
+        credentials: "include",
+        headers: {
+          [csrfHeaderName]: csrfToken
+        }
+      });
+      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      if (!response.ok || !("twoStep" in payload)) {
+        throw new Error(payload.message ?? "Authenticator app could not be disabled.");
+      }
+      setTotpSetup(null);
+      applySecuritySettingsResponse(payload);
+    } catch (error) {
+      setSecurityMessage(error instanceof Error ? error.message : "Authenticator app could not be disabled.");
+    } finally {
+      setSecuritySaving(false);
+    }
+  };
+
+  const handleEmailMfaToggle = async (enabled: boolean) => {
+    if (securitySaving) {
+      return;
+    }
+    setSecuritySaving(true);
+    setSecurityMessage("");
+    try {
+      const response = await fetch("/api/settings/security/email", {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          [csrfHeaderName]: csrfToken
+        },
+        body: JSON.stringify({ enabled })
+      });
+      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      if (!response.ok || !("twoStep" in payload)) {
+        throw new Error(payload.message ?? "Email sign-in codes could not be updated.");
+      }
+      applySecuritySettingsResponse(payload);
+    } catch (error) {
+      setSecurityMessage(
+        error instanceof Error ? error.message : "Email sign-in codes could not be updated."
+      );
+    } finally {
+      setSecuritySaving(false);
+    }
+  };
+
+  const handleAddPasskey = async () => {
+    if (securitySaving) {
+      return;
+    }
+    if (!window.PublicKeyCredential || !navigator.credentials) {
+      setSecurityMessage("Passkeys are not available in this browser.");
+      return;
+    }
+    setSecuritySaving(true);
+    setSecurityMessage("");
+    try {
+      const optionsResponse = await fetch("/api/settings/security/passkeys/options", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          [csrfHeaderName]: csrfToken
+        },
+        body: JSON.stringify({ name: passkeyName })
+      });
+      const optionsPayload = (await optionsResponse.json()) as
+        | PasskeyRegistrationOptionsResponse
+        | { message?: string };
+      if (!optionsResponse.ok || !("publicKey" in optionsPayload)) {
+        throw new Error(
+          ("message" in optionsPayload ? optionsPayload.message : undefined) ??
+            "Passkey setup could not start."
+        );
+      }
+      const credential = await navigator.credentials.create({
+        publicKey: passkeyCreationOptions(optionsPayload)
+      });
+      if (!(credential instanceof PublicKeyCredential)) {
+        throw new Error("Passkey setup was cancelled.");
+      }
+      const response = await fetch("/api/settings/security/passkeys", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          [csrfHeaderName]: csrfToken
+        },
+        body: JSON.stringify(passkeyCreationPayload(credential, passkeyName))
+      });
+      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      if (!response.ok || !("twoStep" in payload)) {
+        throw new Error(payload.message ?? "Passkey could not be added.");
+      }
+      setPasskeyName("My passkey");
+      applySecuritySettingsResponse(payload);
+    } catch (error) {
+      setSecurityMessage(error instanceof Error ? error.message : "Passkey could not be added.");
+    } finally {
+      setSecuritySaving(false);
+    }
+  };
+
+  const handleDeletePasskey = async (id: string) => {
+    if (securitySaving) {
+      return;
+    }
+    setSecuritySaving(true);
+    setSecurityMessage("");
+    try {
+      const response = await fetch(`/api/settings/security/passkeys/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        credentials: "include",
+        headers: {
+          [csrfHeaderName]: csrfToken
+        }
+      });
+      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      if (!response.ok || !("twoStep" in payload)) {
+        throw new Error(payload.message ?? "Passkey could not be removed.");
+      }
+      applySecuritySettingsResponse(payload);
+    } catch (error) {
+      setSecurityMessage(error instanceof Error ? error.message : "Passkey could not be removed.");
+    } finally {
+      setSecuritySaving(false);
+    }
+  };
+
   const handleRevokeSession = async (sessionId: string | null) => {
     if (sessionSaving !== null) {
       return;
@@ -9012,6 +9548,13 @@ function PrivacySecurityPage({
       setDeactivationMessage("Type DEACTIVATE to confirm account deactivation.");
       return;
     }
+    if (
+      !window.confirm(
+        "Deactivate this account now? Your public profile and works will be hidden and every browser will be signed out."
+      )
+    ) {
+      return;
+    }
     setDeactivatingAccount(true);
     try {
       const response = await fetch("/api/settings/account/deactivate", {
@@ -9069,7 +9612,7 @@ function PrivacySecurityPage({
       ) : null}
       {settings ? (
         <>
-          <form className="settings-form privacy-form" onSubmit={handleSubmit}>
+          <div className="settings-form privacy-form">
             <section className="settings-panel">
               <div className="panel-title">
                 <Bookmark size={18} />
@@ -9079,7 +9622,8 @@ function PrivacySecurityPage({
                 <button
                   className={classNames(bookmarkDefaultVisibility === "public" && "is-active")}
                   type="button"
-                  onClick={() => setBookmarkDefaultVisibility("public")}
+                  disabled={saving}
+                  onClick={() => handleBookmarkDefaultVisibilityChange("public")}
                 >
                   <Eye size={16} />
                   Public
@@ -9087,7 +9631,8 @@ function PrivacySecurityPage({
                 <button
                   className={classNames(bookmarkDefaultVisibility === "private" && "is-active")}
                   type="button"
-                  onClick={() => setBookmarkDefaultVisibility("private")}
+                  disabled={saving}
+                  onClick={() => handleBookmarkDefaultVisibilityChange("private")}
                 >
                   <Lock size={16} />
                   Private
@@ -9108,7 +9653,8 @@ function PrivacySecurityPage({
                       className={classNames(profileVisibility === option.value && "is-active")}
                       key={option.value}
                       type="button"
-                      onClick={() => setProfileVisibility(option.value)}
+                      disabled={saving}
+                      onClick={() => handleProfileVisibilityChange(option.value)}
                     >
                       <Icon size={16} />
                       {option.label}
@@ -9118,7 +9664,7 @@ function PrivacySecurityPage({
               </div>
             </section>
 
-            <section className="settings-panel">
+            <form className="settings-panel" onSubmit={handleMatureAccessSubmit}>
               <div className="panel-title">
                 <Calendar size={18} />
                 Mature access
@@ -9141,9 +9687,15 @@ function PrivacySecurityPage({
                 />
               </label>
               <MatureAccessStatus matureAccess={matureAccess} />
-            </section>
+              <div className="settings-actions">
+                <button className="primary-button" type="submit" disabled={saving}>
+                  <ShieldCheck size={17} />
+                  {saving ? "Saving" : "Save mature access"}
+                </button>
+              </div>
+            </form>
 
-            <section className="settings-panel">
+            <form className="settings-panel" onSubmit={handleMutedTagsSubmit}>
               <div className="panel-title">
                 <EyeOff size={18} />
                 Muted tags
@@ -9171,17 +9723,14 @@ function PrivacySecurityPage({
               ) : (
                 <p className="muted">No muted tags.</p>
               )}
-            </section>
-
-            <section className="settings-panel privacy-save-panel">
               <div className="settings-actions">
                 <button className="primary-button" type="submit" disabled={saving}>
-                  <ShieldCheck size={17} />
-                  {saving ? "Saving" : "Save privacy"}
+                  <EyeOff size={17} />
+                  {saving ? "Saving" : "Save muted tags"}
                 </button>
               </div>
-            </section>
-          </form>
+            </form>
+          </div>
 
           <form className="settings-form password-form" onSubmit={handlePasswordSubmit}>
             <section className="settings-panel">
@@ -9239,6 +9788,142 @@ function PrivacySecurityPage({
               {passwordMessage ? <p className="settings-message">{passwordMessage}</p> : null}
             </section>
           </form>
+
+          <section className="settings-form security-form">
+            <div className="settings-panel">
+              <div className="panel-title">
+                <ShieldCheck size={18} />
+                Two-step verification
+              </div>
+              {securityLoading ? <p className="muted">Loading account security.</p> : null}
+              <div className="security-option-list">
+                <article className="security-option">
+                  <div>
+                    <strong>Authenticator app</strong>
+                    <span>{securitySettings?.twoStep.totpEnabled ? "Enabled" : "Off"}</span>
+                  </div>
+                  {securitySettings?.twoStep.totpEnabled ? (
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={securitySaving}
+                      onClick={() => void handleTotpDisable()}
+                    >
+                      <KeyRound size={16} />
+                      Disable
+                    </button>
+                  ) : (
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={securitySaving}
+                      onClick={() => void handleTotpStart()}
+                    >
+                      <KeyRound size={16} />
+                      Set up
+                    </button>
+                  )}
+                </article>
+                {totpSetup ? (
+                  <form className="security-setup-form" onSubmit={handleTotpConfirm}>
+                    <label>
+                      Setup key
+                      <input value={totpSetup.secret} readOnly />
+                    </label>
+                    <label>
+                      Authenticator code
+                      <input
+                        value={totpCode}
+                        inputMode="numeric"
+                        pattern="[0-9]{6}"
+                        minLength={6}
+                        maxLength={6}
+                        autoComplete="one-time-code"
+                        onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                        required
+                      />
+                    </label>
+                    <div className="settings-actions">
+                      <button className="primary-button" type="submit" disabled={securitySaving}>
+                        <ShieldCheck size={17} />
+                        {securitySaving ? "Verifying" : "Enable authenticator"}
+                      </button>
+                    </div>
+                  </form>
+                ) : null}
+                <article className="security-option">
+                  <div>
+                    <strong>Email codes</strong>
+                    <span>{securitySettings?.twoStep.emailEnabled ? "Enabled" : "Off"}</span>
+                  </div>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={securitySaving}
+                    onClick={() => void handleEmailMfaToggle(!securitySettings?.twoStep.emailEnabled)}
+                  >
+                    <MailCheck size={16} />
+                    {securitySettings?.twoStep.emailEnabled ? "Disable" : "Enable"}
+                  </button>
+                </article>
+              </div>
+            </div>
+          </section>
+
+          <section className="settings-form passkeys-form">
+            <div className="settings-panel">
+              <div className="panel-title">
+                <KeyRound size={18} />
+                Passkeys
+              </div>
+              <div className="passkey-create-row">
+                <label>
+                  Passkey name
+                  <input
+                    value={passkeyName}
+                    maxLength={80}
+                    onChange={(event) => setPasskeyName(event.target.value)}
+                  />
+                </label>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={securitySaving || !passkeyName.trim()}
+                  onClick={() => void handleAddPasskey()}
+                >
+                  <KeyRound size={16} />
+                  Add passkey
+                </button>
+              </div>
+              {securitySettings?.passkeys.length ? (
+                <div className="session-list">
+                  {securitySettings.passkeys.map((passkey) => (
+                    <article className="session-item" key={passkey.id}>
+                      <div>
+                        <div className="session-title">
+                          <strong>{passkey.name}</strong>
+                          {passkey.lastUsedAt ? <span>Used {formatDateTime(passkey.lastUsedAt)}</span> : null}
+                        </div>
+                        <p>Added {formatDateTime(passkey.createdAt)}</p>
+                      </div>
+                      <button
+                        className="secondary-button icon-button"
+                        type="button"
+                        title="Remove passkey"
+                        disabled={securitySaving}
+                        onClick={() => void handleDeletePasskey(passkey.id)}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="muted">No passkeys.</p>
+              )}
+              {securityMessage ? <p className="settings-message">{securityMessage}</p> : null}
+            </div>
+          </section>
 
           <form
             className="settings-form notification-preferences-form"
@@ -9564,7 +10249,6 @@ function PrivacySecurityPage({
           </form>
         </>
       ) : null}
-      {message ? <p className="settings-message">{message}</p> : null}
       {notificationPreferencesMessage ? (
         <p className="settings-message">{notificationPreferencesMessage}</p>
       ) : null}

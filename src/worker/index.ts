@@ -11,6 +11,7 @@ import type {
   AccountSession,
   AuthConfigResponse,
   DeleteArtworkResponse,
+  AuthLoginResponse,
   AuthResponse,
   AuthSessionResponse,
   AuthSessionsResponse,
@@ -75,6 +76,7 @@ import type {
   MatureRating,
   MarkNotificationsReadResponse,
   ModerationReport,
+  MfaMethod,
   NotificationPreferences,
   NotificationPreferencesResponse,
   NotificationType,
@@ -83,6 +85,9 @@ import type {
   PasswordChangeResponse,
   PasswordResetConfirmResponse,
   PasswordResetRequestResponse,
+  PasskeyAuthenticationOptionsResponse,
+  PasskeyRegistrationOptionsResponse,
+  PasskeySummary,
   PrivacySecuritySettingsResponse,
   ProfileFollowListItem,
   ProfileFollowListResponse,
@@ -98,6 +103,7 @@ import type {
   ReorderArtworkImagesResponse,
   RevokeSessionsResponse,
   SearchSuggestionsResponse,
+  SecuritySettingsResponse,
   SeriesPreviewArtwork,
   SeriesVisibility,
   SortMode,
@@ -108,6 +114,7 @@ import type {
   TagPageSort,
   TagSubscriptionResponse,
   TagSubscriptionsResponse,
+  TotpSetupResponse,
   UserCollection,
   UserNotification,
   UserRole,
@@ -135,6 +142,8 @@ const sessionDurationSeconds = 60 * 60 * 24 * 30;
 const verificationTokenDurationSeconds = 60 * 60 * 24;
 const passwordResetTokenDurationSeconds = 60 * 60;
 const emailChangeTokenDurationSeconds = 60 * 60 * 2;
+const mfaChallengeDurationSeconds = 60 * 10;
+const webauthnChallengeDurationSeconds = 60 * 5;
 const minuteSeconds = 60;
 const hourSeconds = 60 * minuteSeconds;
 const passwordIterations = 120_000;
@@ -466,6 +475,12 @@ const loginSchema = z.object({
   turnstileToken: z.string().min(1).max(4096)
 });
 
+const mfaVerifySchema = z.object({
+  mfaToken: z.string().trim().min(24).max(256),
+  method: z.enum(["totp", "email"]),
+  code: z.string().trim().regex(/^\d{6}$/)
+});
+
 const resendVerificationSchema = z.object({
   turnstileToken: z.string().min(1).max(4096)
 });
@@ -538,6 +553,44 @@ const accountDeactivationSchema = z.object({
 const emailChangeRequestSchema = z.object({
   email: z.string().trim().email().max(254),
   currentPassword: z.string().min(1).max(160)
+});
+
+const totpConfirmSchema = z.object({
+  code: z.string().trim().regex(/^\d{6}$/)
+});
+
+const emailMfaSettingsSchema = z.object({
+  enabled: z.boolean()
+});
+
+const passkeyRegistrationOptionsSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional().default("Passkey")
+});
+
+const webauthnClientResponseSchema = z.object({
+  clientDataJSON: z.string().min(1).max(65536)
+});
+
+const passkeyRegistrationSchema = z.object({
+  id: z.string().min(1).max(4096),
+  rawId: z.string().min(1).max(4096),
+  type: z.literal("public-key"),
+  response: webauthnClientResponseSchema.extend({
+    attestationObject: z.string().min(1).max(131072)
+  }),
+  transports: z.array(z.string().min(1).max(32)).max(8).optional().default([]),
+  name: z.string().trim().min(1).max(80).optional().default("Passkey")
+});
+
+const passkeyAuthenticationSchema = z.object({
+  id: z.string().min(1).max(4096),
+  rawId: z.string().min(1).max(4096),
+  type: z.literal("public-key"),
+  response: webauthnClientResponseSchema.extend({
+    authenticatorData: z.string().min(1).max(65536),
+    signature: z.string().min(1).max(65536),
+    userHandle: z.string().max(4096).nullable().optional()
+  })
 });
 
 const bookmarkSchema = z.object({
@@ -659,6 +712,9 @@ const fromBase64Url = (value: string) => {
   }
   return bytes;
 };
+
+const toArrayBuffer = (bytes: Uint8Array) =>
+  bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 
 type KeysetGallerySort = Extract<
   SortMode,
@@ -816,6 +872,60 @@ const sha256 = async (value: string) => {
   return toBase64Url(new Uint8Array(digest));
 };
 
+const sha256Bytes = async (value: Uint8Array) =>
+  new Uint8Array(await crypto.subtle.digest("SHA-256", toArrayBuffer(value)));
+
+const concatBytes = (...chunks: Uint8Array[]) => {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+};
+
+const base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+const toBase32 = (bytes: Uint8Array) => {
+  let output = "";
+  let buffer = 0;
+  let bitsLeft = 0;
+  for (const byte of bytes) {
+    buffer = (buffer << 8) | byte;
+    bitsLeft += 8;
+    while (bitsLeft >= 5) {
+      output += base32Alphabet[(buffer >> (bitsLeft - 5)) & 31];
+      bitsLeft -= 5;
+    }
+  }
+  if (bitsLeft > 0) {
+    output += base32Alphabet[(buffer << (5 - bitsLeft)) & 31];
+  }
+  return output;
+};
+
+const fromBase32 = (value: string) => {
+  const normalized = value.toUpperCase().replace(/=+$/g, "").replace(/\s+/g, "");
+  let buffer = 0;
+  let bitsLeft = 0;
+  const bytes: number[] = [];
+  for (const char of normalized) {
+    const index = base32Alphabet.indexOf(char);
+    if (index === -1) {
+      throw new Error("Invalid base32 value");
+    }
+    buffer = (buffer << 5) | index;
+    bitsLeft += 5;
+    if (bitsLeft >= 8) {
+      bytes.push((buffer >> (bitsLeft - 8)) & 255);
+      bitsLeft -= 8;
+    }
+  }
+  return new Uint8Array(bytes);
+};
+
 const constantTimeEqual = (left: Uint8Array, right: Uint8Array) => {
   if (left.length !== right.length) {
     return false;
@@ -845,6 +955,56 @@ const hmacSha256 = async (key: string, value: string) => {
   );
   const signature = await crypto.subtle.sign("HMAC", cryptoKey, textEncoder.encode(value));
   return toBase64Url(new Uint8Array(signature));
+};
+
+const hmacSha1Bytes = async (key: Uint8Array, value: Uint8Array) => {
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    toArrayBuffer(key),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"]
+  );
+  return new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, toArrayBuffer(value)));
+};
+
+const generateTotpSecret = () => {
+  const bytes = new Uint8Array(20);
+  crypto.getRandomValues(bytes);
+  return toBase32(bytes);
+};
+
+const generateNumericCode = (length = 6) => {
+  const max = 10 ** length;
+  const bytes = new Uint32Array(1);
+  crypto.getRandomValues(bytes);
+  return String(bytes[0] % max).padStart(length, "0");
+};
+
+const totpCodeForCounter = async (secretBase32: string, counter: number) => {
+  const key = fromBase32(secretBase32);
+  const counterBytes = new Uint8Array(8);
+  const view = new DataView(counterBytes.buffer);
+  view.setUint32(4, counter, false);
+  const hmac = await hmacSha1Bytes(key, counterBytes);
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const binary =
+    ((hmac[offset] & 0x7f) << 24) |
+    (hmac[offset + 1] << 16) |
+    (hmac[offset + 2] << 8) |
+    hmac[offset + 3];
+  return String(binary % 1_000_000).padStart(6, "0");
+};
+
+const verifyTotpCode = async (secretBase32: string, code: string) => {
+  const currentCounter = Math.floor(Date.now() / 1000 / 30);
+  for (const drift of [-1, 0, 1]) {
+    const expected = await totpCodeForCounter(secretBase32, currentCounter + drift);
+    if (await constantTimeStringEqual(code, expected)) {
+      return true;
+    }
+  }
+  return false;
 };
 
 const hashPassword = async (password: string) => {
@@ -1102,6 +1262,352 @@ const recordArtworkView = async (
 
 const toIsoAfterSeconds = (seconds: number) =>
   new Date(Date.now() + seconds * 1000).toISOString();
+
+type CborValue =
+  | number
+  | string
+  | Uint8Array
+  | CborValue[]
+  | Map<CborValue, CborValue>
+  | boolean
+  | null
+  | undefined;
+
+class CborReader {
+  private offset = 0;
+
+  constructor(private readonly bytes: Uint8Array) {}
+
+  read(): CborValue {
+    const initial = this.readByte();
+    const major = initial >> 5;
+    const additional = initial & 31;
+
+    if (major === 0) {
+      return this.readLength(additional);
+    }
+    if (major === 1) {
+      return -1 - this.readLength(additional);
+    }
+    if (major === 2) {
+      const length = this.readLength(additional);
+      return this.readBytes(length);
+    }
+    if (major === 3) {
+      const length = this.readLength(additional);
+      return textDecoder.decode(this.readBytes(length));
+    }
+    if (major === 4) {
+      const length = this.readLength(additional);
+      return Array.from({ length }, () => this.read());
+    }
+    if (major === 5) {
+      const length = this.readLength(additional);
+      const map = new Map<CborValue, CborValue>();
+      for (let index = 0; index < length; index += 1) {
+        map.set(this.read(), this.read());
+      }
+      return map;
+    }
+    if (major === 7) {
+      if (additional === 20) {
+        return false;
+      }
+      if (additional === 21) {
+        return true;
+      }
+      if (additional === 22) {
+        return null;
+      }
+      if (additional === 23) {
+        return undefined;
+      }
+    }
+    throw new Error("Unsupported CBOR value");
+  }
+
+  private readByte() {
+    if (this.offset >= this.bytes.length) {
+      throw new Error("Unexpected end of CBOR");
+    }
+    const byte = this.bytes[this.offset];
+    this.offset += 1;
+    return byte;
+  }
+
+  private readBytes(length: number) {
+    if (this.offset + length > this.bytes.length) {
+      throw new Error("Unexpected end of CBOR");
+    }
+    const value = this.bytes.slice(this.offset, this.offset + length);
+    this.offset += length;
+    return value;
+  }
+
+  private readUInt(byteLength: number) {
+    let value = 0;
+    for (let index = 0; index < byteLength; index += 1) {
+      value = value * 256 + this.readByte();
+    }
+    return value;
+  }
+
+  private readLength(additional: number) {
+    if (additional < 24) {
+      return additional;
+    }
+    if (additional === 24) {
+      return this.readUInt(1);
+    }
+    if (additional === 25) {
+      return this.readUInt(2);
+    }
+    if (additional === 26) {
+      return this.readUInt(4);
+    }
+    if (additional === 27) {
+      return this.readUInt(8);
+    }
+    throw new Error("Indefinite CBOR values are not supported");
+  }
+}
+
+const readCbor = (bytes: Uint8Array) => new CborReader(bytes).read();
+
+const cborMapValue = (map: Map<CborValue, CborValue>, key: number | string) => map.get(key);
+
+const cborNumber = (value: CborValue, label: string) => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${label} is not a CBOR number`);
+  }
+  return value;
+};
+
+const cborBytes = (value: CborValue, label: string) => {
+  if (!(value instanceof Uint8Array)) {
+    throw new Error(`${label} is not CBOR bytes`);
+  }
+  return value;
+};
+
+const webauthnContext = (context: AppContext) => {
+  const url = new URL(context.req.url);
+  return {
+    origin: url.origin,
+    rpId: url.hostname
+  };
+};
+
+const parseAuthenticatorData = (bytes: Uint8Array) => {
+  if (bytes.length < 37) {
+    throw new Error("Authenticator data is too short");
+  }
+  return {
+    rpIdHash: bytes.slice(0, 32),
+    flags: bytes[32],
+    signCount: new DataView(bytes.buffer, bytes.byteOffset + 33, 4).getUint32(0, false),
+    attestedCredentialData: bytes.slice(37)
+  };
+};
+
+const verifyAuthenticatorData = async (authenticatorData: Uint8Array, rpId: string) => {
+  const parsed = parseAuthenticatorData(authenticatorData);
+  const expectedRpIdHash = await sha256Bytes(textEncoder.encode(rpId));
+  if (!constantTimeEqual(parsed.rpIdHash, expectedRpIdHash)) {
+    throw new Error("Passkey was created for another site.");
+  }
+  if ((parsed.flags & 0x01) !== 0x01) {
+    throw new Error("Passkey user presence was not confirmed.");
+  }
+  return parsed;
+};
+
+const extractAttestedCredentialData = (authenticatorData: ReturnType<typeof parseAuthenticatorData>) => {
+  if ((authenticatorData.flags & 0x40) !== 0x40) {
+    throw new Error("Passkey attestation is missing credential data.");
+  }
+  const data = authenticatorData.attestedCredentialData;
+  if (data.length < 18) {
+    throw new Error("Passkey credential data is incomplete.");
+  }
+  const credentialIdLength = new DataView(data.buffer, data.byteOffset + 16, 2).getUint16(0, false);
+  const credentialIdStart = 18;
+  const publicKeyStart = credentialIdStart + credentialIdLength;
+  if (data.length <= publicKeyStart) {
+    throw new Error("Passkey public key is missing.");
+  }
+  return {
+    credentialId: data.slice(credentialIdStart, publicKeyStart),
+    publicKeyCose: data.slice(publicKeyStart)
+  };
+};
+
+const parseWebauthnClientData = (
+  encodedClientData: string,
+  expectedType: "webauthn.create" | "webauthn.get",
+  expectedChallenge: string,
+  expectedOrigin: string
+) => {
+  const clientDataBytes = fromBase64Url(encodedClientData);
+  const clientData = JSON.parse(textDecoder.decode(clientDataBytes)) as {
+    type?: unknown;
+    challenge?: unknown;
+    origin?: unknown;
+  };
+  if (clientData.type !== expectedType) {
+    throw new Error("Passkey response type is invalid.");
+  }
+  if (clientData.challenge !== expectedChallenge) {
+    throw new Error("Passkey challenge is invalid.");
+  }
+  if (clientData.origin !== expectedOrigin) {
+    throw new Error("Passkey origin is invalid.");
+  }
+  return { clientData, clientDataBytes };
+};
+
+const readDerLength = (signature: Uint8Array, offset: number) => {
+  let nextOffset = offset;
+  let length = signature[nextOffset];
+  nextOffset += 1;
+  if ((length & 0x80) === 0) {
+    return { length, offset: nextOffset };
+  }
+  const lengthBytes = length & 0x7f;
+  length = 0;
+  for (let index = 0; index < lengthBytes; index += 1) {
+    length = (length << 8) | signature[nextOffset];
+    nextOffset += 1;
+  }
+  return { length, offset: nextOffset };
+};
+
+const normalizeDerInteger = (value: Uint8Array, size: number) => {
+  let normalized = value;
+  while (normalized.length > 0 && normalized[0] === 0) {
+    normalized = normalized.slice(1);
+  }
+  if (normalized.length > size) {
+    throw new Error("ECDSA signature integer is too long.");
+  }
+  const result = new Uint8Array(size);
+  result.set(normalized, size - normalized.length);
+  return result;
+};
+
+const ecdsaDerToRawSignature = (signature: Uint8Array, size = 32) => {
+  let offset = 0;
+  if (signature[offset] !== 0x30) {
+    throw new Error("ECDSA signature is not DER encoded.");
+  }
+  offset += 1;
+  const sequence = readDerLength(signature, offset);
+  offset = sequence.offset;
+  if (offset + sequence.length !== signature.length) {
+    throw new Error("ECDSA signature length is invalid.");
+  }
+  if (signature[offset] !== 0x02) {
+    throw new Error("ECDSA signature is missing r.");
+  }
+  offset += 1;
+  const rLength = readDerLength(signature, offset);
+  offset = rLength.offset;
+  const r = signature.slice(offset, offset + rLength.length);
+  offset += rLength.length;
+  if (signature[offset] !== 0x02) {
+    throw new Error("ECDSA signature is missing s.");
+  }
+  offset += 1;
+  const sLength = readDerLength(signature, offset);
+  offset = sLength.offset;
+  const s = signature.slice(offset, offset + sLength.length);
+  return concatBytes(normalizeDerInteger(r, size), normalizeDerInteger(s, size));
+};
+
+const importCosePublicKey = async (publicKeyCose: Uint8Array) => {
+  const cose = readCbor(publicKeyCose);
+  if (!(cose instanceof Map)) {
+    throw new Error("Passkey public key is invalid.");
+  }
+  const keyType = cborNumber(cborMapValue(cose, 1), "COSE key type");
+  const algorithm = cborNumber(cborMapValue(cose, 3), "COSE algorithm");
+  if (keyType === 2 && algorithm === -7) {
+    const curve = cborNumber(cborMapValue(cose, -1), "COSE curve");
+    if (curve !== 1) {
+      throw new Error("Only P-256 passkeys are supported.");
+    }
+    const x = cborBytes(cborMapValue(cose, -2), "COSE x coordinate");
+    const y = cborBytes(cborMapValue(cose, -3), "COSE y coordinate");
+    return {
+      kind: "ec" as const,
+      key: await crypto.subtle.importKey(
+        "jwk",
+        {
+          kty: "EC",
+          crv: "P-256",
+          x: toBase64Url(x),
+          y: toBase64Url(y),
+          ext: true
+        },
+        { name: "ECDSA", namedCurve: "P-256" },
+        false,
+        ["verify"]
+      )
+    };
+  }
+  if (keyType === 3 && algorithm === -257) {
+    const n = cborBytes(cborMapValue(cose, -1), "COSE RSA modulus");
+    const e = cborBytes(cborMapValue(cose, -2), "COSE RSA exponent");
+    return {
+      kind: "rsa" as const,
+      key: await crypto.subtle.importKey(
+        "jwk",
+        {
+          kty: "RSA",
+          n: toBase64Url(n),
+          e: toBase64Url(e),
+          ext: true
+        },
+        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+        false,
+        ["verify"]
+      )
+    };
+  }
+  throw new Error("Passkey algorithm is not supported.");
+};
+
+const verifyCoseSignature = async (params: {
+  publicKeyCose: Uint8Array;
+  signature: Uint8Array;
+  signedData: Uint8Array;
+}) => {
+  const imported = await importCosePublicKey(params.publicKeyCose);
+  if (imported.kind === "ec") {
+    if (
+      await crypto.subtle.verify(
+        { name: "ECDSA", hash: "SHA-256" },
+        imported.key,
+        toArrayBuffer(params.signature),
+        toArrayBuffer(params.signedData)
+      )
+    ) {
+      return true;
+    }
+    return crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      imported.key,
+      toArrayBuffer(ecdsaDerToRawSignature(params.signature)),
+      toArrayBuffer(params.signedData)
+    );
+  }
+  return crypto.subtle.verify(
+    "RSASSA-PKCS1-v1_5",
+    imported.key,
+    toArrayBuffer(params.signature),
+    toArrayBuffer(params.signedData)
+  );
+};
 
 const asSortMode = (value: string | null): SortMode => {
   if (
@@ -1876,6 +2382,42 @@ type UserRow = {
   storage_used_images?: number | null;
   created_at: string;
   updated_at: string;
+};
+
+type TotpCredentialRow = {
+  user_id: string;
+  secret_base32: string;
+  enabled_at: string | null;
+};
+
+type EmailMfaSettingsRow = {
+  user_id: string;
+  enabled_at: string;
+};
+
+type MfaChallengeRow = {
+  id: string;
+  user_id: string;
+  email_code_hash: string | null;
+  client_ip_hash: string;
+  user_agent: string;
+};
+
+type PasskeyRow = {
+  id: string;
+  user_id: string;
+  credential_id: string;
+  name: string;
+  public_key_cose: string;
+  sign_count: number;
+  transports: string;
+  created_at: string;
+  last_used_at: string | null;
+};
+
+type WebauthnChallengeRow = {
+  id: string;
+  user_id: string | null;
 };
 
 type CurrentUser = AuthUser & {
@@ -2960,6 +3502,49 @@ const sendSecurityNoticeEmail = async (
     "security notice"
   );
 
+const completeLogin = async (
+  context: AppContext,
+  user: UserRow,
+  options: { authMethod: "password" | "passkey"; messagePrefix?: string }
+) => {
+  const db = requireD1(context.env.DB);
+  const notifyNewLocation =
+    options.authMethod !== "passkey" &&
+    (await shouldSendNewLocationNotice(db, context, user.id));
+  const earnedCredits = await awardLoginSiteCredits(db, user.id);
+  const responseUser = (await getUserRowById(db, user.id)) ?? user;
+
+  let sessionToken: string;
+  let csrfToken: string;
+  try {
+    sessionToken = await createSession(db, context, user.id);
+    context.header("Set-Cookie", sessionCookie(context, sessionToken), { append: true });
+    csrfToken = await issueCsrfToken(context, sessionToken);
+  } catch (error) {
+    console.error("Unable to create login session", error);
+    context.header("Set-Cookie", clearSessionCookie(context), { append: true });
+    context.header("Set-Cookie", clearCsrfCookie(context), { append: true });
+    return context.json({ message: "Unable to create login session." }, 500);
+  }
+
+  if (notifyNewLocation) {
+    await sendSecurityNoticeEmail(context.env, authUserFromRow(responseUser), "New sign-in", [
+      `A password sign-in to your ${context.env.PUBLIC_APP_NAME} account completed from a new network location.`,
+      "",
+      `Browser: ${requestUserAgent(context)}`,
+      "",
+      "If this was not you, change your password and review your account security settings."
+    ]);
+  }
+
+  const prefix = options.messagePrefix ?? "Signed in";
+  return context.json<AuthResponse>({
+    user: authUserFromRow(responseUser),
+    csrfToken,
+    message: `${prefix}. You earned ${earnedCredits} site credit${earnedCredits === 1 ? "" : "s"}.`
+  });
+};
+
 const createVerificationToken = async (db: D1Database, userId: string) => {
   const token = randomToken(32);
   await db
@@ -3182,6 +3767,209 @@ const isMissingColumnError = (error: unknown, columnNames: string[]) =>
       error.message
     )
   );
+
+const maskEmail = (email: string) => {
+  const [localPart, domain = ""] = email.split("@");
+  const visibleLocal = localPart.length <= 2 ? localPart.slice(0, 1) : localPart.slice(0, 2);
+  return `${visibleLocal}${"*".repeat(Math.max(2, localPart.length - visibleLocal.length))}@${domain}`;
+};
+
+const passkeySummaryFromRow = (row: PasskeyRow): PasskeySummary => ({
+  id: row.id,
+  name: row.name,
+  createdAt: row.created_at,
+  lastUsedAt: row.last_used_at
+});
+
+const getPasskeySummaries = async (db: D1Database, userId: string) => {
+  const rows = await db
+    .prepare(
+      `SELECT id, user_id, credential_id, name, public_key_cose, sign_count, transports, created_at, last_used_at
+       FROM user_passkeys
+       WHERE user_id = ?
+       ORDER BY datetime(created_at) DESC`
+    )
+    .bind(userId)
+    .all<PasskeyRow>();
+  return rows.results.map((row) => passkeySummaryFromRow(row));
+};
+
+const getEnabledMfaMethods = async (db: D1Database, userId: string): Promise<MfaMethod[]> => {
+  const [totp, email] = await Promise.all([
+    db
+      .prepare("SELECT user_id, secret_base32, enabled_at FROM user_totp_credentials WHERE user_id = ? AND enabled_at IS NOT NULL LIMIT 1")
+      .bind(userId)
+      .first<TotpCredentialRow>(),
+    db
+      .prepare("SELECT user_id, enabled_at FROM user_email_mfa_settings WHERE user_id = ? LIMIT 1")
+      .bind(userId)
+      .first<EmailMfaSettingsRow>()
+  ]);
+  return [totp ? "totp" : null, email ? "email" : null].filter(Boolean) as MfaMethod[];
+};
+
+const getSecuritySettings = async (db: D1Database, userId: string): Promise<SecuritySettingsResponse> => {
+  const [methods, passkeys] = await Promise.all([
+    getEnabledMfaMethods(db, userId),
+    getPasskeySummaries(db, userId)
+  ]);
+  return {
+    twoStep: {
+      totpEnabled: methods.includes("totp"),
+      emailEnabled: methods.includes("email")
+    },
+    passkeys
+  };
+};
+
+const currentClientIpHash = async (context: AppContext) => sha256(requestClientIp(context));
+
+const shouldSendNewLocationNotice = async (db: D1Database, context: AppContext, userId: string) => {
+  try {
+    const ipHash = await currentClientIpHash(context);
+    const row = await db
+      .prepare(
+        `SELECT
+           COUNT(*) AS known_count,
+           SUM(CASE WHEN client_ip_hash = ? THEN 1 ELSE 0 END) AS matching_count
+         FROM auth_sessions
+         WHERE user_id = ?
+           AND client_ip_hash <> ''
+           AND datetime(expires_at) > datetime('now')`
+      )
+      .bind(ipHash, userId)
+      .first<{ known_count: number; matching_count: number | null }>();
+    const knownCount = Number(row?.known_count ?? 0);
+    const matchingCount = Number(row?.matching_count ?? 0);
+    return knownCount > 0 && matchingCount === 0;
+  } catch (error) {
+    if (isMissingColumnError(error, ["client_ip_hash"])) {
+      return false;
+    }
+    throw error;
+  }
+};
+
+const createWebauthnChallenge = async (
+  db: D1Database,
+  kind: "registration" | "authentication",
+  userId: string | null
+) => {
+  const challenge = randomToken(32);
+  await db
+    .prepare(
+      `INSERT INTO webauthn_challenges
+        (id, user_id, challenge_hash, kind, expires_at)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .bind(
+      `wch_${crypto.randomUUID().replaceAll("-", "")}`,
+      userId,
+      await sha256(challenge),
+      kind,
+      toIsoAfterSeconds(webauthnChallengeDurationSeconds)
+    )
+    .run();
+  return challenge;
+};
+
+const getWebauthnChallenge = async (
+  db: D1Database,
+  challenge: string,
+  kind: "registration" | "authentication",
+  userId?: string
+) => {
+  const query = userId
+    ? `SELECT id, user_id
+       FROM webauthn_challenges
+       WHERE challenge_hash = ?
+         AND kind = ?
+         AND user_id = ?
+         AND consumed_at IS NULL
+         AND datetime(expires_at) > datetime('now')
+       LIMIT 1`
+    : `SELECT id, user_id
+       FROM webauthn_challenges
+       WHERE challenge_hash = ?
+         AND kind = ?
+         AND consumed_at IS NULL
+         AND datetime(expires_at) > datetime('now')
+       LIMIT 1`;
+  const statement = db.prepare(query);
+  return userId
+    ? statement.bind(await sha256(challenge), kind, userId).first<WebauthnChallengeRow>()
+    : statement.bind(await sha256(challenge), kind).first<WebauthnChallengeRow>();
+};
+
+const consumeWebauthnChallenge = async (db: D1Database, challengeId: string) => {
+  await db
+    .prepare("UPDATE webauthn_challenges SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .bind(challengeId)
+    .run();
+};
+
+const sendMfaEmail = async (env: Bindings, user: AuthUser, code: string) =>
+  sendAccountEmail(
+    env,
+    user.email,
+    `${env.PUBLIC_APP_NAME}: sign-in code`,
+    [
+      `Hi ${user.displayName},`,
+      "",
+      `Your ${env.PUBLIC_APP_NAME} sign-in code is: ${code}`,
+      "",
+      "This code expires in 10 minutes.",
+      "",
+      "If you did not try to sign in, change your password immediately."
+    ],
+    "sign-in code"
+  );
+
+const createMfaChallenge = async (
+  db: D1Database,
+  context: AppContext,
+  user: UserRow,
+  methods: MfaMethod[]
+) => {
+  const id = `mfa_${crypto.randomUUID().replaceAll("-", "")}`;
+  const token = randomToken(32);
+  let emailCodeHash: string | null = null;
+  let emailSentAt: string | null = null;
+  if (methods.includes("email")) {
+    const code = generateNumericCode(6);
+    emailCodeHash = await sha256(`${id}:${code}`);
+    emailSentAt = new Date().toISOString();
+    await sendMfaEmail(context.env, authUserFromRow(user), code);
+  }
+
+  await db
+    .prepare(
+      `INSERT INTO auth_mfa_challenges
+        (id, user_id, token_hash, email_code_hash, email_sent_at, client_ip_hash, user_agent, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(
+      id,
+      user.id,
+      await sha256(token),
+      emailCodeHash,
+      emailSentAt,
+      await currentClientIpHash(context),
+      requestUserAgent(context),
+      toIsoAfterSeconds(mfaChallengeDurationSeconds)
+    )
+    .run();
+
+  return {
+    mfaRequired: true,
+    mfaToken: token,
+    methods,
+    maskedEmail: maskEmail(user.email),
+    message: methods.includes("email")
+      ? "Enter your authenticator or email code to finish signing in."
+      : "Enter your authenticator code to finish signing in."
+  } satisfies AuthLoginResponse;
+};
 
 const requireAdmin = async (context: AppContext) => {
   if (!context.env.DB) {
@@ -7925,26 +8713,229 @@ app.post("/api/auth/login", async (context) => {
     return context.json({ message: "This account is suspended." }, 403);
   }
 
-  const earnedCredits = await awardLoginSiteCredits(context.env.DB, user.id);
-  const responseUser = (await getUserRowById(context.env.DB, user.id)) ?? user;
-
-  let sessionToken: string;
-  let csrfToken: string;
-  try {
-    sessionToken = await createSession(context.env.DB, context, user.id);
-    context.header("Set-Cookie", sessionCookie(context, sessionToken), { append: true });
-    csrfToken = await issueCsrfToken(context, sessionToken);
-  } catch (error) {
-    console.error("Unable to create login session", error);
-    context.header("Set-Cookie", clearSessionCookie(context), { append: true });
-    context.header("Set-Cookie", clearCsrfCookie(context), { append: true });
-    return context.json({ message: "Unable to create login session." }, 500);
+  const mfaMethods = await getEnabledMfaMethods(context.env.DB, user.id);
+  if (mfaMethods.length > 0) {
+    return context.json<AuthLoginResponse>(
+      await createMfaChallenge(context.env.DB, context, user, mfaMethods)
+    );
   }
 
-  return context.json<AuthResponse>({
-    user: authUserFromRow(responseUser),
-    csrfToken,
-    message: `Signed in. You earned ${earnedCredits} site credit${earnedCredits === 1 ? "" : "s"}.`
+  return completeLogin(context, user, { authMethod: "password" });
+});
+
+app.post("/api/auth/mfa/verify", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+
+  const parsed = await parseJson(context, mfaVerifySchema);
+  if (!parsed.success) {
+    return context.json({ message: "Verification code is invalid." }, 400);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "auth:mfa-verify",
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+
+  const challenge = await context.env.DB.prepare(
+    `SELECT id, user_id, email_code_hash, client_ip_hash, user_agent
+     FROM auth_mfa_challenges
+     WHERE token_hash = ?
+       AND consumed_at IS NULL
+       AND datetime(expires_at) > datetime('now')
+     LIMIT 1`
+  )
+    .bind(await sha256(parsed.data.mfaToken))
+    .first<MfaChallengeRow>();
+  if (!challenge) {
+    return context.json({ message: "Verification challenge is invalid or expired." }, 400);
+  }
+
+  const user = await getUserRowById(context.env.DB, challenge.user_id);
+  if (!user || user.suspended_at) {
+    return context.json({ message: "Verification challenge is invalid or expired." }, 400);
+  }
+  const methods = await getEnabledMfaMethods(context.env.DB, user.id);
+  if (!methods.includes(parsed.data.method)) {
+    return context.json({ message: "Verification method is not enabled." }, 400);
+  }
+
+  let verified = false;
+  if (parsed.data.method === "email") {
+    const expectedHash = await sha256(`${challenge.id}:${parsed.data.code}`);
+    verified = Boolean(
+      challenge.email_code_hash &&
+        (await constantTimeStringEqual(challenge.email_code_hash, expectedHash))
+    );
+  } else {
+    const totp = await context.env.DB.prepare(
+      "SELECT user_id, secret_base32, enabled_at FROM user_totp_credentials WHERE user_id = ? AND enabled_at IS NOT NULL LIMIT 1"
+    )
+      .bind(user.id)
+      .first<TotpCredentialRow>();
+    verified = totp ? await verifyTotpCode(totp.secret_base32, parsed.data.code) : false;
+  }
+
+  if (!verified) {
+    return context.json({ message: "Verification code is incorrect." }, 403);
+  }
+
+  await context.env.DB.prepare(
+    "UPDATE auth_mfa_challenges SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?"
+  )
+    .bind(challenge.id)
+    .run();
+
+  return completeLogin(context, user, { authMethod: "password" });
+});
+
+app.post("/api/auth/passkey/options", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "auth:passkey-options",
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const challenge = await createWebauthnChallenge(context.env.DB, "authentication", null);
+  const { rpId } = webauthnContext(context);
+  return context.json<PasskeyAuthenticationOptionsResponse>({
+    publicKey: {
+      challenge,
+      rpId,
+      timeout: 300_000,
+      userVerification: "preferred"
+    }
+  });
+});
+
+app.post("/api/auth/passkey/verify", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const parsed = await parseJson(context, passkeyAuthenticationSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Passkey response is invalid." }, 400);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "auth:passkey-verify",
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+
+  const clientDataPreview = JSON.parse(
+    textDecoder.decode(fromBase64Url(parsed.data.response.clientDataJSON))
+  ) as { challenge?: unknown };
+  if (typeof clientDataPreview.challenge !== "string") {
+    return context.json({ message: "Passkey challenge is invalid." }, 400);
+  }
+  const challengeRow = await getWebauthnChallenge(
+    context.env.DB,
+    clientDataPreview.challenge,
+    "authentication"
+  );
+  if (!challengeRow) {
+    return context.json({ message: "Passkey challenge is invalid or expired." }, 400);
+  }
+
+  const credentialId = parsed.data.rawId;
+  const row = await context.env.DB.prepare(
+    `SELECT
+      user_passkeys.id AS passkey_id,
+      user_passkeys.user_id,
+      user_passkeys.credential_id,
+      user_passkeys.name,
+      user_passkeys.public_key_cose,
+      user_passkeys.sign_count,
+      user_passkeys.transports,
+      user_passkeys.created_at AS passkey_created_at,
+      user_passkeys.last_used_at,
+      users.id,
+      users.email,
+      users.username,
+      users.display_name,
+      users.password_hash,
+      users.role,
+      users.email_verified_at,
+      users.date_of_birth,
+      users.mature_content_enabled,
+      users.bookmark_default_visibility,
+      users.profile_visibility,
+      users.suspended_at,
+      users.suspended_reason,
+      ${userStorageSelectSql("users")},
+      users.created_at,
+      users.updated_at
+     FROM user_passkeys
+     JOIN users ON users.id = user_passkeys.user_id
+     WHERE user_passkeys.credential_id = ?
+     LIMIT 1`
+  )
+    .bind(credentialId)
+    .first<
+      UserRow & {
+        passkey_id: string;
+        credential_id: string;
+        public_key_cose: string;
+        sign_count: number;
+      }
+    >();
+  if (!row || row.suspended_at) {
+    return context.json({ message: "Passkey is not registered." }, 401);
+  }
+
+  try {
+    const { origin, rpId } = webauthnContext(context);
+    const { clientDataBytes } = parseWebauthnClientData(
+      parsed.data.response.clientDataJSON,
+      "webauthn.get",
+      clientDataPreview.challenge,
+      origin
+    );
+    const authenticatorDataBytes = fromBase64Url(parsed.data.response.authenticatorData);
+    const authenticatorData = await verifyAuthenticatorData(authenticatorDataBytes, rpId);
+    const signedData = concatBytes(
+      authenticatorDataBytes,
+      await sha256Bytes(clientDataBytes)
+    );
+    const signatureValid = await verifyCoseSignature({
+      publicKeyCose: fromBase64Url(row.public_key_cose),
+      signature: fromBase64Url(parsed.data.response.signature),
+      signedData
+    });
+    if (!signatureValid) {
+      return context.json({ message: "Passkey signature is invalid." }, 403);
+    }
+    if (row.sign_count > 0 && authenticatorData.signCount > 0 && authenticatorData.signCount <= row.sign_count) {
+      return context.json({ message: "Passkey counter is invalid." }, 403);
+    }
+    await context.env.DB.batch([
+      context.env.DB.prepare(
+        `UPDATE user_passkeys
+         SET sign_count = ?,
+             last_used_at = CURRENT_TIMESTAMP
+         WHERE id = ?`
+      ).bind(Math.max(row.sign_count, authenticatorData.signCount), row.passkey_id),
+      context.env.DB.prepare(
+        "UPDATE webauthn_challenges SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?"
+      ).bind(challengeRow.id)
+    ]);
+  } catch (error) {
+    console.warn("Passkey verification failed", error);
+    return context.json({ message: "Passkey could not be verified." }, 400);
+  }
+
+  return completeLogin(context, row, {
+    authMethod: "passkey",
+    messagePrefix: "Signed in with passkey"
   });
 });
 
@@ -10361,6 +11352,375 @@ app.put("/api/settings/privacy-security", async (context) => {
   });
 });
 
+app.get("/api/settings/security", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to manage account security." }, 401);
+  }
+  return context.json<SecuritySettingsResponse>(await getSecuritySettings(context.env.DB, user.id));
+});
+
+app.post("/api/settings/security/totp/start", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to manage account security." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "settings:totp-start",
+    userId: user.id,
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  const existing = await context.env.DB.prepare(
+    "SELECT user_id, secret_base32, enabled_at FROM user_totp_credentials WHERE user_id = ? AND enabled_at IS NOT NULL LIMIT 1"
+  )
+    .bind(user.id)
+    .first<TotpCredentialRow>();
+  if (existing) {
+    return context.json({ message: "Disable the existing authenticator before setting up a new one." }, 409);
+  }
+
+  const secret = generateTotpSecret();
+  await context.env.DB.prepare(
+    `INSERT INTO user_totp_credentials (user_id, secret_base32, enabled_at)
+     VALUES (?, ?, NULL)
+     ON CONFLICT(user_id) DO UPDATE SET
+       secret_base32 = excluded.secret_base32,
+       enabled_at = NULL,
+       updated_at = CURRENT_TIMESTAMP`
+  )
+    .bind(user.id, secret)
+    .run();
+  const issuer = context.env.PUBLIC_APP_NAME;
+  const label = `${issuer}:${user.email}`;
+  const otpauthUrl = `otpauth://totp/${encodeURIComponent(label)}?secret=${encodeURIComponent(
+    secret
+  )}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
+  return context.json<TotpSetupResponse>({
+    secret,
+    otpauthUrl,
+    message: "Authenticator setup started."
+  });
+});
+
+app.post("/api/settings/security/totp/confirm", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to manage account security." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "settings:totp-confirm",
+    userId: user.id,
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, totpConfirmSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Authenticator code is invalid." }, 400);
+  }
+
+  const credential = await context.env.DB.prepare(
+    "SELECT user_id, secret_base32, enabled_at FROM user_totp_credentials WHERE user_id = ? LIMIT 1"
+  )
+    .bind(user.id)
+    .first<TotpCredentialRow>();
+  if (!credential || !(await verifyTotpCode(credential.secret_base32, parsed.data.code))) {
+    return context.json({ message: "Authenticator code is incorrect." }, 403);
+  }
+  await context.env.DB.prepare(
+    `UPDATE user_totp_credentials
+     SET enabled_at = COALESCE(enabled_at, CURRENT_TIMESTAMP),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE user_id = ?`
+  )
+    .bind(user.id)
+    .run();
+  return context.json<SecuritySettingsResponse>({
+    ...(await getSecuritySettings(context.env.DB, user.id)),
+    message: "Authenticator app enabled."
+  });
+});
+
+app.delete("/api/settings/security/totp", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to manage account security." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "settings:totp-disable",
+    userId: user.id,
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  await context.env.DB.prepare("DELETE FROM user_totp_credentials WHERE user_id = ?")
+    .bind(user.id)
+    .run();
+  return context.json<SecuritySettingsResponse>({
+    ...(await getSecuritySettings(context.env.DB, user.id)),
+    message: "Authenticator app disabled."
+  });
+});
+
+app.put("/api/settings/security/email", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to manage account security." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "settings:email-mfa",
+    userId: user.id,
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, emailMfaSettingsSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Email verification setting is invalid." }, 400);
+  }
+  if (parsed.data.enabled && !user.emailVerified) {
+    return context.json({ message: "Verify your email before enabling email codes." }, 403);
+  }
+  if (parsed.data.enabled) {
+    await context.env.DB.prepare(
+      "INSERT OR IGNORE INTO user_email_mfa_settings (user_id) VALUES (?)"
+    )
+      .bind(user.id)
+      .run();
+  } else {
+    await context.env.DB.prepare("DELETE FROM user_email_mfa_settings WHERE user_id = ?")
+      .bind(user.id)
+      .run();
+  }
+  return context.json<SecuritySettingsResponse>({
+    ...(await getSecuritySettings(context.env.DB, user.id)),
+    message: parsed.data.enabled ? "Email sign-in codes enabled." : "Email sign-in codes disabled."
+  });
+});
+
+app.post("/api/settings/security/passkeys/options", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to manage passkeys." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "settings:passkey-options",
+    userId: user.id,
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, passkeyRegistrationOptionsSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Passkey details are invalid." }, 400);
+  }
+  const challenge = await createWebauthnChallenge(context.env.DB, "registration", user.id);
+  const { rpId } = webauthnContext(context);
+  const existingPasskeys = await context.env.DB.prepare(
+    `SELECT id, user_id, credential_id, name, public_key_cose, sign_count, transports, created_at, last_used_at
+     FROM user_passkeys
+     WHERE user_id = ?`
+  )
+    .bind(user.id)
+    .all<PasskeyRow>();
+  return context.json<PasskeyRegistrationOptionsResponse>({
+    publicKey: {
+      challenge,
+      rp: {
+        id: rpId,
+        name: context.env.PUBLIC_APP_NAME
+      },
+      user: {
+        id: toBase64Url(textEncoder.encode(user.id)),
+        name: user.email,
+        displayName: user.displayName
+      },
+      pubKeyCredParams: [
+        { type: "public-key", alg: -7 },
+        { type: "public-key", alg: -257 }
+      ],
+      timeout: 300_000,
+      attestation: "none",
+      authenticatorSelection: {
+        residentKey: "preferred",
+        userVerification: "preferred"
+      },
+      excludeCredentials: existingPasskeys.results.map((passkey) => ({
+        type: "public-key",
+        id: passkey.credential_id,
+        transports: passkey.transports ? passkey.transports.split(",").filter(Boolean) : undefined
+      }))
+    }
+  });
+});
+
+app.post("/api/settings/security/passkeys", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to manage passkeys." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "settings:passkey-register",
+    userId: user.id,
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, passkeyRegistrationSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Passkey response is invalid." }, 400);
+  }
+
+  const clientDataPreview = JSON.parse(
+    textDecoder.decode(fromBase64Url(parsed.data.response.clientDataJSON))
+  ) as { challenge?: unknown };
+  if (typeof clientDataPreview.challenge !== "string") {
+    return context.json({ message: "Passkey challenge is invalid." }, 400);
+  }
+  const challengeRow = await getWebauthnChallenge(
+    context.env.DB,
+    clientDataPreview.challenge,
+    "registration",
+    user.id
+  );
+  if (!challengeRow) {
+    return context.json({ message: "Passkey challenge is invalid or expired." }, 400);
+  }
+
+  try {
+    const { origin, rpId } = webauthnContext(context);
+    parseWebauthnClientData(
+      parsed.data.response.clientDataJSON,
+      "webauthn.create",
+      clientDataPreview.challenge,
+      origin
+    );
+    const attestationObject = readCbor(fromBase64Url(parsed.data.response.attestationObject));
+    if (!(attestationObject instanceof Map)) {
+      throw new Error("Passkey attestation is invalid.");
+    }
+    const authDataBytes = cborBytes(cborMapValue(attestationObject, "authData"), "authData");
+    const authenticatorData = await verifyAuthenticatorData(authDataBytes, rpId);
+    const credentialData = extractAttestedCredentialData(authenticatorData);
+    if (!constantTimeEqual(credentialData.credentialId, fromBase64Url(parsed.data.rawId))) {
+      throw new Error("Passkey credential ID did not match.");
+    }
+    await context.env.DB.batch([
+      context.env.DB.prepare(
+        `INSERT INTO user_passkeys
+          (id, user_id, credential_id, name, public_key_cose, sign_count, transports)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        `pky_${crypto.randomUUID().replaceAll("-", "")}`,
+        user.id,
+        toBase64Url(credentialData.credentialId),
+        parsed.data.name,
+        toBase64Url(credentialData.publicKeyCose),
+        authenticatorData.signCount,
+        parsed.data.transports.join(",")
+      ),
+      context.env.DB.prepare(
+        "UPDATE webauthn_challenges SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?"
+      ).bind(challengeRow.id)
+    ]);
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return context.json({ message: "That passkey is already registered." }, 409);
+    }
+    console.warn("Passkey registration failed", error);
+    return context.json({ message: "Passkey could not be registered." }, 400);
+  }
+
+  return context.json<SecuritySettingsResponse>({
+    ...(await getSecuritySettings(context.env.DB, user.id)),
+    message: "Passkey added."
+  });
+});
+
+app.delete("/api/settings/security/passkeys/:id", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to manage passkeys." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "settings:passkey-delete",
+    userId: user.id,
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const id = context.req.param("id");
+  await context.env.DB.prepare("DELETE FROM user_passkeys WHERE id = ? AND user_id = ?")
+    .bind(id, user.id)
+    .run();
+  return context.json<SecuritySettingsResponse>({
+    ...(await getSecuritySettings(context.env.DB, user.id)),
+    message: "Passkey removed."
+  });
+});
+
 app.get("/api/settings/notification-preferences", async (context) => {
   if (!context.env.DB) {
     return authUnavailable(context);
@@ -10856,28 +12216,12 @@ app.get("/api/settings/email/confirm", async (context) => {
     return emailChangeRedirect("invalid");
   }
 
-  const activeSessionHash = await currentSessionHash(context);
-  const activeSession = activeSessionHash
-    ? await context.env.DB.prepare(
-        `SELECT id
-         FROM auth_sessions
-         WHERE user_id = ?
-           AND session_hash = ?
-           AND datetime(expires_at) > datetime('now')
-         LIMIT 1`
-      )
-        .bind(row.id, activeSessionHash)
-        .first<{ id: string }>()
-    : null;
-  if (!activeSession) {
-    return emailChangeRedirect("security");
-  }
-
   const existing = await getUserRowByEmail(context.env.DB, row.new_email);
   if (existing && existing.id !== row.id) {
     return emailChangeRedirect("invalid");
   }
 
+  const activeSessionHash = await currentSessionHash(context);
   await context.env.DB.batch([
     context.env.DB.prepare(
       "UPDATE email_change_tokens SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?"
@@ -10895,9 +12239,11 @@ app.get("/api/settings/email/confirm", async (context) => {
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`
     ).bind(row.new_email, row.id),
-    context.env.DB.prepare(
-      "DELETE FROM auth_sessions WHERE user_id = ? AND session_hash <> ?"
-    ).bind(row.id, activeSessionHash)
+    activeSessionHash
+      ? context.env.DB.prepare(
+          "DELETE FROM auth_sessions WHERE user_id = ? AND session_hash <> ?"
+        ).bind(row.id, activeSessionHash)
+      : context.env.DB.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(row.id)
   ]);
 
   await sendSecurityNoticeEmail(context.env, authUserFromRow(row), "Email changed", [
