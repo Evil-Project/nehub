@@ -635,6 +635,16 @@ export type EmailChangeRequestResponse = {
   message: string;
 };
 
+export type EmailConfirmationKind = "verify" | "change";
+
+export type EmailConfirmationStatus = "confirmed" | "invalid" | "unavailable";
+
+export type EmailConfirmationResponse = {
+  kind: EmailConfirmationKind;
+  status: EmailConfirmationStatus;
+  message: string;
+};
+
 export type PasskeySummary = {
   id: string;
   name: string;

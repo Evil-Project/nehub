@@ -117,6 +117,9 @@ import type {
   NotificationsResponse,
   PasswordChangeResponse,
   EmailChangeRequestResponse,
+  EmailConfirmationKind,
+  EmailConfirmationResponse,
+  EmailConfirmationStatus,
   MfaMethod,
   PasswordResetConfirmResponse,
   PasswordResetRequestResponse,
@@ -464,6 +467,7 @@ type ViewMode =
   | "series"
   | "profileSettings"
   | "privacySecurity"
+  | "emailConfirmation"
   | "terms"
   | "privacy";
 type AuthMode = "login" | "register";
@@ -590,6 +594,9 @@ const getInitialRoute = (): RouteState => {
   if (pathname === "/settings/privacy-security") {
     return { view: "privacySecurity", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
   }
+  if (pathname === "/email-confirmation") {
+    return { view: "emailConfirmation", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+  }
   if (pathname === "/terms") {
     return { view: "terms", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
   }
@@ -658,6 +665,14 @@ function App() {
   const [postAuthSort, setPostAuthSort] = useState<SortMode | null>(null);
   const [galleryLoadingMore, setGalleryLoadingMore] = useState(false);
   const [contentAccessRevision, setContentAccessRevision] = useState(0);
+
+  const refreshAuthSession = useCallback(async () => {
+    const response = await fetch("/api/auth/session", { credentials: "include" });
+    const session = (await response.json()) as AuthSessionResponse;
+    setCurrentUser(session.user);
+    setCsrfToken(session.csrfToken ?? "");
+    return session;
+  }, []);
 
   const galleryParams = useMemo(() => {
     const params = new URLSearchParams();
@@ -810,14 +825,7 @@ function App() {
         console.error("Unable to load auth config", error);
       });
 
-    fetch("/api/auth/session", { credentials: "include" })
-      .then((response) => response.json() as Promise<AuthSessionResponse>)
-      .then((session) => {
-        if (!cancelled) {
-          setCurrentUser(session.user);
-          setCsrfToken(session.csrfToken ?? "");
-        }
-      })
+    refreshAuthSession()
       .catch((error: unknown) => {
         console.error("Unable to load auth session", error);
       })
@@ -864,7 +872,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshAuthSession]);
 
   const loadNotifications = useCallback(async () => {
     if (!currentUser) {
@@ -1297,7 +1305,9 @@ function App() {
       : "All work";
   const showHomeSortTabs = !isBookmarksView && !isSubscriptionsView;
   const accountNotice = dashboardMessage || authNotice;
-  const hasAccountNotice = Boolean(accountNotice || (currentUser && !currentUser.emailVerified));
+  const hasAccountNotice =
+    view !== "emailConfirmation" &&
+    Boolean(accountNotice || (currentUser && !currentUser.emailVerified));
 
   const pushRoute = (
     path: string,
@@ -3345,6 +3355,14 @@ function App() {
             onAccountDeactivated={handleAccountDeactivated}
             onSaved={handleSettingsUser}
           />
+        ) : view === "emailConfirmation" ? (
+          <EmailConfirmationPage
+            currentUser={currentUser}
+            onAuthRequired={() => openAuth("login")}
+            onHome={() => showHome("latest")}
+            onOpenPrivacySecurity={showPrivacySecurity}
+            onSessionRefresh={refreshAuthSession}
+          />
         ) : view === "terms" ? (
           <PolicyPage kind="terms" onOpenPrivacy={() => showPolicy("privacy")} />
         ) : view === "privacy" ? (
@@ -3743,6 +3761,183 @@ function AccountNotice({
         </button>
       )}
       {resendMessage ? <p className="auth-inline-message">{resendMessage}</p> : null}
+    </section>
+  );
+}
+
+const emailConfirmationKindFromQuery = (value: string | null): EmailConfirmationKind =>
+  value === "change" ? "change" : "verify";
+
+const emailConfirmationStatusFromQuery = (
+  value: string | null
+): EmailConfirmationStatus | null =>
+  value === "confirmed" || value === "invalid" || value === "unavailable" ? value : null;
+
+const emailConfirmationStatusMessage = (
+  kind: EmailConfirmationKind,
+  status: EmailConfirmationStatus
+) => {
+  if (status === "confirmed") {
+    return kind === "change"
+      ? "Email change confirmed. Your sign-in email was updated successfully."
+      : "Email confirmation complete. Your account is verified.";
+  }
+  if (status === "unavailable") {
+    return "Email confirmation is temporarily unavailable.";
+  }
+  return kind === "change"
+    ? "Email change link is invalid or expired."
+    : "Email confirmation link is invalid or expired.";
+};
+
+type EmailConfirmationPageProps = {
+  currentUser: AuthUser | null;
+  onAuthRequired: () => void;
+  onHome: () => void;
+  onOpenPrivacySecurity: () => void;
+  onSessionRefresh: () => Promise<AuthSessionResponse>;
+};
+
+function EmailConfirmationPage({
+  currentUser,
+  onAuthRequired,
+  onHome,
+  onOpenPrivacySecurity,
+  onSessionRefresh
+}: EmailConfirmationPageProps) {
+  const confirmationParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const kind = emailConfirmationKindFromQuery(confirmationParams.get("kind"));
+  const token = confirmationParams.get("token")?.trim() ?? "";
+  const initialStatus = emailConfirmationStatusFromQuery(confirmationParams.get("status"));
+  const [status, setStatus] = useState<"pending" | EmailConfirmationStatus>(
+    initialStatus ?? (token ? "pending" : "invalid")
+  );
+  const [message, setMessage] = useState(() => {
+    if (initialStatus) {
+      return emailConfirmationStatusMessage(kind, initialStatus);
+    }
+    if (!token) {
+      return "Email confirmation link is missing.";
+    }
+    return kind === "change" ? "Confirming your email change." : "Confirming your account email.";
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!token) {
+      if (!initialStatus) {
+        setStatus("invalid");
+        setMessage("Email confirmation link is missing.");
+      } else if (initialStatus === "confirmed") {
+        onSessionRefresh().catch((error: unknown) => {
+          console.error("Unable to refresh confirmed session", error);
+        });
+      }
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const endpoint =
+      kind === "change" ? "/api/settings/email/confirm" : "/api/auth/verify-email";
+    const params = new URLSearchParams({
+      token,
+      format: "json"
+    });
+
+    setStatus("pending");
+    setMessage(kind === "change" ? "Confirming your email change." : "Confirming your account email.");
+
+    fetch(`${endpoint}?${params.toString()}`, {
+      credentials: "include",
+      headers: {
+        accept: "application/json"
+      }
+    })
+      .then(async (response) => {
+        const payload = (await response.json().catch(() => null)) as
+          | EmailConfirmationResponse
+          | { message?: string }
+          | null;
+        if (payload && "status" in payload && "kind" in payload) {
+          return payload as EmailConfirmationResponse;
+        }
+        throw new Error(payload?.message ?? "Email confirmation failed.");
+      })
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        setStatus(payload.status);
+        setMessage(payload.message);
+        window.history.replaceState(
+          null,
+          "",
+          `/email-confirmation?kind=${payload.kind}&status=${payload.status}`
+        );
+        if (payload.status === "confirmed") {
+          onSessionRefresh().catch((error: unknown) => {
+            console.error("Unable to refresh confirmed session", error);
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        setStatus("invalid");
+        setMessage(error instanceof Error ? error.message : "Email confirmation failed.");
+        window.history.replaceState(null, "", `/email-confirmation?kind=${kind}&status=invalid`);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [initialStatus, kind, onSessionRefresh, token]);
+
+  const StatusIcon = status === "confirmed" ? ShieldCheck : status === "pending" ? MailCheck : X;
+  const title =
+    status === "pending"
+      ? "Confirming email"
+      : status === "confirmed"
+        ? kind === "change"
+          ? "Email changed"
+          : "Email verified"
+        : status === "unavailable"
+          ? "Confirmation unavailable"
+          : "Link needs attention";
+
+  return (
+    <section className="content-main email-confirmation-page" aria-live="polite">
+      <div className={`email-confirmation-card is-${status}`}>
+        <span className="email-confirmation-icon">
+          <StatusIcon size={28} />
+        </span>
+        <p className="eyebrow">Email confirmation</p>
+        <h1>{title}</h1>
+        <p>{message}</p>
+        {status !== "pending" ? (
+          <div className="email-confirmation-actions">
+            <button className="primary-button" type="button" onClick={onHome}>
+              <Home size={16} />
+              Open gallery
+            </button>
+            {status === "confirmed" && kind === "change" && currentUser ? (
+              <button className="secondary-button" type="button" onClick={onOpenPrivacySecurity}>
+                <KeyRound size={16} />
+                Privacy settings
+              </button>
+            ) : null}
+            {!currentUser ? (
+              <button className="secondary-button" type="button" onClick={onAuthRequired}>
+                <LogIn size={16} />
+                Sign in
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }

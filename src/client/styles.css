@@ -2581,6 +2581,72 @@ h1 {
   margin: 0;
 }
 
+.email-confirmation-page {
+  display: grid;
+  min-height: min(560px, calc(100dvh - 180px));
+  place-items: center;
+}
+
+.email-confirmation-card {
+  display: grid;
+  justify-items: start;
+  width: min(620px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 8px;
+  padding: clamp(22px, 4vw, 34px);
+  background:
+    repeating-linear-gradient(130deg, rgba(250, 158, 188, 0.08) 0 2px, transparent 2px 28px),
+    rgba(255, 255, 255, 0.72);
+  box-shadow: var(--shadow);
+}
+
+.email-confirmation-icon {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  margin-bottom: 14px;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(0, 223, 238, 0.28), rgba(250, 158, 188, 0.34));
+  color: var(--purple);
+  box-shadow: var(--sticker-shadow);
+}
+
+.email-confirmation-card.is-confirmed .email-confirmation-icon {
+  background: linear-gradient(135deg, rgba(32, 178, 108, 0.22), rgba(0, 223, 238, 0.26));
+  color: var(--green);
+}
+
+.email-confirmation-card.is-invalid .email-confirmation-icon {
+  background: linear-gradient(135deg, rgba(255, 64, 96, 0.16), rgba(255, 255, 255, 0.9));
+  color: var(--red);
+}
+
+.email-confirmation-card.is-unavailable .email-confirmation-icon {
+  background: linear-gradient(135deg, rgba(255, 200, 0, 0.22), rgba(255, 255, 255, 0.9));
+  color: #a76a00;
+}
+
+.email-confirmation-card h1 {
+  margin-bottom: 8px;
+}
+
+.email-confirmation-card p:not(.eyebrow) {
+  max-width: 52ch;
+  margin: 0;
+  color: var(--muted);
+  font-weight: 800;
+  line-height: 1.55;
+}
+
+.email-confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
 .notice-close {
   width: 34px;
   height: 34px;

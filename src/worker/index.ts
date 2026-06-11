@@ -82,6 +82,9 @@ import type {
   NotificationType,
   NotificationsResponse,
   EmailChangeRequestResponse,
+  EmailConfirmationKind,
+  EmailConfirmationResponse,
+  EmailConfirmationStatus,
   PasswordChangeResponse,
   PasswordResetConfirmResponse,
   PasswordResetRequestResponse,
@@ -3409,7 +3412,7 @@ const sendVerificationEmail = async (
   verificationToken: string
 ) => {
   const appUrl = env.PUBLIC_APP_URL.replace(/\/$/, "");
-  const verificationUrl = `${appUrl}/api/auth/verify-email?token=${encodeURIComponent(
+  const verificationUrl = `${appUrl}/email-confirmation?kind=verify&token=${encodeURIComponent(
     verificationToken
   )}`;
   if (!env.EMAIL) {
@@ -3467,7 +3470,7 @@ const sendEmailChangeConfirmation = async (
   token: string
 ) => {
   const appUrl = env.PUBLIC_APP_URL.replace(/\/$/, "");
-  const confirmationUrl = `${appUrl}/api/settings/email/confirm?token=${encodeURIComponent(
+  const confirmationUrl = `${appUrl}/email-confirmation?kind=change&token=${encodeURIComponent(
     token
   )}`;
   await sendAccountEmail(
@@ -3500,6 +3503,33 @@ const sendSecurityNoticeEmail = async (
     `${env.PUBLIC_APP_NAME}: ${subject}`,
     [`Hi ${user.displayName},`, "", ...lines],
     "security notice"
+  );
+
+const wantsJsonResponse = (context: AppContext) =>
+  context.req.query("format") === "json" ||
+  context.req.header("Accept")?.toLowerCase().includes("application/json");
+
+const emailConfirmationRedirect = (
+  context: AppContext,
+  kind: EmailConfirmationKind,
+  status: EmailConfirmationStatus
+) => context.redirect(`/email-confirmation?kind=${kind}&status=${status}`, 302);
+
+const emailConfirmationJson = (
+  context: AppContext,
+  kind: EmailConfirmationKind,
+  status: EmailConfirmationStatus,
+  message: string,
+  responseStatus: 200 | 400 | 503 =
+    status === "confirmed" ? 200 : status === "unavailable" ? 503 : 400
+) =>
+  context.json<EmailConfirmationResponse>(
+    {
+      kind,
+      status,
+      message
+    },
+    responseStatus
   );
 
 const completeLogin = async (
@@ -9119,13 +9149,30 @@ app.post("/api/auth/resend-verification", async (context) => {
 });
 
 app.get("/api/auth/verify-email", async (context) => {
+  const wantsJson = wantsJsonResponse(context);
   if (!context.env.DB) {
-    return context.text("D1 database is required for accounts.", 503);
+    if (wantsJson) {
+      return emailConfirmationJson(
+        context,
+        "verify",
+        "unavailable",
+        "D1 database is required for accounts."
+      );
+    }
+    return emailConfirmationRedirect(context, "verify", "unavailable");
   }
 
   const token = context.req.query("token");
   if (!token) {
-    return context.text("Verification token is missing.", 400);
+    if (wantsJson) {
+      return emailConfirmationJson(
+        context,
+        "verify",
+        "invalid",
+        "Email confirmation token is missing."
+      );
+    }
+    return emailConfirmationRedirect(context, "verify", "invalid");
   }
   const rateLimitError = await enforceRateLimit(context, {
     action: "auth:verify-email",
@@ -9133,7 +9180,7 @@ app.get("/api/auth/verify-email", async (context) => {
     windowSeconds: 15 * minuteSeconds
   });
   if (rateLimitError) {
-    return rateLimitError;
+    return wantsJson ? rateLimitError : emailConfirmationRedirect(context, "verify", "unavailable");
   }
 
   const tokenHash = await sha256(token);
@@ -9164,7 +9211,15 @@ app.get("/api/auth/verify-email", async (context) => {
     .first<UserRow & { token_id: string }>();
 
   if (!row) {
-    return context.redirect("/?verified=invalid", 302);
+    if (wantsJson) {
+      return emailConfirmationJson(
+        context,
+        "verify",
+        "invalid",
+        "Email confirmation link is invalid or expired."
+      );
+    }
+    return emailConfirmationRedirect(context, "verify", "invalid");
   }
 
   await context.env.DB.batch([
@@ -9179,7 +9234,15 @@ app.get("/api/auth/verify-email", async (context) => {
     ).bind(row.id)
   ]);
 
-  return context.redirect("/?verified=1", 302);
+  if (wantsJson) {
+    return emailConfirmationJson(
+      context,
+      "verify",
+      "confirmed",
+      "Email confirmation complete. Your account is verified."
+    );
+  }
+  return emailConfirmationRedirect(context, "verify", "confirmed");
 });
 
 app.get("/api/analytics/creator", async (context) => {
@@ -12162,16 +12225,32 @@ app.post("/api/settings/email/request", async (context) => {
 });
 
 app.get("/api/settings/email/confirm", async (context) => {
+  const wantsJson = wantsJsonResponse(context);
   if (!context.env.DB) {
-    return context.text("D1 database is required for accounts.", 503);
+    if (wantsJson) {
+      return emailConfirmationJson(
+        context,
+        "change",
+        "unavailable",
+        "D1 database is required for accounts."
+      );
+    }
+    return emailConfirmationRedirect(context, "change", "unavailable");
   }
 
-  const emailChangeRedirect = (status: "1" | "invalid" | "security") =>
-    context.redirect(`/settings/privacy-security?emailChanged=${status}`, 302);
+  const emailChangeInvalid = () =>
+    wantsJson
+      ? emailConfirmationJson(
+          context,
+          "change",
+          "invalid",
+          "Email change link is invalid or expired."
+        )
+      : emailConfirmationRedirect(context, "change", "invalid");
 
   const token = context.req.query("token");
   if (!token) {
-    return emailChangeRedirect("invalid");
+    return emailChangeInvalid();
   }
   const rateLimitError = await enforceRateLimit(context, {
     action: "settings:email-confirm",
@@ -12179,7 +12258,7 @@ app.get("/api/settings/email/confirm", async (context) => {
     windowSeconds: 15 * minuteSeconds
   });
   if (rateLimitError) {
-    return rateLimitError;
+    return wantsJson ? rateLimitError : emailConfirmationRedirect(context, "change", "unavailable");
   }
 
   const tokenHash = await sha256(token);
@@ -12213,12 +12292,12 @@ app.get("/api/settings/email/confirm", async (context) => {
     .first<UserRow & { token_id: string; new_email: string }>();
 
   if (!row || row.suspended_at) {
-    return emailChangeRedirect("invalid");
+    return emailChangeInvalid();
   }
 
   const existing = await getUserRowByEmail(context.env.DB, row.new_email);
   if (existing && existing.id !== row.id) {
-    return emailChangeRedirect("invalid");
+    return emailChangeInvalid();
   }
 
   const activeSessionHash = await currentSessionHash(context);
@@ -12262,7 +12341,15 @@ app.get("/api/settings/email/confirm", async (context) => {
     ]
   );
 
-  return emailChangeRedirect("1");
+  if (wantsJson) {
+    return emailConfirmationJson(
+      context,
+      "change",
+      "confirmed",
+      "Email change confirmed. Your sign-in email was updated successfully."
+    );
+  }
+  return emailConfirmationRedirect(context, "change", "confirmed");
 });
 
 app.get("/api/settings/sessions", async (context) => {
