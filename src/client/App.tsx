@@ -140,6 +140,7 @@ import type {
   SecuritySettingsResponse,
   SeriesVisibility,
   SortMode,
+  StorageUnlockResponse,
   TagAlias,
   TagDetailResponse,
   TagImplication,
@@ -453,6 +454,7 @@ const artworkVisibilityLabel = (visibility: ArtworkVisibility) =>
 
 type ViewMode =
   | "home"
+  | "artwork"
   | "dashboard"
   | "profile"
   | "tag"
@@ -478,6 +480,7 @@ type TurnstileAction =
   | "upload"
   | "comment"
   | "report"
+  | "email-confirm"
   | "password-reset"
   | "password-reset-confirm";
 type ArtworkEditInput = {
@@ -519,7 +522,7 @@ const getInitialRoute = (): RouteState => {
   const pathname = decodeURIComponent(window.location.pathname);
   if (pathname.startsWith("/artworks/")) {
     return {
-      view: "home",
+      view: "artwork",
       username: "",
       artworkId: pathname.slice("/artworks/".length).replace(/^\/+|\/+$/g, ""),
       collectionId: "",
@@ -630,6 +633,7 @@ function App() {
   const [authConfig, setAuthConfig] = useState<AuthConfigResponse | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [csrfToken, setCsrfToken] = useState("");
+  const [storageUnlockSubmitting, setStorageUnlockSubmitting] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const [notifications, setNotifications] = useState<NotificationsResponse | null>(null);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -1187,6 +1191,8 @@ function App() {
       setRouteCollectionId(route.collectionId);
       setRouteSeriesId(route.seriesId);
       setRouteTag(route.tag);
+      setSelectedArtwork(null);
+      setArtworkDetail(null);
     };
 
     window.addEventListener("hashchange", handleRouteChange);
@@ -1221,7 +1227,6 @@ function App() {
       })
       .then((detail) => {
         if (!cancelled) {
-          setSelectedArtwork(detail.artwork);
           setArtworkDetail(detail);
         }
       })
@@ -1245,7 +1250,12 @@ function App() {
 
   useEffect(() => {
     if (!selectedArtwork) {
-      setArtworkDetail(null);
+      if (!routeArtworkId) {
+        setArtworkDetail(null);
+      }
+      return;
+    }
+    if (selectedArtwork.id === routeArtworkId) {
       return;
     }
 
@@ -1270,7 +1280,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedArtwork]);
+  }, [routeArtworkId, selectedArtwork]);
 
   const artworks = gallery?.artworks ?? [];
   const prominentTags = gallery?.tags.slice(0, 12) ?? [];
@@ -1487,7 +1497,7 @@ function App() {
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setRouteArtworkId(artworkId);
-    setView("home");
+    setView("artwork");
     setProfileUsername("");
     setRouteCollectionId("");
     setRouteSeriesId("");
@@ -1496,6 +1506,10 @@ function App() {
     if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== path) {
       window.history.pushState(null, "", path);
     }
+  };
+
+  const openArtworkPage = (artwork: Artwork) => {
+    openArtworkById(artwork.id);
   };
 
   const openSuggestedTag = (tag: string) => {
@@ -1828,6 +1842,40 @@ function App() {
     setCurrentUser(payload.user);
     syncArtwork(payload.artwork);
     return payload.message;
+  };
+
+  const handleUnlockStorageSlot = async () => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to unlock storage slots.");
+    }
+    if (storageUnlockSubmitting) {
+      return "Storage unlock already in progress.";
+    }
+    if (currentUser.storage.siteCredits < currentUser.storage.creditsPerSlot) {
+      throw new Error(`Unlocking a storage slot costs ${currentUser.storage.creditsPerSlot} credits.`);
+    }
+    setStorageUnlockSubmitting(true);
+    try {
+      const response = await fetch("/api/storage/unlock-slot", {
+        method: "POST",
+        credentials: "include",
+        headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
+      });
+      const payload = (await response
+        .json()
+        .catch(() => ({ message: "Unable to unlock storage slot." }))) as
+        | StorageUnlockResponse
+        | { message?: string };
+      if (!response.ok || !("user" in payload)) {
+        throw new Error(payload.message ?? "Unable to unlock storage slot.");
+      }
+      setCurrentUser(payload.user);
+      setAuthNotice(payload.message);
+      return payload.message;
+    } finally {
+      setStorageUnlockSubmitting(false);
+    }
   };
 
   const handleComment = async (
@@ -3362,11 +3410,51 @@ function App() {
             onHome={() => showHome("latest")}
             onOpenPrivacySecurity={showPrivacySecurity}
             onSessionRefresh={refreshAuthSession}
+            siteKey={authConfig?.turnstileSiteKey ?? ""}
           />
         ) : view === "terms" ? (
           <PolicyPage kind="terms" onOpenPrivacy={() => showPolicy("privacy")} />
         ) : view === "privacy" ? (
           <PolicyPage kind="privacy" onOpenTerms={() => showPolicy("terms")} />
+        ) : view === "artwork" && artworkDetail ? (
+          <ArtworkDialog
+            detail={artworkDetail}
+            fallbackArtwork={artworkDetail.artwork}
+            loading={detailLoading}
+            presentation="page"
+            onClose={() => showHome("latest")}
+            onLike={handleLike}
+            onBookmark={handleBookmark}
+            onDelete={handleDeleteArtwork}
+            onUpdate={handleUpdateArtwork}
+            onReorderImages={handleReorderArtworkImages}
+            onDeleteImage={handleDeleteArtworkImage}
+            onAddImages={handleAddArtworkImages}
+            onUnlockStorageSlot={handleUnlockStorageSlot}
+            storageUnlocking={storageUnlockSubmitting}
+            onOpenArtwork={openArtworkPage}
+            onComment={handleComment}
+            onUpdateComment={handleUpdateComment}
+            onDeleteComment={handleDeleteComment}
+            onReportArtwork={handleReportArtwork}
+            onReportComment={handleReportComment}
+            collections={collections?.collections ?? []}
+            onCreateCollection={handleCreateCollection}
+            onOpenCollection={showCollection}
+            onToggleCollectionItem={handleToggleCollectionItem}
+            seriesList={seriesList?.series ?? []}
+            onCreateSeries={handleCreateSeries}
+            onOpenSeries={showSeries}
+            onToggleSeriesItem={handleToggleSeriesItem}
+            siteKey={authConfig?.turnstileSiteKey ?? ""}
+            onOpenProfile={showProfile}
+            currentUser={currentUser}
+            matureAccess={gallery?.matureAccess ?? null}
+          />
+        ) : view === "artwork" ? (
+          <section className="content-main artwork-page-empty">
+            <p className="empty-feed">{detailLoading ? "Loading artwork." : "Artwork could not be loaded."}</p>
+          </section>
         ) : (
           <>
             <section className="feed-main">
@@ -3461,6 +3549,7 @@ function App() {
                     artwork={artwork}
                     index={index}
                     onSelect={openArtwork}
+                    onOpenPage={openArtworkPage}
                     onBookmark={handleBookmark}
                     onOpenProfile={showProfile}
                   />
@@ -3580,6 +3669,7 @@ function App() {
           detail={artworkDetail}
           fallbackArtwork={selectedArtwork}
           loading={detailLoading}
+          presentation="modal"
           onClose={closeArtwork}
           onLike={handleLike}
           onBookmark={handleBookmark}
@@ -3588,7 +3678,9 @@ function App() {
           onReorderImages={handleReorderArtworkImages}
           onDeleteImage={handleDeleteArtworkImage}
           onAddImages={handleAddArtworkImages}
-          onOpenArtwork={openArtwork}
+          onUnlockStorageSlot={handleUnlockStorageSlot}
+          storageUnlocking={storageUnlockSubmitting}
+          onOpenArtwork={openArtworkPage}
           onComment={handleComment}
           onUpdateComment={handleUpdateComment}
           onDeleteComment={handleDeleteComment}
@@ -3624,6 +3716,8 @@ function App() {
           }
         }}
         onOpenPrivacySecurity={showPrivacySecurity}
+        onUnlockStorageSlot={handleUnlockStorageSlot}
+        storageUnlocking={storageUnlockSubmitting}
         onSubmit={handleUpload}
       />
 
@@ -3796,6 +3890,7 @@ type EmailConfirmationPageProps = {
   onHome: () => void;
   onOpenPrivacySecurity: () => void;
   onSessionRefresh: () => Promise<AuthSessionResponse>;
+  siteKey: string;
 };
 
 function EmailConfirmationPage({
@@ -3803,15 +3898,18 @@ function EmailConfirmationPage({
   onAuthRequired,
   onHome,
   onOpenPrivacySecurity,
-  onSessionRefresh
+  onSessionRefresh,
+  siteKey
 }: EmailConfirmationPageProps) {
   const confirmationParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const kind = emailConfirmationKindFromQuery(confirmationParams.get("kind"));
   const token = confirmationParams.get("token")?.trim() ?? "";
   const initialStatus = emailConfirmationStatusFromQuery(confirmationParams.get("status"));
-  const [status, setStatus] = useState<"pending" | EmailConfirmationStatus>(
-    initialStatus ?? (token ? "pending" : "invalid")
+  const [status, setStatus] = useState<"challenge" | "pending" | EmailConfirmationStatus>(
+    initialStatus ?? (token ? "challenge" : "invalid")
   );
+  const [turnstileToken, setTurnstileToken] = useState("");
+  const [challengeRevision, setChallengeRevision] = useState(0);
   const [message, setMessage] = useState(() => {
     if (initialStatus) {
       return emailConfirmationStatusMessage(kind, initialStatus);
@@ -3819,12 +3917,12 @@ function EmailConfirmationPage({
     if (!token) {
       return "Email confirmation link is missing.";
     }
-    return kind === "change" ? "Confirming your email change." : "Confirming your account email.";
+    return kind === "change"
+      ? "Complete the security check to confirm your new email."
+      : "Complete the security check to confirm your account email.";
   });
 
   useEffect(() => {
-    let cancelled = false;
-
     if (!token) {
       if (!initialStatus) {
         setStatus("invalid");
@@ -3834,41 +3932,44 @@ function EmailConfirmationPage({
           console.error("Unable to refresh confirmed session", error);
         });
       }
-      return () => {
-        cancelled = true;
-      };
+    }
+  }, [initialStatus, onSessionRefresh, token]);
+
+  const handleConfirm = async () => {
+    if (!token) {
+      setStatus("invalid");
+      setMessage("Email confirmation link is missing.");
+      return;
+    }
+    if (!turnstileToken) {
+      setMessage("Complete the security check first.");
+      return;
     }
 
     const endpoint =
       kind === "change" ? "/api/settings/email/confirm" : "/api/auth/verify-email";
-    const params = new URLSearchParams({
-      token,
-      format: "json"
-    });
 
     setStatus("pending");
     setMessage(kind === "change" ? "Confirming your email change." : "Confirming your account email.");
 
-    fetch(`${endpoint}?${params.toString()}`, {
-      credentials: "include",
-      headers: {
-        accept: "application/json"
-      }
-    })
-      .then(async (response) => {
-        const payload = (await response.json().catch(() => null)) as
-          | EmailConfirmationResponse
-          | { message?: string }
-          | null;
-        if (payload && "status" in payload && "kind" in payload) {
-          return payload as EmailConfirmationResponse;
-        }
-        throw new Error(payload?.message ?? "Email confirmation failed.");
-      })
-      .then((payload) => {
-        if (cancelled) {
-          return;
-        }
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json"
+        },
+        body: JSON.stringify({
+          token,
+          turnstileToken
+        })
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | EmailConfirmationResponse
+        | { message?: string }
+        | null;
+      if (payload && "status" in payload && "kind" in payload) {
         setStatus(payload.status);
         setMessage(payload.message);
         window.history.replaceState(
@@ -3877,36 +3978,35 @@ function EmailConfirmationPage({
           `/email-confirmation?kind=${payload.kind}&status=${payload.status}`
         );
         if (payload.status === "confirmed") {
-          onSessionRefresh().catch((error: unknown) => {
+          await onSessionRefresh().catch((error: unknown) => {
             console.error("Unable to refresh confirmed session", error);
           });
         }
-      })
-      .catch((error: unknown) => {
-        if (cancelled) {
-          return;
-        }
-        setStatus("invalid");
-        setMessage(error instanceof Error ? error.message : "Email confirmation failed.");
-        window.history.replaceState(null, "", `/email-confirmation?kind=${kind}&status=invalid`);
-      });
+        return;
+      }
+      throw new Error(payload?.message ?? "Email confirmation failed.");
+    } catch (error) {
+      setStatus("challenge");
+      setTurnstileToken("");
+      setChallengeRevision((revision) => revision + 1);
+      setMessage(error instanceof Error ? error.message : "Email confirmation failed.");
+    }
+  };
 
-    return () => {
-      cancelled = true;
-    };
-  }, [initialStatus, kind, onSessionRefresh, token]);
-
-  const StatusIcon = status === "confirmed" ? ShieldCheck : status === "pending" ? MailCheck : X;
+  const StatusIcon =
+    status === "confirmed" ? ShieldCheck : status === "invalid" ? X : MailCheck;
   const title =
     status === "pending"
       ? "Confirming email"
-      : status === "confirmed"
-        ? kind === "change"
-          ? "Email changed"
-          : "Email verified"
-        : status === "unavailable"
-          ? "Confirmation unavailable"
-          : "Link needs attention";
+      : status === "challenge"
+        ? "Confirm email"
+        : status === "confirmed"
+          ? kind === "change"
+            ? "Email changed"
+            : "Email verified"
+          : status === "unavailable"
+            ? "Confirmation unavailable"
+            : "Link needs attention";
 
   return (
     <section className="content-main email-confirmation-page" aria-live="polite">
@@ -3917,7 +4017,27 @@ function EmailConfirmationPage({
         <p className="eyebrow">Email confirmation</p>
         <h1>{title}</h1>
         <p>{message}</p>
-        {status !== "pending" ? (
+        {status === "challenge" && token ? (
+          <div className="email-confirmation-check">
+            <TurnstileWidget
+              key={challengeRevision}
+              siteKey={siteKey}
+              action="email-confirm"
+              onToken={setTurnstileToken}
+              compact
+            />
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => void handleConfirm()}
+              disabled={!siteKey || !turnstileToken}
+            >
+              <ShieldCheck size={16} />
+              Confirm email
+            </button>
+          </div>
+        ) : null}
+        {status !== "pending" && status !== "challenge" ? (
           <div className="email-confirmation-actions">
             <button className="primary-button" type="button" onClick={onHome}>
               <Home size={16} />
@@ -10638,6 +10758,7 @@ type ArtworkCardProps = {
   artwork: Artwork;
   index: number;
   onSelect: (artwork: Artwork) => void;
+  onOpenPage?: (artwork: Artwork) => void;
   onBookmark: (artwork: Artwork, visibility?: BookmarkVisibility) => void;
   onOpenProfile: (username: string) => void;
 };
@@ -10646,9 +10767,12 @@ function ArtworkCard({
   artwork,
   index,
   onSelect,
+  onOpenPage,
   onBookmark,
   onOpenProfile
 }: ArtworkCardProps) {
+  const artworkPath = `/artworks/${encodeURIComponent(artwork.id)}`;
+
   return (
     <article
       className="art-card"
@@ -10689,9 +10813,26 @@ function ArtworkCard({
         ) : null}
       </button>
       <div className="art-card-body">
-        <button className="art-title-button" type="button" onClick={() => onSelect(artwork)}>
+        <a
+          className="art-title-button"
+          href={artworkPath}
+          onClick={(event) => {
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+              return;
+            }
+            event.preventDefault();
+            if (onOpenPage) {
+              onOpenPage(artwork);
+              return;
+            }
+            if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== artworkPath) {
+              window.history.pushState(null, "", artworkPath);
+            }
+            window.dispatchEvent(new Event("popstate"));
+          }}
+        >
           {artwork.title}
-        </button>
+        </a>
         <button className="creator-mini creator-mini-link" type="button" onClick={() => onOpenProfile(artwork.creator.handle)}>
           {artwork.creator.avatarUrl ? (
             <img src={artwork.creator.avatarUrl} alt="" />
@@ -10746,6 +10887,7 @@ type ArtworkDialogProps = {
   detail: ArtworkResponse | null;
   fallbackArtwork: Artwork;
   loading: boolean;
+  presentation?: "modal" | "page";
   currentUser: AuthUser | null;
   matureAccess: MatureAccess | null;
   onClose: () => void;
@@ -10756,6 +10898,8 @@ type ArtworkDialogProps = {
   onReorderImages: (artwork: Artwork, imageIds: string[]) => Promise<string>;
   onDeleteImage: (artwork: Artwork, imageId: string) => Promise<string>;
   onAddImages: (artwork: Artwork, files: File[]) => Promise<string>;
+  onUnlockStorageSlot: () => Promise<string>;
+  storageUnlocking: boolean;
   onOpenArtwork: (artwork: Artwork) => void;
   onComment: (
     artwork: Artwork,
@@ -10793,6 +10937,7 @@ function ArtworkDialog({
   detail,
   fallbackArtwork,
   loading,
+  presentation = "modal",
   currentUser,
   matureAccess,
   onClose,
@@ -10803,6 +10948,8 @@ function ArtworkDialog({
   onReorderImages,
   onDeleteImage,
   onAddImages,
+  onUnlockStorageSlot,
+  storageUnlocking,
   onOpenArtwork,
   onComment,
   onUpdateComment,
@@ -10874,7 +11021,16 @@ function ArtworkDialog({
   const [imageAddFiles, setImageAddFiles] = useState<File[]>([]);
   const [imageAddSubmitting, setImageAddSubmitting] = useState(false);
   const imageOrderChanged = imageOrder.join("|") !== artworkImageKey;
-  const remainingImageSlots = Math.max(0, 8 - artworkImages.length);
+  const ownsArtwork = Boolean(currentUser && currentUser.id === artwork.creator.id);
+  const accountStorage = ownsArtwork ? currentUser?.storage ?? null : null;
+  const artworkRemainingImageSlots = Math.max(0, 8 - artworkImages.length);
+  const remainingImageSlots = Math.max(
+    0,
+    Math.min(artworkRemainingImageSlots, accountStorage?.remainingImages ?? artworkRemainingImageSlots)
+  );
+  const canUnlockStorageSlot = Boolean(
+    accountStorage && accountStorage.siteCredits >= accountStorage.creditsPerSlot
+  );
   const imageAddLabel =
     imageAddFiles.length === 0
       ? "Choose pages"
@@ -11157,6 +11313,18 @@ function ArtworkDialog({
     }
   };
 
+  const handleStorageUnlock = async () => {
+    if (storageUnlocking) {
+      return;
+    }
+    setEditMessage("");
+    try {
+      setEditMessage(await onUnlockStorageSlot());
+    } catch (error) {
+      setEditMessage(error instanceof Error ? error.message : "Unable to unlock storage slot.");
+    }
+  };
+
   const openReportForm = (target: string) => {
     setReportingTarget((current) => (current === target ? null : target));
     setReportReason("spam");
@@ -11370,10 +11538,9 @@ function ArtworkDialog({
     );
   };
 
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <section className="art-modal">
-        <button className="close-button" type="button" onClick={onClose} aria-label="Close">
+  const content = (
+    <section className={classNames("art-modal", presentation === "page" && "artwork-page")}>
+      <button className="close-button" type="button" onClick={onClose} aria-label={presentation === "page" ? "Back to feed" : "Close"}>
           <X size={20} />
         </button>
         <div className={classNames("modal-art-stage", artworkImages.length > 1 && "is-series")}>
@@ -11563,8 +11730,44 @@ function ArtworkDialog({
               <section className="image-add-editor" aria-label="Add images">
                 <div className="image-order-header">
                   <strong>Add pages</strong>
-                  <span>{remainingImageSlots} slots left</span>
+                  <span>
+                    {remainingImageSlots} / {artworkRemainingImageSlots} slots left
+                  </span>
                 </div>
+                {accountStorage ? (
+                  <div
+                    className={classNames(
+                      "storage-status",
+                      accountStorage.remainingImages === 0 && "is-over-limit"
+                    )}
+                  >
+                    <HardDrive size={18} />
+                    <span>
+                      <strong>
+                        {formatCount(accountStorage.remainingImages)} /{" "}
+                        {formatCount(accountStorage.imageLimit)} image slots available
+                      </strong>
+                      <small>
+                        {formatCount(accountStorage.usedImages)} used ·{" "}
+                        {formatCount(accountStorage.siteCredits)} credits ·{" "}
+                        {formatCount(accountStorage.creditUnlockedSlots)} paid slots ·{" "}
+                        {formatCount(accountStorage.bonusSlots)} bonus
+                      </small>
+                    </span>
+                    <button
+                      className="secondary-button storage-unlock-button"
+                      type="button"
+                      onClick={() => void handleStorageUnlock()}
+                      disabled={!canUnlockStorageSlot || storageUnlocking || imageMutationSubmitting}
+                      aria-label={`Spend ${accountStorage.creditsPerSlot} credits to unlock an image slot`}
+                    >
+                      <Sparkles size={15} />
+                      {storageUnlocking
+                        ? "Unlocking"
+                        : `Spend ${formatCount(accountStorage.creditsPerSlot)}`}
+                    </button>
+                  </div>
+                ) : null}
                 <div className="image-add-actions">
                   <button
                     className="file-picker"
@@ -11838,7 +12041,16 @@ function ArtworkDialog({
             ) : null}
           </div>
         </aside>
-      </section>
+    </section>
+  );
+
+  if (presentation === "page") {
+    return <section className="content-main artwork-page-shell">{content}</section>;
+  }
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      {content}
     </div>
   );
 }
@@ -11853,6 +12065,8 @@ type UploadDrawerProps = {
   progress: number;
   onClose: () => void;
   onOpenPrivacySecurity: () => void;
+  onUnlockStorageSlot: () => Promise<string>;
+  storageUnlocking: boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>, files: File[]) => boolean | Promise<boolean>;
 };
 
@@ -12003,6 +12217,8 @@ function UploadDrawer({
   progress,
   onClose,
   onOpenPrivacySecurity,
+  onUnlockStorageSlot,
+  storageUnlocking,
   onSubmit
 }: UploadDrawerProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -12015,6 +12231,9 @@ function UploadDrawer({
   const selectedFileCount = selectedFiles.length;
   const selectedOverStorage = Boolean(
     storage && selectedFileCount > 0 && selectedFileCount > storage.remainingImages
+  );
+  const canUnlockStorageSlot = Boolean(
+    storage && storage.siteCredits >= storage.creditsPerSlot
   );
   const remainingSelectionSlots = Math.max(0, 8 - selectedFiles.length);
 
@@ -12074,6 +12293,18 @@ function UploadDrawer({
     if (published) {
       setTags(["original", "study"]);
       updateSelectedFiles([]);
+    }
+  };
+
+  const handleStorageUnlock = async () => {
+    if (storageUnlocking) {
+      return;
+    }
+    setLocalMessage("");
+    try {
+      setLocalMessage(await onUnlockStorageSlot());
+    } catch (error) {
+      setLocalMessage(error instanceof Error ? error.message : "Unable to unlock storage slot.");
     }
   };
 
@@ -12141,9 +12372,19 @@ function UploadDrawer({
                 </strong>
                 <small>
                   {formatCount(storage.usedImages)} used · {formatCount(storage.siteCredits)} credits ·{" "}
-                  {formatCount(storage.creditUnlockedSlots + storage.bonusSlots)} unlocked
+                  {formatCount(storage.creditUnlockedSlots)} paid slots · {formatCount(storage.bonusSlots)} bonus
                 </small>
               </span>
+              <button
+                className="secondary-button storage-unlock-button"
+                type="button"
+                onClick={() => void handleStorageUnlock()}
+                disabled={!canUnlockStorageSlot || storageUnlocking || uploading}
+                aria-label={`Spend ${storage.creditsPerSlot} credits to unlock an image slot`}
+              >
+                <Sparkles size={15} />
+                {storageUnlocking ? "Unlocking" : `Spend ${formatCount(storage.creditsPerSlot)}`}
+              </button>
             </div>
           ) : null}
           <section className="upload-pages-editor" aria-label="Artwork pages">

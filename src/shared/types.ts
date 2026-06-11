@@ -200,6 +200,12 @@ export type UserStorage = {
   lastLoginCreditDate: string | null;
 };
 
+export type StorageUnlockResponse = {
+  user: AuthUser;
+  storage: UserStorage;
+  message: string;
+};
+
 export type UploadResponse = {
   artwork: Artwork;
   user: AuthUser;

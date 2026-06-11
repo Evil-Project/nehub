@@ -110,6 +110,7 @@ import type {
   SeriesPreviewArtwork,
   SeriesVisibility,
   SortMode,
+  StorageUnlockResponse,
   TagAlias,
   TagDetailResponse,
   TagImplication,
@@ -485,6 +486,11 @@ const mfaVerifySchema = z.object({
 });
 
 const resendVerificationSchema = z.object({
+  turnstileToken: z.string().min(1).max(4096)
+});
+
+const emailConfirmationSchema = z.object({
+  token: z.string().trim().min(24).max(256),
   turnstileToken: z.string().min(1).max(4096)
 });
 
@@ -2381,6 +2387,7 @@ type UserRow = {
   suspended_reason?: string | null;
   site_credits?: number | null;
   storage_bonus_credits?: number | null;
+  storage_credit_unlocked_slots?: number | null;
   storage_last_login_credit_date?: string | null;
   storage_used_images?: number | null;
   created_at: string;
@@ -3075,6 +3082,7 @@ const randomIntInclusive = (minimum: number, maximum: number) => {
 const userStorageSelectSql = (userAlias = "users") => `
         ${userAlias}.site_credits,
         ${userAlias}.storage_bonus_credits,
+        ${userAlias}.storage_credit_unlocked_slots,
         ${userAlias}.storage_last_login_credit_date,
         (
           SELECT COUNT(artwork_images.id)
@@ -3088,12 +3096,13 @@ const userStorageFromRow = (
     UserRow,
     | "site_credits"
     | "storage_bonus_credits"
+    | "storage_credit_unlocked_slots"
     | "storage_last_login_credit_date"
     | "storage_used_images"
   >
 ): UserStorage => {
   const siteCredits = Math.max(0, Number(row.site_credits ?? 0));
-  const creditUnlockedSlots = Math.floor(siteCredits / creditsPerStorageSlot);
+  const creditUnlockedSlots = Math.max(0, Number(row.storage_credit_unlocked_slots ?? 0));
   const bonusSlots = Math.max(0, Number(row.storage_bonus_credits ?? 0));
   const usedImages = Math.max(0, Number(row.storage_used_images ?? 0));
   const imageLimit = baseStorageImageLimit + bonusSlots + creditUnlockedSlots;
@@ -3188,6 +3197,7 @@ const getUserStorage = async (db: D1Database, userId: string) => {
         UserRow,
         | "site_credits"
         | "storage_bonus_credits"
+        | "storage_credit_unlocked_slots"
         | "storage_last_login_credit_date"
         | "storage_used_images"
       >
@@ -3201,7 +3211,7 @@ const uploadStorageLimitMessage = (storage: UserStorage, requestedImages: number
   }
   const requestedLabel = `${requestedImages} image${requestedImages === 1 ? "" : "s"}`;
   const remainingLabel = `${storage.remainingImages} image${storage.remainingImages === 1 ? "" : "s"}`;
-  return `Storage limit reached. You can upload ${remainingLabel} now, but selected ${requestedLabel}. Earn site credits from logins or likes received to unlock more slots.`;
+  return `Storage limit reached. You can upload ${remainingLabel} now, but selected ${requestedLabel}. Spend site credits to unlock more slots.`;
 };
 
 const awardLoginSiteCredits = async (db: D1Database, userId: string) => {
@@ -3265,6 +3275,7 @@ type TurnstileAction =
   | "upload"
   | "comment"
   | "report"
+  | "email-confirm"
   | "password-reset"
   | "password-reset-confirm";
 
@@ -3514,6 +3525,16 @@ const emailConfirmationRedirect = (
   kind: EmailConfirmationKind,
   status: EmailConfirmationStatus
 ) => context.redirect(`/email-confirmation?kind=${kind}&status=${status}`, 302);
+
+const emailConfirmationTokenRedirect = (
+  context: AppContext,
+  kind: EmailConfirmationKind,
+  token: string
+) =>
+  context.redirect(
+    `/email-confirmation?kind=${kind}&token=${encodeURIComponent(token)}`,
+    302
+  );
 
 const emailConfirmationJson = (
   context: AppContext,
@@ -9148,23 +9169,10 @@ app.post("/api/auth/resend-verification", async (context) => {
   return context.json({ message: "Verification email sent.", user: publicAuthUser(user) });
 });
 
-app.get("/api/auth/verify-email", async (context) => {
-  const wantsJson = wantsJsonResponse(context);
-  if (!context.env.DB) {
-    if (wantsJson) {
-      return emailConfirmationJson(
-        context,
-        "verify",
-        "unavailable",
-        "D1 database is required for accounts."
-      );
-    }
-    return emailConfirmationRedirect(context, "verify", "unavailable");
-  }
-
+app.get("/api/auth/verify-email", (context) => {
   const token = context.req.query("token");
   if (!token) {
-    if (wantsJson) {
+    if (wantsJsonResponse(context)) {
       return emailConfirmationJson(
         context,
         "verify",
@@ -9174,16 +9182,57 @@ app.get("/api/auth/verify-email", async (context) => {
     }
     return emailConfirmationRedirect(context, "verify", "invalid");
   }
+
+  if (wantsJsonResponse(context)) {
+    return emailConfirmationJson(
+      context,
+      "verify",
+      "invalid",
+      "Open the email confirmation page and complete the security check."
+    );
+  }
+  return emailConfirmationTokenRedirect(context, "verify", token);
+});
+
+app.post("/api/auth/verify-email", async (context) => {
+  if (!context.env.DB) {
+    return emailConfirmationJson(
+      context,
+      "verify",
+      "unavailable",
+      "D1 database is required for accounts."
+    );
+  }
+
+  const parsed = await parseJson(context, emailConfirmationSchema);
+  if (!parsed.success) {
+    return emailConfirmationJson(
+      context,
+      "verify",
+      "invalid",
+      "Email confirmation details are invalid."
+    );
+  }
+
   const rateLimitError = await enforceRateLimit(context, {
     action: "auth:verify-email",
     limit: 30,
     windowSeconds: 15 * minuteSeconds
   });
   if (rateLimitError) {
-    return wantsJson ? rateLimitError : emailConfirmationRedirect(context, "verify", "unavailable");
+    return rateLimitError;
   }
 
-  const tokenHash = await sha256(token);
+  const turnstile = await verifyTurnstile(
+    context,
+    parsed.data.turnstileToken,
+    "email-confirm"
+  );
+  if (!turnstile.ok) {
+    return context.json({ message: turnstile.message }, 403);
+  }
+
+  const tokenHash = await sha256(parsed.data.token);
   const row = await context.env.DB.prepare(
     `SELECT
       email_verification_tokens.id AS token_id,
@@ -9211,15 +9260,12 @@ app.get("/api/auth/verify-email", async (context) => {
     .first<UserRow & { token_id: string }>();
 
   if (!row) {
-    if (wantsJson) {
-      return emailConfirmationJson(
-        context,
-        "verify",
-        "invalid",
-        "Email confirmation link is invalid or expired."
-      );
-    }
-    return emailConfirmationRedirect(context, "verify", "invalid");
+    return emailConfirmationJson(
+      context,
+      "verify",
+      "invalid",
+      "Email confirmation link is invalid or expired."
+    );
   }
 
   await context.env.DB.batch([
@@ -9234,15 +9280,12 @@ app.get("/api/auth/verify-email", async (context) => {
     ).bind(row.id)
   ]);
 
-  if (wantsJson) {
-    return emailConfirmationJson(
-      context,
-      "verify",
-      "confirmed",
-      "Email confirmation complete. Your account is verified."
-    );
-  }
-  return emailConfirmationRedirect(context, "verify", "confirmed");
+  return emailConfirmationJson(
+    context,
+    "verify",
+    "confirmed",
+    "Email confirmation complete. Your account is verified."
+  );
 });
 
 app.get("/api/analytics/creator", async (context) => {
@@ -12224,44 +12267,70 @@ app.post("/api/settings/email/request", async (context) => {
   });
 });
 
-app.get("/api/settings/email/confirm", async (context) => {
-  const wantsJson = wantsJsonResponse(context);
-  if (!context.env.DB) {
-    if (wantsJson) {
+app.get("/api/settings/email/confirm", (context) => {
+  const token = context.req.query("token");
+  if (!token) {
+    if (wantsJsonResponse(context)) {
       return emailConfirmationJson(
         context,
         "change",
-        "unavailable",
-        "D1 database is required for accounts."
+        "invalid",
+        "Email change token is missing."
       );
     }
-    return emailConfirmationRedirect(context, "change", "unavailable");
+    return emailConfirmationRedirect(context, "change", "invalid");
   }
 
-  const emailChangeInvalid = () =>
-    wantsJson
-      ? emailConfirmationJson(
-          context,
-          "change",
-          "invalid",
-          "Email change link is invalid or expired."
-        )
-      : emailConfirmationRedirect(context, "change", "invalid");
-
-  const token = context.req.query("token");
-  if (!token) {
-    return emailChangeInvalid();
+  if (wantsJsonResponse(context)) {
+    return emailConfirmationJson(
+      context,
+      "change",
+      "invalid",
+      "Open the email confirmation page and complete the security check."
+    );
   }
+  return emailConfirmationTokenRedirect(context, "change", token);
+});
+
+app.post("/api/settings/email/confirm", async (context) => {
+  if (!context.env.DB) {
+    return emailConfirmationJson(
+      context,
+      "change",
+      "unavailable",
+      "D1 database is required for accounts."
+    );
+  }
+
+  const parsed = await parseJson(context, emailConfirmationSchema);
+  if (!parsed.success) {
+    return emailConfirmationJson(
+      context,
+      "change",
+      "invalid",
+      "Email change confirmation details are invalid."
+    );
+  }
+
   const rateLimitError = await enforceRateLimit(context, {
     action: "settings:email-confirm",
     limit: 30,
     windowSeconds: 15 * minuteSeconds
   });
   if (rateLimitError) {
-    return wantsJson ? rateLimitError : emailConfirmationRedirect(context, "change", "unavailable");
+    return rateLimitError;
   }
 
-  const tokenHash = await sha256(token);
+  const turnstile = await verifyTurnstile(
+    context,
+    parsed.data.turnstileToken,
+    "email-confirm"
+  );
+  if (!turnstile.ok) {
+    return context.json({ message: turnstile.message }, 403);
+  }
+
+  const tokenHash = await sha256(parsed.data.token);
   const row = await context.env.DB.prepare(
     `SELECT
       email_change_tokens.id AS token_id,
@@ -12292,12 +12361,22 @@ app.get("/api/settings/email/confirm", async (context) => {
     .first<UserRow & { token_id: string; new_email: string }>();
 
   if (!row || row.suspended_at) {
-    return emailChangeInvalid();
+    return emailConfirmationJson(
+      context,
+      "change",
+      "invalid",
+      "Email change link is invalid or expired."
+    );
   }
 
   const existing = await getUserRowByEmail(context.env.DB, row.new_email);
   if (existing && existing.id !== row.id) {
-    return emailChangeInvalid();
+    return emailConfirmationJson(
+      context,
+      "change",
+      "invalid",
+      "Email change link is invalid or expired."
+    );
   }
 
   const activeSessionHash = await currentSessionHash(context);
@@ -12341,15 +12420,69 @@ app.get("/api/settings/email/confirm", async (context) => {
     ]
   );
 
-  if (wantsJson) {
-    return emailConfirmationJson(
-      context,
-      "change",
-      "confirmed",
-      "Email change confirmed. Your sign-in email was updated successfully."
+  return emailConfirmationJson(
+    context,
+    "change",
+    "confirmed",
+    "Email change confirmed. Your sign-in email was updated successfully."
+  );
+});
+
+app.post("/api/storage/unlock-slot", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required for storage unlocks." }, 503);
+  }
+  const db = context.env.DB;
+  const user = await getCurrentUser(db, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to unlock storage slots." }, 401);
+  }
+  if (!user.emailVerified && user.role !== "admin") {
+    return context.json({ message: "Verify your email before unlocking storage slots." }, 403);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "storage:unlock-slot",
+    userId: user.id,
+    limit: 60,
+    windowSeconds: hourSeconds
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  const result = await db
+    .prepare(
+      `UPDATE users
+       SET site_credits = COALESCE(site_credits, 0) - ?,
+           storage_credit_unlocked_slots = COALESCE(storage_credit_unlocked_slots, 0) + 1,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND COALESCE(site_credits, 0) >= ?`
+    )
+    .bind(creditsPerStorageSlot, user.id, creditsPerStorageSlot)
+    .run();
+
+  if ((result.meta.changes ?? 0) === 0) {
+    return context.json(
+      { message: `Unlocking a storage slot costs ${creditsPerStorageSlot} credits.` },
+      400
     );
   }
-  return emailConfirmationRedirect(context, "change", "confirmed");
+
+  const responseUserRow = await getUserRowById(db, user.id);
+  if (!responseUserRow) {
+    return context.json({ message: "Account storage could not be loaded." }, 500);
+  }
+  const responseUser = currentUserFromRow(responseUserRow);
+  return context.json<StorageUnlockResponse>({
+    user: publicAuthUser(responseUser),
+    storage: responseUser.storage,
+    message: `Unlocked 1 image slot for ${creditsPerStorageSlot} credits.`
+  });
 });
 
 app.get("/api/settings/sessions", async (context) => {
