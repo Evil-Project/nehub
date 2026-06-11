@@ -3577,7 +3577,6 @@ function AccountControl({
       <button className="account-name" type="button" onClick={onProfile}>
         {user.displayName}
       </button>
-      <small>{user.role !== "member" ? formatUserRole(user.role) : user.emailVerified ? "Verified" : "Pending"}</small>
       <button className="icon-button account-settings" type="button" onClick={onSettings} aria-label="Account settings">
         <Settings size={16} />
       </button>
@@ -7940,6 +7939,12 @@ function ProfilePage({
                 </button>
                 <span>{formatCount(profileData.stats.totalLikes)} likes</span>
                 <span>{formatCount(profileData.stats.totalViews)} views</span>
+                {ownProfile && currentUser ? (
+                  <>
+                    <span>{formatCount(currentUser.storage.siteCredits)} credits</span>
+                    <span>{formatCount(currentUser.storage.remainingImages)} image slots</span>
+                  </>
+                ) : null}
                 <span>Joined {fullDateFormat.format(new Date(profile.joinedAt))}</span>
               </div>
             </div>

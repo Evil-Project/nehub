@@ -412,10 +412,10 @@ img {
 
 .account-chip {
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) auto 34px 34px;
+  grid-template-columns: 10px minmax(0, 1fr) 34px 34px;
   align-items: center;
   gap: 8px;
-  width: clamp(168px, 18vw, 240px);
+  width: clamp(148px, 16vw, 220px);
   min-width: 0;
   max-width: 100%;
   min-height: 40px;
@@ -450,15 +450,6 @@ img {
   cursor: pointer;
   font-weight: 850;
   text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.account-chip small {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4629,10 +4620,6 @@ h1 {
 
   .account-chip {
     grid-template-columns: 10px minmax(64px, 96px) 34px 34px;
-  }
-
-  .account-chip small {
-    display: none;
   }
 
   .page-frame {

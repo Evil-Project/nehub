@@ -10806,9 +10806,12 @@ app.get("/api/settings/email/confirm", async (context) => {
     return context.text("D1 database is required for accounts.", 503);
   }
 
+  const emailChangeRedirect = (status: "1" | "invalid" | "security") =>
+    context.redirect(`/settings/privacy-security?emailChanged=${status}`, 302);
+
   const token = context.req.query("token");
   if (!token) {
-    return context.redirect("/?emailChanged=invalid", 302);
+    return emailChangeRedirect("invalid");
   }
   const rateLimitError = await enforceRateLimit(context, {
     action: "settings:email-confirm",
@@ -10850,7 +10853,7 @@ app.get("/api/settings/email/confirm", async (context) => {
     .first<UserRow & { token_id: string; new_email: string }>();
 
   if (!row || row.suspended_at) {
-    return context.redirect("/?emailChanged=invalid", 302);
+    return emailChangeRedirect("invalid");
   }
 
   const activeSessionHash = await currentSessionHash(context);
@@ -10867,12 +10870,12 @@ app.get("/api/settings/email/confirm", async (context) => {
         .first<{ id: string }>()
     : null;
   if (!activeSession) {
-    return context.redirect("/?emailChanged=security", 302);
+    return emailChangeRedirect("security");
   }
 
   const existing = await getUserRowByEmail(context.env.DB, row.new_email);
   if (existing && existing.id !== row.id) {
-    return context.redirect("/?emailChanged=invalid", 302);
+    return emailChangeRedirect("invalid");
   }
 
   await context.env.DB.batch([
@@ -10913,7 +10916,7 @@ app.get("/api/settings/email/confirm", async (context) => {
     ]
   );
 
-  return context.redirect("/?emailChanged=1", 302);
+  return emailChangeRedirect("1");
 });
 
 app.get("/api/settings/sessions", async (context) => {
