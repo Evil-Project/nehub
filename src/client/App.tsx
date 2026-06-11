@@ -330,6 +330,20 @@ const matureAccessLabel = (matureAccess: MatureAccess | null) => {
   return "Mature content is off.";
 };
 
+function DefaultAvatar({
+  className,
+  size = 16
+}: {
+  className?: string;
+  size?: number;
+}) {
+  return (
+    <span className={classNames("default-avatar", className)} aria-hidden="true">
+      <UserRound size={size} />
+    </span>
+  );
+}
+
 const matureRatingLabel = (rating: MatureRating) => {
   if (rating === "adult") {
     return "Adult";
@@ -548,6 +562,8 @@ function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
+  const [uploadSubmitting, setUploadSubmitting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [postAuthSort, setPostAuthSort] = useState<SortMode | null>(null);
   const [galleryLoadingMore, setGalleryLoadingMore] = useState(false);
   const [contentAccessRevision, setContentAccessRevision] = useState(0);
@@ -1417,6 +1433,8 @@ function App() {
       openAuth("login");
       return;
     }
+    setUploadProgress(0);
+    setUploadMessage("");
     setUploadOpen(true);
   };
 
@@ -2630,38 +2648,75 @@ function App() {
 
   const handleUpload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setUploadMessage("");
-    const form = event.currentTarget;
-    const formData = new FormData(form);
-    const response = await fetch("/api/upload", {
-      method: "POST",
-      credentials: "include",
-      headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined,
-      body: formData
-    });
-    const payload = (await response.json()) as UploadResponse | { message: string };
-
-    if (!response.ok || !("artwork" in payload)) {
-      setUploadMessage(payload.message);
+    if (uploadSubmitting) {
       return false;
     }
+    setUploadMessage("");
+    setUploadProgress(0);
+    setUploadSubmitting(true);
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    try {
+      const payload = await new Promise<UploadResponse | { message: string }>((resolve, reject) => {
+        const request = new XMLHttpRequest();
+        request.open("POST", "/api/upload");
+        request.withCredentials = true;
+        if (csrfToken) {
+          request.setRequestHeader(csrfHeaderName, csrfToken);
+        }
+        request.upload.onprogress = (progressEvent) => {
+          if (!progressEvent.lengthComputable) {
+            return;
+          }
+          setUploadProgress(Math.min(99, Math.round((progressEvent.loaded / progressEvent.total) * 100)));
+        };
+        request.onload = () => {
+          let parsed: UploadResponse | { message: string };
+          try {
+            parsed = JSON.parse(request.responseText || "{}") as UploadResponse | { message: string };
+          } catch {
+            parsed = { message: "Upload failed." };
+          }
+          if (request.status < 200 || request.status >= 300) {
+            resolve("message" in parsed ? parsed : { message: "Upload failed." });
+            return;
+          }
+          resolve(parsed);
+        };
+        request.onerror = () => reject(new Error("Upload failed."));
+        request.onabort = () => reject(new Error("Upload cancelled."));
+        request.send(formData);
+      });
 
-    setCurrentUser(payload.user);
-    setGallery((current) => {
-      if (!current) {
-        return current;
+      if (!("artwork" in payload)) {
+        setUploadMessage(payload.message);
+        return false;
       }
-      if (payload.artwork.reviewStatus !== "approved") {
-        return current;
-      }
-      return {
-        ...current,
-        artworks: [payload.artwork, ...current.artworks]
-      };
-    });
-    setUploadMessage(payload.message);
-    form.reset();
-    return true;
+
+      setUploadProgress(100);
+      setCurrentUser(payload.user);
+      setGallery((current) => {
+        if (!current) {
+          return current;
+        }
+        if (payload.artwork.reviewStatus !== "approved") {
+          return current;
+        }
+        return {
+          ...current,
+          artworks: [payload.artwork, ...current.artworks]
+        };
+      });
+      setUploadMessage(payload.message);
+      form.reset();
+      setUploadOpen(false);
+      return true;
+    } catch (error) {
+      setUploadMessage(error instanceof Error ? error.message : "Upload failed.");
+      return false;
+    } finally {
+      setUploadSubmitting(false);
+    }
   };
 
   const handleSettingsUser = (user: AuthUser, notice = "Settings saved.") => {
@@ -3443,7 +3498,14 @@ function App() {
         siteKey={authConfig?.turnstileSiteKey ?? ""}
         currentUser={currentUser}
         matureAccess={gallery?.matureAccess ?? null}
-        onClose={() => setUploadOpen(false)}
+        uploading={uploadSubmitting}
+        progress={uploadProgress}
+        onClose={() => {
+          if (!uploadSubmitting) {
+            setUploadOpen(false);
+            setUploadProgress(0);
+          }
+        }}
         onOpenPrivacySecurity={showPrivacySecurity}
         onSubmit={handleUpload}
       />
@@ -3741,6 +3803,9 @@ function AuthDialog({
 
   const handleResetRequestSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (submitting) {
+      return;
+    }
     setMessage("");
     if (!turnstileToken) {
       setMessage("Complete the check first.");
@@ -3779,6 +3844,9 @@ function AuthDialog({
 
   const handleResetConfirmSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (submitting) {
+      return;
+    }
     setMessage("");
     if (!turnstileToken) {
       setMessage("Complete the check first.");
@@ -3830,6 +3898,9 @@ function AuthDialog({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (submitting) {
+      return;
+    }
     setMessage("");
 
     if (!turnstileToken) {
@@ -4510,7 +4581,7 @@ function ActivityRow({ item, onOpenArtwork, onOpenProfile }: ActivityRowProps) {
         onClick={() => onOpenProfile(actorLabel)}
         aria-label={`Open ${item.actor.displayName}`}
       >
-        {item.actor.avatarUrl ? <img src={item.actor.avatarUrl} alt="" /> : <span />}
+        {item.actor.avatarUrl ? <img src={item.actor.avatarUrl} alt="" /> : <span><UserRound size={16} /></span>}
       </button>
       <div className="activity-copy">
         <button className="activity-line" type="button" onClick={() => onOpenProfile(actorLabel)}>
@@ -5197,6 +5268,9 @@ function TagGovernancePanel({
 
   const submitAlias = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (busy) {
+      return;
+    }
     setBusy(true);
     setMessage("");
     try {
@@ -5212,6 +5286,9 @@ function TagGovernancePanel({
 
   const submitImplication = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (busy) {
+      return;
+    }
     setBusy(true);
     setMessage("");
     try {
@@ -6358,6 +6435,9 @@ function CollectionsPage({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (submitting) {
+      return;
+    }
     setSubmitting(true);
     setMessage("");
     try {
@@ -6565,6 +6645,9 @@ function CollectionPage({
 
   const handleSave = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (saving) {
+      return;
+    }
     setSaving(true);
     setMessage("");
     try {
@@ -6587,7 +6670,7 @@ function CollectionPage({
   };
 
   const handleDelete = async () => {
-    if (!detail || !window.confirm(`Delete "${detail.collection.name}"?`)) {
+    if (deleting || !detail || !window.confirm(`Delete "${detail.collection.name}"?`)) {
       return;
     }
     setDeleting(true);
@@ -6826,6 +6909,9 @@ function SeriesListPage({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (submitting) {
+      return;
+    }
     setSubmitting(true);
     setMessage("");
     try {
@@ -7030,6 +7116,9 @@ function SeriesPage({
 
   const handleSave = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (saving) {
+      return;
+    }
     setSaving(true);
     setMessage("");
     try {
@@ -7052,7 +7141,7 @@ function SeriesPage({
   };
 
   const handleDelete = async () => {
-    if (!detail || !window.confirm(`Delete "${detail.series.title}"?`)) {
+    if (deleting || !detail || !window.confirm(`Delete "${detail.series.title}"?`)) {
       return;
     }
     setDeleting(true);
@@ -8226,6 +8315,9 @@ function ProfileSettingsPage({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (saving) {
+      return;
+    }
     setSaving(true);
     setMessage("");
     try {
@@ -8256,7 +8348,7 @@ function ProfileSettingsPage({
     }
   };
   const handleAvatarUpload = async (file: File | undefined) => {
-    if (!file) {
+    if (!file || avatarUploading) {
       return;
     }
     setAvatarUploading(true);
@@ -8620,6 +8712,9 @@ function PrivacySecurityPage({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (saving) {
+      return;
+    }
     setSaving(true);
     setMessage("");
     try {
@@ -8663,6 +8758,9 @@ function PrivacySecurityPage({
 
   const handleNotificationPreferencesSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (notificationPreferencesSaving) {
+      return;
+    }
     setNotificationPreferencesSaving(true);
     setNotificationPreferencesMessage("");
     try {
@@ -8701,6 +8799,9 @@ function PrivacySecurityPage({
 
   const handlePasswordSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (passwordSaving) {
+      return;
+    }
     setPasswordMessage("");
     if (newPassword !== confirmPassword) {
       setPasswordMessage("New passwords do not match.");
@@ -8738,6 +8839,9 @@ function PrivacySecurityPage({
 
   const handleEmailChangeSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (emailChangeSaving) {
+      return;
+    }
     setEmailChangeMessage("");
     setEmailChangeSaving(true);
     try {
@@ -8771,6 +8875,9 @@ function PrivacySecurityPage({
   };
 
   const handleRevokeSession = async (sessionId: string | null) => {
+    if (sessionSaving !== null) {
+      return;
+    }
     const savingKey = sessionId ?? "all";
     setSessionSaving(savingKey);
     setSessionMessage("");
@@ -8802,6 +8909,9 @@ function PrivacySecurityPage({
   };
 
   const handleUnblockUser = async (username: string) => {
+    if (unblockingUser) {
+      return;
+    }
     setUnblockingUser(username);
     setBlockedUsersMessage("");
     try {
@@ -8830,6 +8940,9 @@ function PrivacySecurityPage({
   };
 
   const handleDataExport = async () => {
+    if (exportingData) {
+      return;
+    }
     setExportingData(true);
     setExportMessage("");
     try {
@@ -8862,6 +8975,9 @@ function PrivacySecurityPage({
 
   const handleAccountDeactivationSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (deactivatingAccount) {
+      return;
+    }
     setDeactivationMessage("");
     if (deactivationConfirmation !== "DEACTIVATE") {
       setDeactivationMessage("Type DEACTIVATE to confirm account deactivation.");
@@ -9028,12 +9144,14 @@ function PrivacySecurityPage({
               )}
             </section>
 
-            <div className="settings-actions">
-              <button className="primary-button" type="submit" disabled={saving}>
-                <ShieldCheck size={17} />
-                {saving ? "Saving" : "Save privacy"}
-              </button>
-            </div>
+            <section className="settings-panel privacy-save-panel">
+              <div className="settings-actions">
+                <button className="primary-button" type="submit" disabled={saving}>
+                  <ShieldCheck size={17} />
+                  {saving ? "Saving" : "Save privacy"}
+                </button>
+              </div>
+            </section>
           </form>
 
           <form className="settings-form password-form" onSubmit={handlePasswordSubmit}>
@@ -9653,9 +9771,15 @@ function ArtworkCard({
         ) : null}
       </button>
       <div className="art-card-body">
-        <h3>{artwork.title}</h3>
+        <button className="art-title-button" type="button" onClick={() => onSelect(artwork)}>
+          {artwork.title}
+        </button>
         <button className="creator-mini creator-mini-link" type="button" onClick={() => onOpenProfile(artwork.creator.handle)}>
-          <img src={artwork.creator.avatarUrl} alt="" />
+          {artwork.creator.avatarUrl ? (
+            <img src={artwork.creator.avatarUrl} alt="" />
+          ) : (
+            <DefaultAvatar className="creator-mini-avatar" size={12} />
+          )}
           <span>{artwork.creator.displayName}</span>
         </button>
       </div>
@@ -9899,6 +10023,9 @@ function ArtworkDialog({
 
   const handleCommentSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (commentSubmitting) {
+      return;
+    }
     setCommentMessage("");
     if (!commentTurnstileToken) {
       setCommentMessage("Complete the check first.");
@@ -9931,6 +10058,9 @@ function ArtworkDialog({
     comment: Comment
   ) => {
     event.preventDefault();
+    if (editingCommentSubmitting) {
+      return;
+    }
     setCommentMessage("");
     setEditingCommentSubmitting(true);
     try {
@@ -9954,6 +10084,9 @@ function ArtworkDialog({
 
   const handleCreateCollectionSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (collectionSubmitting) {
+      return;
+    }
     setCollectionMessage("");
     setCollectionSubmitting(true);
     try {
@@ -9968,6 +10101,9 @@ function ArtworkDialog({
   };
 
   const handleToggleCollection = async (collection: UserCollection) => {
+    if (collectionSubmitting) {
+      return;
+    }
     setCollectionMessage("");
     setCollectionSubmitting(true);
     try {
@@ -9981,6 +10117,9 @@ function ArtworkDialog({
 
   const handleCreateSeriesSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (seriesSubmitting) {
+      return;
+    }
     setSeriesMessage("");
     setSeriesSubmitting(true);
     try {
@@ -9995,6 +10134,9 @@ function ArtworkDialog({
   };
 
   const handleToggleSeries = async (series: ArtworkSeries) => {
+    if (seriesSubmitting) {
+      return;
+    }
     setSeriesMessage("");
     setSeriesSubmitting(true);
     try {
@@ -10008,6 +10150,9 @@ function ArtworkDialog({
 
   const handleEditSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (editSubmitting) {
+      return;
+    }
     setEditMessage("");
     setEditSubmitting(true);
     try {
@@ -10035,6 +10180,9 @@ function ArtworkDialog({
   };
 
   const handleImageOrderSave = async () => {
+    if (!imageOrderChanged || imageMutationSubmitting) {
+      return;
+    }
     setEditMessage("");
     setImageOrderSubmitting(true);
     try {
@@ -10048,7 +10196,7 @@ function ArtworkDialog({
   };
 
   const handleImageDelete = async (image: (typeof artworkImages)[number], index: number) => {
-    if (!window.confirm(`Remove page ${index + 1} from "${artwork.title}"?`)) {
+    if (imageMutationSubmitting || !window.confirm(`Remove page ${index + 1} from "${artwork.title}"?`)) {
       return;
     }
     setEditMessage("");
@@ -10064,6 +10212,9 @@ function ArtworkDialog({
   };
 
   const handleImageAddSubmit = async () => {
+    if (imageMutationSubmitting) {
+      return;
+    }
     if (imageAddFiles.length === 0) {
       setEditMessage("Choose one or more images first.");
       return;
@@ -10098,6 +10249,9 @@ function ArtworkDialog({
 
   const handleArtworkReportSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (reportSubmitting) {
+      return;
+    }
     setReportMessage("");
     if (!reportTurnstileToken) {
       setReportMessage("Complete the check first.");
@@ -10130,6 +10284,9 @@ function ArtworkDialog({
     comment: Comment
   ) => {
     event.preventDefault();
+    if (reportSubmitting) {
+      return;
+    }
     setReportMessage("");
     if (!reportTurnstileToken) {
       setReportMessage("Complete the check first.");
@@ -10315,7 +10472,11 @@ function ArtworkDialog({
         </div>
         <aside className="modal-detail">
           <button className="artist-block artist-block-link" type="button" onClick={() => onOpenProfile(artwork.creator.handle)}>
-            <img src={artwork.creator.avatarUrl} alt="" />
+            {artwork.creator.avatarUrl ? (
+              <img src={artwork.creator.avatarUrl} alt="" />
+            ) : (
+              <DefaultAvatar className="artist-block-avatar" size={18} />
+            )}
             <div>
               <strong>{artwork.creator.displayName}</strong>
               <span>@{artwork.creator.handle}</span>
@@ -10788,6 +10949,8 @@ type UploadDrawerProps = {
   siteKey: string;
   currentUser: AuthUser | null;
   matureAccess: MatureAccess | null;
+  uploading: boolean;
+  progress: number;
   onClose: () => void;
   onOpenPrivacySecurity: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => boolean | Promise<boolean>;
@@ -10936,6 +11099,8 @@ function UploadDrawer({
   siteKey,
   currentUser,
   matureAccess,
+  uploading,
+  progress,
   onClose,
   onOpenPrivacySecurity,
   onSubmit
@@ -10955,6 +11120,9 @@ function UploadDrawer({
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLocalMessage("");
+    if (uploading) {
+      return;
+    }
     if (storage && selectedFileCount > storage.remainingImages) {
       setLocalMessage(
         `You have ${storage.remainingImages} image slot${storage.remainingImages === 1 ? "" : "s"} available.`
@@ -11038,7 +11206,8 @@ function UploadDrawer({
                   {formatCount(storage.remainingImages)} / {formatCount(storage.imageLimit)} image slots available
                 </strong>
                 <small>
-                  {formatCount(storage.usedImages)} used · {formatCount(storage.bonusCredits)} earned
+                  {formatCount(storage.usedImages)} used · {formatCount(storage.siteCredits)} credits ·{" "}
+                  {formatCount(storage.creditUnlockedSlots + storage.bonusSlots)} unlocked
                 </small>
               </span>
             </div>
@@ -11047,6 +11216,7 @@ function UploadDrawer({
             className="file-picker"
             type="button"
             onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
           >
             <ImageUp size={18} />
             {fileName}
@@ -11059,6 +11229,7 @@ function UploadDrawer({
             accept="image/*"
             multiple
             required
+            disabled={uploading}
             onChange={(event) => {
               const files = Array.from(event.target.files ?? []);
               if (files.length === 0) {
@@ -11080,9 +11251,15 @@ function UploadDrawer({
           />
           <input name="turnstileToken" type="hidden" value={turnstileToken} />
           <TurnstileWidget siteKey={siteKey} action="upload" onToken={setTurnstileToken} compact />
-          <button className="primary-button" type="submit">
+          {uploading || progress > 0 ? (
+            <div className="upload-progress" aria-label="Upload progress">
+              <span style={{ width: `${Math.max(0, Math.min(progress, 100))}%` }} />
+              <strong>{uploading ? `${Math.max(1, Math.min(progress || 1, 99))}%` : "Complete"}</strong>
+            </div>
+          ) : null}
+          <button className="primary-button" type="submit" disabled={uploading}>
             <ImageUp size={18} />
-            Publish
+            {uploading ? "Uploading" : "Publish"}
           </button>
           {localMessage || message ? (
             <p className="upload-message">{localMessage || message}</p>

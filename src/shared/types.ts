@@ -190,11 +190,14 @@ export type ActivityResponse = {
 
 export type UserStorage = {
   baseLimit: number;
-  bonusCredits: number;
+  siteCredits: number;
+  creditsPerSlot: number;
+  creditUnlockedSlots: number;
+  bonusSlots: number;
   imageLimit: number;
   usedImages: number;
   remainingImages: number;
-  lastDailyCreditDate: string | null;
+  lastLoginCreditDate: string | null;
 };
 
 export type UploadResponse = {
@@ -580,7 +583,6 @@ export type AuthConfigResponse = {
 export type AuthSessionResponse = {
   user: AuthUser | null;
   csrfToken: string | null;
-  dailyStorageCreditAwarded?: boolean;
 };
 
 export type AuthResponse = {

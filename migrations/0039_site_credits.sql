@@ -1,0 +1,2 @@
+ALTER TABLE users
+  ADD COLUMN site_credits INTEGER NOT NULL DEFAULT 0;

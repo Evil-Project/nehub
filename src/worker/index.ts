@@ -119,6 +119,7 @@ import type {
 } from "../shared/types";
 type Bindings = Env;
 type AppContext = Context<{ Bindings: Bindings }>;
+type ArtworkMediaEnv = Pick<Env, "PUBLIC_ARTWORK_MEDIA_URL">;
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -142,8 +143,10 @@ const maxUploadBytes = 10 * 1024 * 1024;
 const maxAvatarUploadBytes = 4 * 1024 * 1024;
 const maxUploadFiles = 8;
 const baseStorageImageLimit = 10;
-const dailyLoginStorageCredit = 1;
-const artworkLikeStorageCredit = 1;
+const creditsPerStorageSlot = 10;
+const loginSiteCreditMin = 1;
+const loginSiteCreditMax = 10;
+const artworkLikeSiteCreditReward = 100;
 const maxImageDimension = 32_768;
 const maxImagePixels = 50_000_000;
 const maxExplicitArtworkTags = 12;
@@ -185,6 +188,7 @@ type PreparedUploadImage = UploadImageMetadata & {
 };
 const publicMediaCacheControl = "public, max-age=31536000, immutable";
 const protectedMediaCacheControl = "private, no-store";
+const defaultArtworkMediaBaseUrl = "https://art.evilneur.org";
 const mediaVariantOptions = {
   thumbnail: {
     width: 640,
@@ -1847,6 +1851,7 @@ type UserRow = {
   profile_visibility: string;
   suspended_at?: string | null;
   suspended_reason?: string | null;
+  site_credits?: number | null;
   storage_bonus_credits?: number | null;
   storage_last_login_credit_date?: string | null;
   storage_used_images?: number | null;
@@ -2372,7 +2377,12 @@ const mediaKeyFromUrl = (url: string) => {
     const pathname = new URL(url, "https://nehub.local").pathname;
     const prefixes = ["/media/", "/media-thumbnail/", "/media-preview/"];
     const prefix = prefixes.find((item) => pathname.startsWith(item));
-    const key = prefix ? pathname.slice(prefix.length) : "";
+    const directKey = pathname.replace(/^\/+/, "");
+    const key = prefix
+      ? pathname.slice(prefix.length)
+      : directKey.startsWith("artworks/")
+        ? directKey
+        : "";
     return (key.startsWith("artworks/") || key.startsWith("profiles/")) && !key.includes("..")
       ? key
       : "";
@@ -2381,14 +2391,28 @@ const mediaKeyFromUrl = (url: string) => {
   }
 };
 
+const configuredArtworkMediaBaseUrl = (env?: Partial<ArtworkMediaEnv>) =>
+  (env?.PUBLIC_ARTWORK_MEDIA_URL ?? defaultArtworkMediaBaseUrl).trim().replace(/\/+$/, "");
+
+const artworkMediaUrl = (key: string, env?: Partial<ArtworkMediaEnv>) => {
+  const baseUrl = configuredArtworkMediaBaseUrl(env);
+  const safeKey = key.replace(/^\/+/, "");
+  return baseUrl ? `${baseUrl}/${safeKey}` : `/media/${safeKey}`;
+};
+
+const normalizedArtworkImageUrl = (url: string, env?: Partial<ArtworkMediaEnv>) => {
+  const key = mediaKeyFromUrl(url);
+  return key.startsWith("artworks/") ? artworkMediaUrl(key, env) : url;
+};
+
 const mediaThumbnailUrl = (url: string) => {
   const key = mediaKeyFromUrl(url);
   return key ? `/media-thumbnail/${key}` : url;
 };
 
-const imageFromRow = (row: ArtworkImageRow): ArtworkImage => ({
+const imageFromRow = (row: ArtworkImageRow, env?: Partial<ArtworkMediaEnv>): ArtworkImage => ({
   id: row.id,
-  imageUrl: row.image_url,
+  imageUrl: normalizedArtworkImageUrl(row.image_url, env),
   thumbnailUrl: mediaThumbnailUrl(row.image_url || row.thumbnail_url),
   width: row.width,
   height: row.height,
@@ -2396,9 +2420,12 @@ const imageFromRow = (row: ArtworkImageRow): ArtworkImage => ({
   position: row.position
 });
 
-const fallbackImageFromArtworkRow = (row: ArtworkRow): ArtworkImage => ({
+const fallbackImageFromArtworkRow = (
+  row: ArtworkRow,
+  env?: Partial<ArtworkMediaEnv>
+): ArtworkImage => ({
   id: `${row.id}_cover`,
-  imageUrl: row.image_url,
+  imageUrl: normalizedArtworkImageUrl(row.image_url, env),
   thumbnailUrl: mediaThumbnailUrl(row.image_url || row.thumbnail_url),
   width: row.width,
   height: row.height,
@@ -2406,16 +2433,16 @@ const fallbackImageFromArtworkRow = (row: ArtworkRow): ArtworkImage => ({
   position: 0
 });
 
-const artworkFromRow = (row: ArtworkRow): Artwork => ({
+const artworkFromRow = (row: ArtworkRow, env?: Partial<ArtworkMediaEnv>): Artwork => ({
   id: row.id,
   title: row.title,
   caption: row.caption,
-  imageUrl: row.image_url,
+  imageUrl: normalizedArtworkImageUrl(row.image_url, env),
   thumbnailUrl: mediaThumbnailUrl(row.image_url || row.thumbnail_url),
   width: row.width,
   height: row.height,
   dominantColor: row.dominant_color,
-  images: [fallbackImageFromArtworkRow(row)],
+  images: [fallbackImageFromArtworkRow(row, env)],
   tags: parseTags(row.tags_json),
   likeCount: row.like_count,
   liked: false,
@@ -2470,9 +2497,18 @@ const asArtworkReviewStatus = (value: string | null | undefined): ArtworkReviewS
   return "approved";
 };
 
-const storageCreditDate = () => new Date().toISOString().slice(0, 10);
+const storageCreditTimestamp = () => new Date().toISOString();
+
+const randomIntInclusive = (minimum: number, maximum: number) => {
+  const lower = Math.ceil(minimum);
+  const upper = Math.floor(maximum);
+  const range = upper - lower + 1;
+  const [value] = crypto.getRandomValues(new Uint32Array(1));
+  return lower + (value % range);
+};
 
 const userStorageSelectSql = (userAlias = "users") => `
+        ${userAlias}.site_credits,
         ${userAlias}.storage_bonus_credits,
         ${userAlias}.storage_last_login_credit_date,
         (
@@ -2485,19 +2521,27 @@ const userStorageSelectSql = (userAlias = "users") => `
 const userStorageFromRow = (
   row: Pick<
     UserRow,
-    "storage_bonus_credits" | "storage_last_login_credit_date" | "storage_used_images"
+    | "site_credits"
+    | "storage_bonus_credits"
+    | "storage_last_login_credit_date"
+    | "storage_used_images"
   >
 ): UserStorage => {
-  const bonusCredits = Math.max(0, Number(row.storage_bonus_credits ?? 0));
+  const siteCredits = Math.max(0, Number(row.site_credits ?? 0));
+  const creditUnlockedSlots = Math.floor(siteCredits / creditsPerStorageSlot);
+  const bonusSlots = Math.max(0, Number(row.storage_bonus_credits ?? 0));
   const usedImages = Math.max(0, Number(row.storage_used_images ?? 0));
-  const imageLimit = baseStorageImageLimit + bonusCredits;
+  const imageLimit = baseStorageImageLimit + bonusSlots + creditUnlockedSlots;
   return {
     baseLimit: baseStorageImageLimit,
-    bonusCredits,
+    siteCredits,
+    creditsPerSlot: creditsPerStorageSlot,
+    creditUnlockedSlots,
+    bonusSlots,
     imageLimit,
     usedImages,
     remainingImages: Math.max(0, imageLimit - usedImages),
-    lastDailyCreditDate: row.storage_last_login_credit_date ?? null
+    lastLoginCreditDate: row.storage_last_login_credit_date ?? null
   };
 };
 
@@ -2577,7 +2621,10 @@ const getUserStorage = async (db: D1Database, userId: string) => {
     .first<
       Pick<
         UserRow,
-        "storage_bonus_credits" | "storage_last_login_credit_date" | "storage_used_images"
+        | "site_credits"
+        | "storage_bonus_credits"
+        | "storage_last_login_credit_date"
+        | "storage_used_images"
       >
     >();
   return row ? userStorageFromRow(row) : null;
@@ -2589,26 +2636,25 @@ const uploadStorageLimitMessage = (storage: UserStorage, requestedImages: number
   }
   const requestedLabel = `${requestedImages} image${requestedImages === 1 ? "" : "s"}`;
   const remainingLabel = `${storage.remainingImages} image${storage.remainingImages === 1 ? "" : "s"}`;
-  return `Storage limit reached. You can upload ${remainingLabel} now, but selected ${requestedLabel}. Earn more image slots from daily logins or likes received.`;
+  return `Storage limit reached. You can upload ${remainingLabel} now, but selected ${requestedLabel}. Earn site credits from logins or likes received to unlock more slots.`;
 };
 
-const awardDailyLoginStorageCredit = async (db: D1Database, userId: string) => {
-  const today = storageCreditDate();
-  const result = await db
+const awardLoginSiteCredits = async (db: D1Database, userId: string) => {
+  const amount = randomIntInclusive(loginSiteCreditMin, loginSiteCreditMax);
+  await db
     .prepare(
       `UPDATE users
-       SET storage_bonus_credits = COALESCE(storage_bonus_credits, 0) + ?,
+       SET site_credits = COALESCE(site_credits, 0) + ?,
            storage_last_login_credit_date = ?,
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?
-         AND COALESCE(storage_last_login_credit_date, '') <> ?`
+       WHERE id = ?`
     )
-    .bind(dailyLoginStorageCredit, today, userId, today)
+    .bind(amount, storageCreditTimestamp(), userId)
     .run();
-  return (result.meta.changes ?? 0) > 0;
+  return amount;
 };
 
-const awardArtworkLikeStorageCredit = async (
+const awardArtworkLikeSiteCredits = async (
   db: D1Database,
   creatorUserId: string,
   likerUserId: string,
@@ -2631,11 +2677,11 @@ const awardArtworkLikeStorageCredit = async (
   await db
     .prepare(
       `UPDATE users
-       SET storage_bonus_credits = COALESCE(storage_bonus_credits, 0) + ?,
+       SET site_credits = COALESCE(site_credits, 0) + ?,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`
     )
-    .bind(artworkLikeStorageCredit, creatorUserId)
+    .bind(artworkLikeSiteCreditReward, creatorUserId)
     .run();
   return true;
 };
@@ -3351,7 +3397,11 @@ const analyticsArtworkSelect = artworkSelect.replace(
     ) AS views_7d`
 );
 
-const withArtworkImages = async (db: D1Database, artworks: Artwork[]) => {
+const withArtworkImages = async (
+  db: D1Database,
+  artworks: Artwork[],
+  env?: Partial<ArtworkMediaEnv>
+) => {
   if (artworks.length === 0) {
     return artworks;
   }
@@ -3379,7 +3429,7 @@ const withArtworkImages = async (db: D1Database, artworks: Artwork[]) => {
     const imagesByArtworkId = new Map<string, ArtworkImage[]>();
     for (const row of result.results) {
       const images = imagesByArtworkId.get(row.artwork_id) ?? [];
-      images.push(imageFromRow(row));
+      images.push(imageFromRow(row, env));
       imagesByArtworkId.set(row.artwork_id, images);
     }
     return artworks.map((artwork) => {
@@ -3492,7 +3542,7 @@ const getD1Artworks = async (db: D1Database, viewer?: CurrentUser) => {
     )
     .bind(...profileVisibilityBindValues(viewer))
     .all<ArtworkRow>();
-  return withArtworkImages(db, result.results.map(artworkFromRow));
+  return withArtworkImages(db, result.results.map((row) => artworkFromRow(row)));
 };
 
 const withViewerBookmarks = async (
@@ -3621,7 +3671,7 @@ const analyticsItemsFromRows = async (
   const views7dByArtworkId = new Map(
     rows.map((row) => [row.id, Number(row.views_7d ?? 0)])
   );
-  const artworksWithImages = await withArtworkImages(db, rows.map(artworkFromRow));
+  const artworksWithImages = await withArtworkImages(db, rows.map((row) => artworkFromRow(row)));
   const followedArtworks = await withViewerArtworkFollowing(db, viewer.id, artworksWithImages);
   const likedArtworks = await withViewerLikes(db, viewer.id, followedArtworks);
   const bookmarkedArtworks = await withViewerBookmarks(db, viewer.id, likedArtworks);
@@ -3999,7 +4049,7 @@ const getSortedGalleryPage = async (
     getD1Creators(db, viewer)
   ]);
 
-  const artworksWithImages = await withArtworkImages(db, pageRows.map(artworkFromRow));
+  const artworksWithImages = await withArtworkImages(db, pageRows.map((row) => artworkFromRow(row)));
   const followedArtworks = await withViewerArtworkFollowing(db, viewer?.id, artworksWithImages);
   const likedArtworks = await withViewerLikes(db, viewer?.id, followedArtworks);
   const artworks = await withViewerBookmarks(db, viewer?.id, likedArtworks);
@@ -4107,7 +4157,7 @@ const getRelatedArtworksForArtwork = async (
     )
     .all<ArtworkRow>();
 
-  const artworksWithImages = await withArtworkImages(db, result.results.map(artworkFromRow));
+  const artworksWithImages = await withArtworkImages(db, result.results.map((row) => artworkFromRow(row)));
   const followedArtworks = await withViewerArtworkFollowing(db, viewer?.id, artworksWithImages);
   const likedArtworks = await withViewerLikes(db, viewer?.id, followedArtworks);
   return withViewerBookmarks(db, viewer?.id, likedArtworks);
@@ -4343,7 +4393,7 @@ const getArtworksByCreator = async (
     )
     .bind(creatorId, ...artworkVisibilityBindValues(viewer), ...profileVisibilityBindValues(viewer))
     .all<ArtworkRow>();
-  const artworks = await withArtworkImages(db, result.results.map(artworkFromRow));
+  const artworks = await withArtworkImages(db, result.results.map((row) => artworkFromRow(row)));
   const followedArtworks = await withViewerArtworkFollowing(db, viewer?.id, artworks);
   const likedArtworks = await withViewerLikes(db, viewer?.id, followedArtworks);
   return withViewerBookmarks(db, viewer?.id, likedArtworks);
@@ -4509,7 +4559,7 @@ const finishProfileArtworkPage = async (
 ) => {
   const pageRows = rows.slice(0, profilePageLimit);
   const hasMore = rows.length > profilePageLimit;
-  const artworksWithImages = await withArtworkImages(db, pageRows.map(artworkFromRow));
+  const artworksWithImages = await withArtworkImages(db, pageRows.map((row) => artworkFromRow(row)));
   const followedArtworks = await withViewerArtworkFollowing(db, viewer?.id, artworksWithImages);
   const likedArtworks = await withViewerLikes(db, viewer?.id, followedArtworks);
   const artworks = await withViewerBookmarks(db, viewer?.id, likedArtworks);
@@ -4563,7 +4613,7 @@ const getBookmarkedArtworks = async (
     )
     .bind(userId, visibility, ...profileVisibilityBindValues(viewer))
     .all<ArtworkRow>();
-  const artworks = await withArtworkImages(db, result.results.map(artworkFromRow));
+  const artworks = await withArtworkImages(db, result.results.map((row) => artworkFromRow(row)));
   const followedArtworks = await withViewerArtworkFollowing(db, viewer?.id, artworks);
   const likedArtworks = await withViewerLikes(db, viewer?.id, followedArtworks);
   return withViewerBookmarks(db, viewer?.id, likedArtworks);
@@ -4602,7 +4652,7 @@ const getBookmarkedArtworkPage = async (
     .all<ArtworkRow & { bookmark_created_at: string }>();
   const pageRows = result.results.slice(0, profilePageLimit);
   const hasMore = result.results.length > profilePageLimit;
-  const artworksWithImages = await withArtworkImages(db, pageRows.map(artworkFromRow));
+  const artworksWithImages = await withArtworkImages(db, pageRows.map((row) => artworkFromRow(row)));
   const followedArtworks = await withViewerArtworkFollowing(db, viewer?.id, artworksWithImages);
   const likedArtworks = await withViewerLikes(db, viewer?.id, followedArtworks);
   const artworks = await withViewerBookmarks(db, viewer?.id, likedArtworks);
@@ -5015,7 +5065,7 @@ const getArtworksByIds = async (
     )
     .bind(...uniqueIds, ...profileVisibilityBindValues(viewer))
     .all<ArtworkRow>();
-  const artworks = await withArtworkImages(db, result.results.map(artworkFromRow));
+  const artworks = await withArtworkImages(db, result.results.map((row) => artworkFromRow(row)));
   const followedArtworks = await withViewerArtworkFollowing(db, viewer?.id, artworks);
   const likedArtworks = await withViewerLikes(db, viewer?.id, followedArtworks);
   const bookmarkedArtworks = await withViewerBookmarks(db, viewer?.id, likedArtworks);
@@ -5434,7 +5484,7 @@ const getCollectionArtworkPage = async (
 
   const pageRows = pageResult.results.slice(0, limit);
   const hasMore = pageResult.results.length > limit;
-  const artworksWithImages = await withArtworkImages(db, pageRows.map(artworkFromRow));
+  const artworksWithImages = await withArtworkImages(db, pageRows.map((row) => artworkFromRow(row)));
   const followedArtworks = await withViewerArtworkFollowing(db, viewer?.id, artworksWithImages);
   const likedArtworks = await withViewerLikes(db, viewer?.id, followedArtworks);
   const artworks = await withViewerBookmarks(db, viewer?.id, likedArtworks);
@@ -5697,7 +5747,7 @@ const getSeriesArtworkPage = async (
 
   const pageRows = pageResult.results.slice(0, limit);
   const hasMore = pageResult.results.length > limit;
-  const artworksWithImages = await withArtworkImages(db, pageRows.map(artworkFromRow));
+  const artworksWithImages = await withArtworkImages(db, pageRows.map((row) => artworkFromRow(row)));
   const followedArtworks = await withViewerArtworkFollowing(db, viewer?.id, artworksWithImages);
   const likedArtworks = await withViewerLikes(db, viewer?.id, followedArtworks);
   const artworks = await withViewerBookmarks(db, viewer?.id, likedArtworks);
@@ -6241,23 +6291,13 @@ app.get("/api/auth/session", async (context) => {
   const user = await getCurrentUser(context.env.DB, context.req.raw);
   const sessionToken = getCookie(context.req.raw, sessionCookieName);
   const csrfToken = user && sessionToken ? await issueCsrfToken(context, sessionToken) : null;
-  let responseUser = user;
-  let dailyStorageCreditAwarded = false;
-  if (user && context.env.DB) {
-    dailyStorageCreditAwarded = await awardDailyLoginStorageCredit(context.env.DB, user.id);
-    if (dailyStorageCreditAwarded) {
-      const updatedUser = await getUserRowById(context.env.DB, user.id);
-      responseUser = updatedUser ? currentUserFromRow(updatedUser) : user;
-    }
-  }
   if (!user) {
     context.header("Set-Cookie", clearSessionCookie(context), { append: true });
     context.header("Set-Cookie", clearCsrfCookie(context), { append: true });
   }
   return context.json<AuthSessionResponse>({
-    user: responseUser ? publicAuthUser(responseUser) : null,
-    csrfToken,
-    dailyStorageCreditAwarded
+    user: user ? publicAuthUser(user) : null,
+    csrfToken
   });
 });
 
@@ -6417,7 +6457,7 @@ app.get("/api/search/suggestions", async (context) => {
   );
   const artworks = await withArtworkImages(
     db,
-    artworkRows.results.map(artworkFromRow)
+    artworkRows.results.map((row) => artworkFromRow(row))
   );
 
   return context.json<SearchSuggestionsResponse>({
@@ -7724,16 +7764,15 @@ app.post("/api/auth/register", async (context) => {
   try {
     await context.env.DB.prepare(
       `INSERT INTO users
-        (id, email, username, display_name, password_hash, storage_last_login_credit_date)
-       VALUES (?, ?, ?, ?, ?, ?)`
+        (id, email, username, display_name, password_hash)
+       VALUES (?, ?, ?, ?, ?)`
     )
       .bind(
         userId,
         email,
         username,
         displayName,
-        await hashPassword(parsed.data.password),
-        storageCreditDate()
+        await hashPassword(parsed.data.password)
       )
       .run();
   } catch (error) {
@@ -7863,11 +7902,8 @@ app.post("/api/auth/login", async (context) => {
     return context.json({ message: "This account is suspended." }, 403);
   }
 
-  const dailyStorageCreditAwarded = await awardDailyLoginStorageCredit(context.env.DB, user.id);
-  const responseUser =
-    dailyStorageCreditAwarded
-      ? (await getUserRowById(context.env.DB, user.id)) ?? user
-      : user;
+  const earnedCredits = await awardLoginSiteCredits(context.env.DB, user.id);
+  const responseUser = (await getUserRowById(context.env.DB, user.id)) ?? user;
 
   let sessionToken: string;
   let csrfToken: string;
@@ -7885,7 +7921,7 @@ app.post("/api/auth/login", async (context) => {
   return context.json<AuthResponse>({
     user: authUserFromRow(responseUser),
     csrfToken,
-    message: dailyStorageCreditAwarded ? "Signed in. Daily storage credit added." : "Signed in."
+    message: `Signed in. You earned ${earnedCredits} site credit${earnedCredits === 1 ? "" : "s"}.`
   });
 });
 
@@ -8739,7 +8775,7 @@ app.get("/api/admin/artwork-reviews", async (context) => {
   ]);
   return context.json<AdminArtworkReviewsResponse>({
     publicArtworkReviewEnabled,
-    artworks: await withArtworkImages(admin.db, rows.results.map(artworkFromRow)),
+    artworks: await withArtworkImages(admin.db, rows.results.map((row) => artworkFromRow(row))),
     totalCount: totalRow?.count ?? 0,
     limit
   });
@@ -10428,7 +10464,7 @@ app.get("/api/settings/export", async (context) => {
     .all<ArtworkRow>();
   const artworksWithImages = await withArtworkImages(
     db,
-    artworkRows.results.map(artworkFromRow)
+    artworkRows.results.map((row) => artworkFromRow(row))
   );
   const artworksWithFollowing = await withViewerArtworkFollowing(db, user.id, artworksWithImages);
   const artworksWithLikes = await withViewerLikes(db, user.id, artworksWithFollowing);
@@ -11460,7 +11496,7 @@ app.post("/api/artworks/:id/images", async (context) => {
   for (const image of preparedImages) {
     const imageId = `img_${crypto.randomUUID().replaceAll("-", "")}`;
     const objectKey = `artworks/${id}/${imageId}.${image.extension}`;
-    const objectUrl = `/media/${objectKey}`;
+    const objectUrl = artworkMediaUrl(objectKey, context.env);
     await context.env.ARTWORKS.put(objectKey, image.bytes, {
       httpMetadata: {
         contentType: image.contentType
@@ -11770,7 +11806,7 @@ app.put("/api/artworks/:id/images/:imageId", async (context) => {
   }
 
   const objectKey = `artworks/${id}/${imageId}-${crypto.randomUUID().replaceAll("-", "")}.${extension}`;
-  const objectUrl = `/media/${objectKey}`;
+  const objectUrl = artworkMediaUrl(objectKey, context.env);
   await context.env.ARTWORKS.put(objectKey, bytes, {
     httpMetadata: {
       contentType: metadata.contentType
@@ -12083,7 +12119,7 @@ app.post("/api/artworks/:id/like", async (context) => {
         )
           .bind(id)
           .run();
-        await awardArtworkLikeStorageCredit(
+        await awardArtworkLikeSiteCredits(
           context.env.DB,
           artworkExists.creator_id,
           user.id,
@@ -12864,7 +12900,7 @@ app.post("/api/upload", async (context) => {
   for (const image of preparedImages) {
     const imageId = `img_${crypto.randomUUID().replaceAll("-", "")}`;
     const objectKey = `artworks/${id}/${imageId}.${image.extension}`;
-    const objectUrl = `/media/${objectKey}`;
+    const objectUrl = artworkMediaUrl(objectKey, context.env);
     await context.env.ARTWORKS.put(objectKey, image.bytes, {
       httpMetadata: {
         contentType: image.contentType
@@ -13081,6 +13117,40 @@ const artworkIdFromMediaKey = (key: string) => {
   return parts[1] ?? "";
 };
 
+const resolveArtworkMediaKey = async (context: AppContext, key: string) => {
+  if (!context.env.DB || !key.startsWith("artworks/") || key.includes("..")) {
+    return key;
+  }
+  const parts = key.split("/").filter(Boolean);
+  const artworkId = parts[1] ?? "";
+  const imageToken = parts[2] ?? "";
+  const hasExplicitObjectName = Boolean(imageToken && /\.[^/]+$/.test(imageToken));
+  if (!artworkId || parts.length > 3 || hasExplicitObjectName) {
+    return key;
+  }
+
+  const row = imageToken
+    ? await context.env.DB.prepare(
+        `SELECT image_url
+         FROM artwork_images
+         WHERE artwork_id = ?
+           AND id = ?
+         LIMIT 1`
+      )
+        .bind(artworkId, imageToken)
+        .first<{ image_url: string }>()
+    : await context.env.DB.prepare(
+        `SELECT image_url
+         FROM artworks
+         WHERE id = ?
+         LIMIT 1`
+      )
+        .bind(artworkId)
+        .first<{ image_url: string }>();
+  const resolvedKey = mediaKeyFromUrl(row?.image_url ?? "");
+  return resolvedKey.startsWith("artworks/") ? resolvedKey : key;
+};
+
 const mediaAccessForRequest = async (context: AppContext, key: string) => {
   if (key.startsWith("profiles/") && !key.includes("..")) {
     return { cacheControl: publicMediaCacheControl };
@@ -13198,13 +13268,14 @@ const streamMediaObject = async (
     return context.json({ message: "R2 bucket is not bound" }, 404);
   }
 
-  const access = await mediaAccessForRequest(context, key);
+  const resolvedKey = await resolveArtworkMediaKey(context, key);
+  const access = await mediaAccessForRequest(context, resolvedKey);
   if (access.response) {
     return access.response;
   }
 
   if (variant) {
-    const sourceUrl = new URL(`/media/${key}`, context.req.url);
+    const sourceUrl = new URL(`/media/${resolvedKey}`, context.req.url);
     const resized = await fetch(sourceUrl.toString(), {
       headers: context.req.raw.headers,
       cf: {
@@ -13225,7 +13296,7 @@ const streamMediaObject = async (
     }
   }
 
-  const object = await context.env.ARTWORKS.get(key);
+  const object = await context.env.ARTWORKS.get(resolvedKey);
   if (!object) {
     return context.json({ message: "Object not found" }, 404);
   }

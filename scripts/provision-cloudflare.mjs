@@ -199,6 +199,10 @@ const vars = {
     "PUBLIC_APP_URL",
     isProductionDeploy ? "" : config.vars?.PUBLIC_APP_URL
   ),
+  PUBLIC_ARTWORK_MEDIA_URL: getEnv(
+    "PUBLIC_ARTWORK_MEDIA_URL",
+    config.vars?.PUBLIC_ARTWORK_MEDIA_URL
+  ),
   PUBLIC_TURNSTILE_SITE_KEY: getEnv(
     "PUBLIC_TURNSTILE_SITE_KEY",
     isProductionDeploy ? "" : config.vars?.PUBLIC_TURNSTILE_SITE_KEY
@@ -225,6 +229,13 @@ if (isProductionDeploy) {
 
   if (!vars.PUBLIC_APP_URL.startsWith("https://")) {
     throw new Error("PUBLIC_APP_URL must use https:// for production deploys");
+  }
+  if (
+    vars.PUBLIC_ARTWORK_MEDIA_URL &&
+    !vars.PUBLIC_ARTWORK_MEDIA_URL.startsWith("https://") &&
+    !vars.PUBLIC_ARTWORK_MEDIA_URL.startsWith("/")
+  ) {
+    throw new Error("PUBLIC_ARTWORK_MEDIA_URL must use https:// or a root-relative path");
   }
 }
 

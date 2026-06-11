@@ -886,15 +886,31 @@ h1 {
   padding-top: 8px;
 }
 
-.art-card-body h3 {
+.art-title-button {
+  display: block;
+  width: 100%;
   overflow: hidden;
   margin-bottom: 6px;
+  border: 0;
+  padding: 0;
+  background: transparent;
   color: var(--purple);
+  cursor: pointer;
   font-size: 0.96rem;
   font-weight: 800;
   line-height: 1.25;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.art-title-button:hover,
+.art-title-button:focus-visible {
+  color: var(--blue-dark);
+  outline: 0;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
 }
 
 .creator-mini {
@@ -912,11 +928,20 @@ h1 {
   text-align: left;
 }
 
-.creator-mini img {
+.creator-mini img,
+.creator-mini-avatar {
   width: 20px;
   height: 20px;
   border-radius: 50%;
   object-fit: cover;
+}
+
+.default-avatar {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: linear-gradient(135deg, rgba(255, 242, 249, 0.96), rgba(240, 252, 255, 0.92));
+  color: var(--blue-dark);
 }
 
 .creator-mini span {
@@ -1151,9 +1176,12 @@ h1 {
 }
 
 .activity-avatar span {
+  display: grid;
+  place-items: center;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(255, 223, 232, 0.82)),
     var(--pink-soft);
+  color: var(--blue-dark);
 }
 
 .activity-copy {
@@ -1250,7 +1278,8 @@ h1 {
 
 .creator-row img,
 .creator-row-avatar-fallback,
-.artist-block img {
+.artist-block img,
+.artist-block-avatar {
   width: 42px;
   height: 42px;
   border: 2px solid #fff;
@@ -1630,8 +1659,10 @@ h1 {
   font-size: 0.8rem;
 }
 
+.recent-panel,
 .recent-users-panel,
-.moderation-panel {
+.moderation-panel,
+.audit-log-panel {
   grid-column: 1 / -1;
 }
 
@@ -1665,10 +1696,6 @@ h1 {
   font-size: 0.86rem;
   font-weight: 850;
   padding: 9px 10px;
-}
-
-.audit-log-panel {
-  grid-column: 1 / -1;
 }
 
 .report-row {
@@ -2060,7 +2087,8 @@ h1 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 390px);
   width: min(1160px, calc(100vw - 30px));
-  max-height: calc(100vh - 30px);
+  height: min(820px, calc(100dvh - 30px));
+  max-height: calc(100dvh - 30px);
   margin: auto;
   overflow: hidden;
   border-radius: 8px;
@@ -2072,7 +2100,9 @@ h1 {
 .modal-art-stage {
   display: grid;
   place-items: center;
-  min-height: 540px;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
   background:
     repeating-linear-gradient(120deg, rgba(250, 158, 188, 0.08) 0 1px, transparent 1px 28px),
     var(--surface-soft);
@@ -2089,14 +2119,19 @@ h1 {
   display: grid;
   place-items: center;
   width: 100%;
+  height: 100%;
   margin: 0;
 }
 
 .modal-art-stage img {
   width: 100%;
   height: 100%;
-  max-height: calc(100vh - 30px);
+  max-height: 100%;
   object-fit: contain;
+}
+
+.modal-art-stage.is-series .modal-art-frame {
+  height: auto;
 }
 
 .modal-art-stage.is-series img {
@@ -3726,6 +3761,10 @@ h1 {
   color: #b91c1c;
 }
 
+.privacy-save-panel {
+  align-items: flex-start;
+}
+
 .settings-toggle {
   margin-top: 4px;
 }
@@ -4139,8 +4178,10 @@ h1 {
 
 .upload-drawer {
   width: min(430px, 100vw);
-  height: 100vh;
-  padding: 24px;
+  height: 100dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 24px 24px calc(24px + env(safe-area-inset-bottom));
   border-left: 1px solid var(--line);
   background:
     repeating-linear-gradient(120deg, rgba(250, 158, 188, 0.06) 0 1px, transparent 1px 34px),
@@ -4353,6 +4394,35 @@ h1 {
 .storage-status.is-over-limit {
   border-color: rgba(204, 68, 75, 0.52);
   background: rgba(255, 235, 236, 0.78);
+}
+
+.upload-progress {
+  position: relative;
+  display: grid;
+  align-items: center;
+  min-height: 34px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.upload-progress span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 4px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--pink), var(--cyan));
+  transition: width 160ms ease;
+}
+
+.upload-progress strong {
+  position: relative;
+  z-index: 1;
+  justify-self: center;
+  color: var(--purple);
+  font-size: 0.8rem;
+  font-weight: 900;
 }
 
 .upload-message {
@@ -4705,11 +4775,14 @@ h1 {
 
   .art-modal {
     grid-template-columns: 1fr;
-    overflow: auto;
+    grid-template-rows: minmax(220px, 42dvh) minmax(0, 1fr);
+    width: calc(100vw - 16px);
+    height: calc(100dvh - 16px);
+    max-height: calc(100dvh - 16px);
   }
 
   .modal-art-stage {
-    min-height: 320px;
+    min-height: 0;
   }
 
   .modal-detail {

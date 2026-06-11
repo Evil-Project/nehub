@@ -7,7 +7,7 @@ NEHub is a fan-made community platform dedicated to sharing and discussing Neuro
 ## Product Features
 
 - **Artwork publishing** supports public, unlisted, and private posts with up to 8 JPEG, PNG, WebP, or GIF images per artwork.
-- **Storage credits** give new users a 10-image account storage limit, then add more image slots through daily signed-in visits and first-time likes received on artwork.
+- **Site credits** give new users a 10-image account storage limit, then unlock more upload slots through login rewards and likes received on artwork.
 - **Community discovery** includes latest, popular, rising, following, bookmark, subscription, tag, and daily/weekly ranking feeds.
 - **Creator profiles** include uploaded profile pictures, avatar URLs, bios, public artwork, public/private bookmark tabs, collections, ordered series, followers, and following lists.
 - **Social actions** include likes, public or private bookmarks, follows, comments, replies, reports, blocked users, muted tags, and global or followed-creator activity feeds.
@@ -35,9 +35,9 @@ The platform is built for performance and reliability as a Cloudflare-native dep
 
 ## Artwork Storage
 
-New users start with a 10-image account storage limit. Uploading a page to an artwork uses one image slot; deleting an artwork or image page frees the slot again. Each daily signed-in visit adds one storage credit, and each first-time like received from another user on an artwork adds one storage credit. Credits increase the account's total image-slot limit and are not removed when a like is later toggled off.
+New users start with a 10-image account storage limit. Uploading a page to an artwork uses one image slot; deleting an artwork or image page frees the slot again. Each login awards a random site-credit bonus, 10 site credits unlock 1 extra upload image slot, and each first-time like received from another user on an artwork immediately awards the creator 100 site credits. Credits increase the account's total image-slot limit and are not removed when a like is later toggled off.
 
-Uploaded originals are stored in R2, while D1 keeps artwork metadata, detected dimensions, page order, tags, visibility, mature rating, review status, storage-credit state, and interaction counts. Feed thumbnails are served through the thumbnail media route so public gallery views can use resized assets while artwork detail pages can still load the original files.
+Uploaded originals are stored in R2, while D1 keeps artwork metadata, detected dimensions, page order, tags, visibility, mature rating, review status, site-credit state, and interaction counts. Artwork originals are returned with the configured artwork media base URL, defaulting to `https://art.evilneur.org/`, while legacy `/media/artworks/...` links remain supported. Feed thumbnails are served through the thumbnail media route so public gallery views can use resized assets while artwork detail pages can load the original files from the artwork media domain.
 
 Bind D1 and R2 to begin publishing artwork; the gallery starts empty until creators sign in and upload their own work.
 
@@ -102,11 +102,11 @@ Browser checks:
 - For a multi-image artwork, open `Edit`, move image pages, save the order, and confirm page 1 becomes the feed thumbnail cover.
 - For a multi-image artwork, remove one page in `Edit` and confirm the artwork stays published with the remaining first page as the feed thumbnail cover.
 - Upload an `Unlisted` artwork and confirm it opens by direct URL but does not appear in latest/search/rankings; upload a `Private` artwork and confirm only the owner or a staff account can open it.
-- Inspect a feed card image and confirm it uses `/media-thumbnail/artworks/...`; the detail modal should still load the original `/media/artworks/...` file.
+- Inspect a feed card image and confirm it uses `/media-thumbnail/artworks/...`; the detail modal should load the original `https://art.evilneur.org/artworks/...` file when the default artwork media base is active.
 - Confirm the right-rail activity panel shows global activity when signed out and followed-creator activity after following an artist.
 - Click an artwork card bookmark icon, open `Bookmarks`, and confirm the saved work appears.
 - Open an artwork detail modal and use the `Bookmark` button to toggle the saved state and count.
-- Like a disposable user's artwork from a different account, then sign in as the creator and confirm the creator has one additional storage credit; unlike and re-like the same artwork to confirm it does not grant duplicate credits.
+- Like a disposable user's artwork from a different account, then sign in as the creator and confirm the creator has 100 more site credits; unlike and re-like the same artwork to confirm it does not grant duplicate credits.
 - In the artwork detail modal, choose `Public` and `Private` bookmark visibility and confirm the profile bookmark tabs reflect the choice.
 - Open your account chip or `/@admin` and confirm the profile page shows works, public/private bookmark tabs, and follower/following lists.
 - Open `Settings > Profile`, upload a profile picture, save profile changes, and confirm the avatar updates on the account chip and profile page.
@@ -115,7 +115,7 @@ Browser checks:
 - Add one or more muted tags in `Privacy` and confirm matching works by other creators disappear from feeds/search.
 - Set profile visibility to `Members` or `Private` and confirm signed-out profile/gallery access is restricted as expected.
 - Confirm `Restricted` and `Adult` uploads are blocked until the signed-in user has an adult date of birth and mature content enabled.
-- Sign out and sign back in on a new UTC day, then confirm saved bookmarks still appear for the same account and the daily storage credit is added once.
+- Sign out and sign back in, then confirm saved bookmarks still appear for the same account and the login site-credit reward is shown once for that login.
 
 To test region hiding locally, start Wrangler with a test country in `MATURE_RESTRICTED_REGIONS`, then send `CF-IPCountry` on API requests:
 
@@ -155,6 +155,7 @@ npx wrangler r2 bucket create nehub-artworks
 Create a Turnstile widget and set its public site key in `wrangler.jsonc`:
 
 ```jsonc
+"PUBLIC_ARTWORK_MEDIA_URL": "https://art.evilneur.org/",
 "PUBLIC_TURNSTILE_SITE_KEY": "your-turnstile-site-key"
 ```
 
@@ -187,11 +188,11 @@ Set `MATURE_RESTRICTED_REGIONS` to a comma-separated list of ISO 3166-1 alpha-2 
 "MATURE_RESTRICTED_REGIONS": "KP,IR"
 ```
 
-The Worker reads Cloudflare's request country metadata and the `CF-IPCountry` header. Mature gallery results, profile results, artwork detail responses, likes, bookmarks, uploads, and direct `/media/artworks/*` streams are denied when the country is restricted.
+The Worker reads Cloudflare's request country metadata and the `CF-IPCountry` header. Mature gallery results, profile results, artwork detail responses, likes, bookmarks, uploads, and direct Worker-served `/media/artworks/*` streams are denied when the country is restricted.
 
-Uploaded artwork originals are byte-sniffed as JPEG, PNG, WebP, or GIF before storage, and detected image dimensions are written to D1/R2 metadata. Originals are stored in R2 under `/media/artworks/...`. Feed thumbnails are served through `/media-thumbnail/artworks/...`, which applies Cloudflare Image Resizing in production and falls back to the original object during local development. Public, general-audience media is cached immutably; private profiles, members-only profiles, mature content, and signed-in media requests use `private, no-store` responses.
+Uploaded artwork originals are byte-sniffed as JPEG, PNG, WebP, or GIF before storage, and detected image dimensions are written to D1/R2 metadata. Originals are stored in R2 under `artworks/...` and are exposed through the configured artwork media base URL, defaulting to `https://art.evilneur.org/`. Feed thumbnails are served through `/media-thumbnail/artworks/...`, which applies Cloudflare Image Resizing in production and falls back to the original object during local development. Worker-served public, general-audience media is cached immutably; private profiles, members-only profiles, mature content, and signed-in media requests use `private, no-store` responses. Bare `/media/artworks/:artworkId` links resolve to the current cover image, and `/media/artworks/:artworkId/:imageId` resolves to a specific artwork image without requiring the file extension.
 
-Account storage limits are enforced from D1. The migration gives existing users enough bonus credits to cover any already-uploaded images beyond the 10-image base limit, then tracks future daily login credits and one-time like-received credits.
+Account storage limits are enforced from D1. Existing legacy bonus slots are preserved, while future capacity comes from site credits: login rewards add random credits, 10 credits unlock 1 image slot, and first-time likes from other users award the creator 100 credits.
 
 The schema creates a locked default administrator account:
 
@@ -229,6 +230,7 @@ Optional repository variable:
 Add these production repository variables before using the workflow:
 
 - `PUBLIC_APP_URL`: production HTTPS origin, for example `https://app.your-domain.com`.
+- `PUBLIC_ARTWORK_MEDIA_URL`: public artwork media origin, for example `https://art.evilneur.org/`.
 - `PUBLIC_TURNSTILE_SITE_KEY`: production Turnstile site key.
 - `AUTH_EMAIL_FROM`: allowed Cloudflare Email Routing sender.
 
@@ -251,12 +253,12 @@ Cloudflare Email Routing and the Turnstile widget still need to exist in the Clo
 
 - `GET /api/health` reports Worker, D1, and R2 binding status.
 - `GET /api/auth/config` returns the public Turnstile site key.
-- `GET /api/auth/session` returns the current signed-in user from the HttpOnly session cookie, including storage usage and whether a daily storage credit was awarded.
-- Authenticated user payloads include account storage state: 10 base image slots, earned bonus credits, total image limit, used images, remaining images, and last daily credit date.
+- `GET /api/auth/session` returns the current signed-in user from the HttpOnly session cookie, including storage usage and site-credit state.
+- Authenticated user payloads include account storage state: 10 base image slots, site credits, credit-unlocked slots, legacy bonus slots, total image limit, used images, remaining images, and the last login-credit date.
 - Cookie-authenticated POST routes require the `x-csrf-token` returned by auth/session responses.
 - Rate-limited routes return HTTP `429` with `Retry-After` and a JSON message when a user or IP exceeds the configured action window.
 - `POST /api/auth/register` creates an account with the 10-image base storage limit, validates Turnstile, sends a verification email, and starts a session.
-- `POST /api/auth/login` validates Turnstile, starts a session, and awards one daily storage credit when the user has not already received today's credit.
+- `POST /api/auth/login` validates Turnstile, starts a session, and awards a random login site-credit bonus.
 - `POST /api/auth/password-reset/request` validates Turnstile and sends a non-enumerating password reset email when the account exists.
 - `POST /api/auth/password-reset/confirm` validates Turnstile, consumes a reset token, updates the password, and revokes all sessions.
 - `POST /api/auth/logout` clears the current session.
@@ -327,7 +329,7 @@ Cloudflare Email Routing and the Turnstile widget still need to exist in the Clo
 - `POST /api/artworks/:id/images` appends images to an existing artwork for the owner or an administrator, preserving byte validation, R2 metadata, the 8-image per-artwork limit, and the artwork owner's account storage limit.
 - `PUT /api/artworks/:id/images/order` reorders every image in a multi-image artwork for the owner or an administrator and promotes the first image to the artwork cover.
 - `DELETE /api/artworks/:id/images/:imageId` removes one image from a multi-image artwork for the owner or an administrator, keeps at least one image, promotes the first remaining image to the artwork cover, and returns refreshed account storage state.
-- `POST /api/artworks/:id/like` toggles the signed-in user's like, returns updated artwork state, and awards the creator one storage credit for the first like from that user on that artwork.
+- `POST /api/artworks/:id/like` toggles the signed-in user's like, returns updated artwork state, and awards the creator 100 site credits for the first like from that user on that artwork.
 - `POST /api/artworks/:id/comments` adds an authenticated comment or reply with optional `parentId` and Turnstile validation.
 - `POST /api/artworks/:id/report` lets signed-in users report artwork for moderation with Turnstile validation.
 - `POST /api/artworks/:id/bookmark` toggles the signed-in user's bookmark; send `{ "visibility": "public" }` or `{ "visibility": "private" }` to save or change bookmark visibility.

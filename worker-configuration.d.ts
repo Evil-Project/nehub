@@ -5,6 +5,7 @@ interface Env {
   EMAIL?: SendEmail;
   PUBLIC_APP_NAME: string;
   PUBLIC_APP_URL: string;
+  PUBLIC_ARTWORK_MEDIA_URL?: string;
   PUBLIC_TURNSTILE_SITE_KEY: string;
   AUTH_EMAIL_FROM: string;
   TURNSTILE_SECRET_KEY?: string;
