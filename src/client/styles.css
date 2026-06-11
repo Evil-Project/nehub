@@ -2935,41 +2935,85 @@ h1 {
   color: var(--blue-dark);
 }
 
-.profile-website {
-  display: inline-flex;
+.profile-links {
+  display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 8px;
   max-width: 100%;
   margin-bottom: 10px;
+}
+
+.profile-website,
+.profile-visibility-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  min-height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.86);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.74);
   color: var(--purple);
-  font-size: 0.86rem;
+  font-size: 0.82rem;
   font-weight: 900;
+  line-height: 1;
+  box-shadow: 2px 2px 0 rgba(58, 12, 163, 0.08);
+}
+
+.profile-website {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(255, 247, 251, 0.86));
   text-decoration: none;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.profile-website svg,
+.profile-visibility-badge svg {
+  flex: 0 0 auto;
+}
+
+.profile-website span,
+.profile-visibility-badge span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .profile-website:hover,
 .profile-website:focus-visible {
+  border-color: rgba(250, 158, 188, 0.72);
   color: var(--blue-dark);
+  box-shadow: 3px 3px 0 rgba(58, 12, 163, 0.12);
   outline: 0;
-  text-decoration: underline;
-  text-decoration-thickness: 2px;
-  text-underline-offset: 3px;
+  transform: translate(-1px, -1px);
 }
 
 .profile-visibility-badge {
-  display: inline-flex;
-  align-items: center;
-  max-width: 100%;
-  min-height: 28px;
-  margin-bottom: 10px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+  color: var(--muted);
+}
+
+.profile-visibility-badge.is-public {
+  border-color: rgba(32, 178, 108, 0.28);
+  background: rgba(237, 255, 247, 0.74);
+  color: #177b50;
+}
+
+.profile-visibility-badge.is-members {
+  border-color: rgba(250, 158, 188, 0.46);
   background: rgba(255, 247, 251, 0.82);
+  color: var(--blue-dark);
+}
+
+.profile-visibility-badge.is-private {
+  border-color: rgba(58, 12, 163, 0.22);
+  background: rgba(245, 241, 255, 0.76);
   color: var(--purple);
-  font-size: 0.8rem;
-  font-weight: 900;
-  overflow-wrap: anywhere;
-  padding: 5px 10px;
 }
 
 .profile-meta span,

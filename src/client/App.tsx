@@ -12,6 +12,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  ExternalLink,
   FileText,
   Flag,
   Flame,
@@ -7738,6 +7739,14 @@ function ProfilePage({
 
   const profile = profileData?.profile;
   const ownProfile = Boolean(profile?.ownProfile);
+  const profileVisibilityMeta = profile
+    ? profile.profileVisibility === "members"
+      ? { label: "Members only", icon: UserRound, tone: "members" }
+      : profile.profileVisibility === "private"
+        ? { label: "Private", icon: Lock, tone: "private" }
+        : { label: "Public", icon: Eye, tone: "public" }
+    : null;
+  const ProfileVisibilityIcon = profileVisibilityMeta?.icon;
   const tabs: Array<{ id: ProfileTab; label: string; count: number; icon: typeof Images }> = profileData
     ? [
         { id: "works", label: "Works", count: profileData.stats.artworks, icon: Images },
@@ -8154,25 +8163,26 @@ function ProfilePage({
                 <AtSign size={15} />
                 {profile.username}
               </div>
-              {profile.websiteUrl ? (
-                <a
-                  className="profile-website"
-                  href={profile.websiteUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <Cloud size={15} />
-                  Website
-                </a>
-              ) : null}
-              {ownProfile ? (
-                <span className="profile-visibility-badge">
-                  {profile.profileVisibility === "members"
-                    ? "Members only"
-                    : profile.profileVisibility === "private"
-                      ? "Private"
-                      : "Public"}
-                </span>
+              {profile.websiteUrl || (ownProfile && profileVisibilityMeta && ProfileVisibilityIcon) ? (
+                <div className="profile-links">
+                  {profile.websiteUrl ? (
+                    <a
+                      className="profile-website"
+                      href={profile.websiteUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <ExternalLink size={14} />
+                      <span>Website</span>
+                    </a>
+                  ) : null}
+                  {ownProfile && profileVisibilityMeta && ProfileVisibilityIcon ? (
+                    <span className={`profile-visibility-badge is-${profileVisibilityMeta.tone}`}>
+                      <ProfileVisibilityIcon size={14} />
+                      <span>{profileVisibilityMeta.label}</span>
+                    </span>
+                  ) : null}
+                </div>
               ) : null}
               {profile.bio ? <p>{profile.bio}</p> : null}
               <div className="profile-meta">
