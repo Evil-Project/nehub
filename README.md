@@ -219,7 +219,7 @@ The repository includes `.github/workflows/deploy.yml` for automatic Cloudflare 
 
 Add these repository secrets before using the workflow:
 
-- `CLOUDFLARE_API_TOKEN`: Cloudflare API token with permission to create/read D1 databases, create/read R2 buckets, deploy Workers, and upload Worker secrets.
+- `CLOUDFLARE_API_TOKEN`: Cloudflare API token with permission to create/read D1 databases, create/read R2 buckets, deploy Workers, upload Workers static assets, and upload Worker secrets.
 - `TURNSTILE_SECRET_KEY`: production Turnstile secret key.
 - `ADMIN_BOOTSTRAP_PASSWORD`: first-run password for the default admin account. Use a strong unique value, then remove or rotate it after the first successful admin login.
 

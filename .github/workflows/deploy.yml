@@ -64,8 +64,37 @@ jobs:
 
       - name: Deploy Worker
         run: |
+          set -o pipefail
+
+          deploy_args=(--config "${{ steps.provision.outputs.wrangler_config }}")
           if [ "${{ steps.provision.outputs.has_secrets }}" = "true" ]; then
-            npx wrangler deploy --config "${{ steps.provision.outputs.wrangler_config }}" --secrets-file "${{ steps.provision.outputs.secrets_file }}"
-          else
-            npx wrangler deploy --config "${{ steps.provision.outputs.wrangler_config }}"
+            deploy_args+=(--secrets-file "${{ steps.provision.outputs.secrets_file }}")
           fi
+
+          mkdir -p .wrangler
+
+          for attempt in 1 2 3; do
+            log_file=".wrangler/deploy-attempt-${attempt}.log"
+            echo "Deploy attempt ${attempt} of 3"
+
+            if npx wrangler deploy "${deploy_args[@]}" 2>&1 | tee "${log_file}"; then
+              exit 0
+            else
+              status=$?
+            fi
+
+            if grep -Eiq "workers/assets/upload|Asset upload failed|Received a malformed response from the API|429|5[0-9][0-9]|ECONNRESET|ETIMEDOUT" "${log_file}" && [ "${attempt}" -lt 3 ]; then
+              sleep_seconds=$((attempt * 20))
+              echo "Cloudflare deploy upload failed with a retryable error. Retrying in ${sleep_seconds}s."
+              sleep "${sleep_seconds}"
+              continue
+            fi
+
+            if grep -Eiq "401 Unauthorized|403 Forbidden" "${log_file}"; then
+              echo "::error::Cloudflare denied the Worker static asset upload. Update CLOUDFLARE_API_TOKEN so it can deploy Workers and upload Workers static assets for the target account."
+            fi
+
+            exit "${status}"
+          done
+
+          exit 1
