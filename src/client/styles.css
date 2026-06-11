@@ -477,11 +477,20 @@ img {
 
 .page-frame {
   display: grid;
-  grid-template-columns: 190px minmax(0, 1fr) 320px;
+  grid-template-columns: 210px minmax(0, 1fr) 320px;
   gap: 28px;
   width: min(1480px, 100%);
   margin: 0 auto;
   padding: 26px 24px 60px;
+}
+
+.global-account-notice {
+  width: min(1480px, calc(100% - 48px));
+  margin: 18px auto 0;
+}
+
+.global-account-notice .account-notice {
+  margin-bottom: 0;
 }
 
 .left-menu,
@@ -509,6 +518,7 @@ img {
   padding: 0 12px;
   color: var(--purple);
   text-align: left;
+  white-space: nowrap;
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.86), rgba(224, 229, 236, 0.72));
   box-shadow: inset 0 1px 3px rgba(255, 255, 255, 0.75);
 }
@@ -841,6 +851,16 @@ h1 {
 
 .rating-badge.is-private {
   background: rgba(58, 12, 163, 0.88);
+  color: #fff;
+}
+
+.rating-badge.is-review-pending {
+  background: rgba(255, 214, 102, 0.94);
+  color: #4f3100;
+}
+
+.rating-badge.is-review-rejected {
+  background: rgba(255, 64, 96, 0.9);
   color: #fff;
 }
 
@@ -1229,6 +1249,7 @@ h1 {
 }
 
 .creator-row img,
+.creator-row-avatar-fallback,
 .artist-block img {
   width: 42px;
   height: 42px;
@@ -1236,6 +1257,15 @@ h1 {
   border-radius: 8px;
   object-fit: cover;
   box-shadow: 2px 2px 0 rgba(58, 12, 163, 0.08);
+}
+
+.creator-row-avatar-fallback {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--cyan), var(--blue));
+  color: var(--purple);
+  font-size: 1.05rem;
+  font-weight: 900;
 }
 
 .creator-row strong,
@@ -1261,6 +1291,8 @@ h1 {
   width: 34px;
   height: 34px;
   min-height: 34px;
+  justify-self: center;
+  align-self: center;
   pointer-events: none;
 }
 
@@ -1598,6 +1630,7 @@ h1 {
   font-size: 0.8rem;
 }
 
+.recent-users-panel,
 .moderation-panel {
   grid-column: 1 / -1;
 }
@@ -1848,7 +1881,7 @@ h1 {
 
 .admin-user-row {
   display: grid;
-  grid-template-columns: 12px minmax(0, 1fr) auto;
+  grid-template-columns: 12px minmax(0, 1fr) minmax(150px, 190px) auto;
   align-items: center;
   gap: 10px;
   padding: 10px 0;
@@ -1865,7 +1898,8 @@ h1 {
 }
 
 .admin-user-filter-row label,
-.admin-user-search-form label {
+.admin-user-search-form label,
+.admin-user-role-select {
   display: grid;
   gap: 5px;
   min-width: 0;
@@ -1900,7 +1934,8 @@ h1 {
 }
 
 .admin-user-search-box input,
-.admin-user-filter-row select {
+.admin-user-filter-row select,
+.admin-user-role-select select {
   width: 100%;
   min-width: 0;
   border: 0;
@@ -1913,11 +1948,78 @@ h1 {
   outline: none;
 }
 
-.admin-user-filter-row select {
+.admin-user-filter-row select,
+.admin-user-role-select select {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 252, 254, 0.96);
   padding: 9px 10px;
+}
+
+.artwork-review-panel {
+  grid-column: 1 / -1;
+}
+
+.review-toggle {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.artwork-review-list {
+  display: grid;
+  gap: 10px;
+}
+
+.artwork-review-row {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.artwork-review-row img {
+  width: 68px;
+  height: 68px;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  background: var(--surface-soft);
+  object-fit: cover;
+}
+
+.artwork-review-row strong,
+.artwork-review-row span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artwork-review-row strong {
+  color: var(--purple);
+  font-size: 0.94rem;
+}
+
+.artwork-review-row span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.artwork-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 8px;
+}
+
+.artwork-review-actions .secondary-button,
+.artwork-review-actions .danger-button {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 0.82rem;
 }
 
 .admin-user-row:first-of-type {
@@ -3490,10 +3592,16 @@ h1 {
 .settings-form {
   display: grid;
   gap: 14px;
-  max-width: 720px;
+  max-width: 820px;
 }
 
-.settings-page > .settings-form + .settings-form {
+.settings-page > .settings-form,
+.settings-page > div > .settings-form {
+  width: 100%;
+}
+
+.settings-page > .settings-form + .settings-form,
+.settings-page > div > .settings-form + .settings-form {
   margin-top: 14px;
 }
 
@@ -3530,6 +3638,67 @@ h1 {
   box-shadow: 0 0 0 4px rgba(250, 158, 188, 0.16);
 }
 
+.profile-avatar-upload {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76);
+}
+
+.profile-avatar-upload-preview {
+  display: grid;
+  width: 76px;
+  height: 76px;
+  place-items: center;
+  overflow: hidden;
+  border: 3px solid #fff;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--cyan), var(--blue));
+  color: var(--purple);
+  box-shadow: 2px 2px 0 rgba(58, 12, 163, 0.08);
+}
+
+.profile-avatar-upload-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profile-avatar-upload-preview span {
+  font-size: 2rem;
+  font-weight: 900;
+}
+
+.profile-avatar-upload-copy {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.profile-avatar-upload-copy strong {
+  color: var(--purple);
+  font-size: 0.95rem;
+}
+
+.profile-avatar-upload-copy span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.profile-avatar-upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
 .settings-panel,
 .policy-section {
   border: 1px solid rgba(255, 255, 255, 0.78);
@@ -3555,10 +3724,6 @@ h1 {
 
 .danger-settings-panel .panel-title {
   color: #b91c1c;
-}
-
-.privacy-form {
-  max-width: 820px;
 }
 
 .settings-toggle {
@@ -3926,13 +4091,15 @@ h1 {
 
 .turnstile-shell {
   display: grid;
+  justify-items: start;
   align-items: center;
+  width: min(100%, 300px);
   min-height: 70px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .turnstile-shell.is-compact {
-  width: 150px;
+  width: min(100%, 300px);
   min-height: 70px;
 }
 
@@ -4021,6 +4188,9 @@ h1 {
 }
 
 .tag-chip-label {
+  display: flex;
+  align-items: center;
+  min-height: 20px;
   color: var(--muted);
   font-size: 0.84rem;
   font-weight: 800;
@@ -4051,7 +4221,12 @@ h1 {
 
 .tag-chip-editor {
   display: grid;
-  gap: 8px;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .tag-chip-row,
@@ -4133,6 +4308,51 @@ h1 {
   color: var(--purple);
   cursor: pointer;
   font-weight: 800;
+}
+
+.storage-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--text);
+}
+
+.storage-status svg {
+  flex: 0 0 auto;
+  color: var(--blue-dark);
+}
+
+.storage-status span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.storage-status strong,
+.storage-status small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.storage-status strong {
+  font-size: 0.86rem;
+  line-height: 1.25;
+}
+
+.storage-status small {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.storage-status.is-over-limit {
+  border-color: rgba(204, 68, 75, 0.52);
+  background: rgba(255, 235, 236, 0.78);
 }
 
 .upload-message {
@@ -4373,6 +4593,27 @@ h1 {
     grid-template-columns: 1fr;
   }
 
+  .admin-user-row,
+  .artwork-review-row {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .admin-user-role-select,
+  .admin-user-row .text-button,
+  .artwork-review-actions {
+    grid-column: 2;
+    justify-self: stretch;
+  }
+
+  .artwork-review-actions {
+    justify-content: stretch;
+  }
+
+  .artwork-review-actions .secondary-button,
+  .artwork-review-actions .danger-button {
+    flex: 1;
+  }
+
   .tag-hero-follow {
     width: 100%;
   }
@@ -4481,6 +4722,10 @@ h1 {
     padding: 22px;
   }
 
+  .upload-drawer {
+    padding: 18px 10px;
+  }
+
   .account-notice-copy strong,
   .account-notice-copy span {
     white-space: normal;
@@ -4498,6 +4743,20 @@ h1 {
 
   .profile-hero {
     grid-template-columns: 1fr;
+  }
+
+  .profile-avatar-upload {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-avatar-upload-preview {
+    width: 68px;
+    height: 68px;
+  }
+
+  .profile-avatar-upload-actions,
+  .profile-avatar-upload-actions .secondary-button {
+    width: 100%;
   }
 
   .profile-tabs {

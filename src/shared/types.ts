@@ -15,6 +15,8 @@ export type CreatorDiscoverySort = "popular" | "active" | "newest";
 export type MatureRating = "general" | "restricted" | "adult";
 export type MatureFilter = "all" | MatureRating;
 export type ArtworkVisibility = "public" | "unlisted" | "private";
+export type ArtworkReviewStatus = "pending" | "approved" | "rejected";
+export type UserRole = "member" | "moderator" | "admin";
 export type ReportTargetType = "artwork" | "comment" | "user";
 export type ReportStatus = "open" | "resolved" | "dismissed";
 export type ReportReason = "spam" | "abuse" | "illegal" | "copyright" | "other";
@@ -79,6 +81,7 @@ export type Artwork = {
   mature: boolean;
   matureRating: MatureRating;
   visibility: ArtworkVisibility;
+  reviewStatus: ArtworkReviewStatus;
 };
 
 export type GalleryResponse = {
@@ -185,14 +188,25 @@ export type ActivityResponse = {
   matureAccess: MatureAccess;
 };
 
+export type UserStorage = {
+  baseLimit: number;
+  bonusCredits: number;
+  imageLimit: number;
+  usedImages: number;
+  remainingImages: number;
+  lastDailyCreditDate: string | null;
+};
+
 export type UploadResponse = {
   artwork: Artwork;
+  user: AuthUser;
   persisted: boolean;
   message: string;
 };
 
 export type AddArtworkImagesResponse = {
   artwork: Artwork;
+  user: AuthUser;
   message: string;
 };
 
@@ -205,6 +219,7 @@ export type ReplaceArtworkImageResponse = {
 export type DeleteArtworkResponse = {
   deleted: true;
   artworkId: string;
+  user: AuthUser;
   message: string;
 };
 
@@ -212,6 +227,7 @@ export type DeleteArtworkImageResponse = {
   deleted: true;
   imageId: string;
   artwork: Artwork;
+  user: AuthUser;
   message: string;
 };
 
@@ -537,8 +553,9 @@ export type AuthUser = {
   email: string;
   username: string;
   displayName: string;
-  role: "member" | "admin";
+  role: UserRole;
   emailVerified: boolean;
+  storage: UserStorage;
 };
 
 export type MatureAccess = {
@@ -563,6 +580,7 @@ export type AuthConfigResponse = {
 export type AuthSessionResponse = {
   user: AuthUser | null;
   csrfToken: string | null;
+  dailyStorageCreditAwarded?: boolean;
 };
 
 export type AuthResponse = {
@@ -608,13 +626,19 @@ export type AdminUserSummary = {
   email: string;
   username: string;
   displayName: string;
-  role: "member" | "admin";
+  role: UserRole;
   emailVerified: boolean;
   suspendedAt: string | null;
   createdAt: string;
 };
 
-export type AdminUserStatusFilter = "all" | "active" | "suspended" | "unverified" | "admin";
+export type AdminUserStatusFilter =
+  | "all"
+  | "active"
+  | "suspended"
+  | "unverified"
+  | "moderator"
+  | "admin";
 
 export type AdminUsersResponse = {
   users: AdminUserSummary[];
@@ -629,6 +653,7 @@ export type AdminStatsResponse = {
     totalUsers: number;
     verifiedUsers: number;
     admins: number;
+    moderators: number;
     suspendedUsers: number;
     activeSessions: number;
     pendingVerifications: number;
@@ -650,6 +675,24 @@ export type AdminStatsResponse = {
 export type AdminUserActionResponse = {
   user: AdminUserSummary;
   message: string;
+};
+
+export type AdminArtworkReviewsResponse = {
+  publicArtworkReviewEnabled: boolean;
+  artworks: Artwork[];
+  totalCount: number;
+  limit: number;
+};
+
+export type AdminArtworkReviewActionResponse = {
+  artwork: Artwork;
+  message: string;
+};
+
+export type AdminArtworkReviewSettingsResponse = {
+  publicArtworkReviewEnabled: boolean;
+  pendingCount: number;
+  message?: string;
 };
 
 export type AdminAuditLogEntry = {
@@ -733,6 +776,7 @@ export type ProfileSettingsResponse = {
     avatarUrl: string;
     bio: string;
   };
+  message?: string;
 };
 
 export type PrivacySecuritySettingsResponse = {

@@ -15,6 +15,9 @@ import type {
   AuthSessionResponse,
   AuthSessionsResponse,
   AuthUser,
+  AdminArtworkReviewActionResponse,
+  AdminArtworkReviewSettingsResponse,
+  AdminArtworkReviewsResponse,
   AdminAuditLogEntry,
   AdminAuditLogResponse,
   AdminModerationActionResponse,
@@ -32,6 +35,7 @@ import type {
   Artwork,
   ArtworkImage,
   ArtworkResponse,
+  ArtworkReviewStatus,
   ArtworkVisibility,
   ArtworkSeries,
   ArtworkSeriesDetailResponse,
@@ -106,6 +110,8 @@ import type {
   TagSubscriptionsResponse,
   UserCollection,
   UserNotification,
+  UserRole,
+  UserStorage,
   UserProfileResponse,
   UpdateArtworkResponse,
   UnblockUserResponse,
@@ -133,7 +139,11 @@ const hourSeconds = 60 * minuteSeconds;
 const passwordIterations = 120_000;
 const passwordKeyLengthBytes = 32;
 const maxUploadBytes = 10 * 1024 * 1024;
+const maxAvatarUploadBytes = 4 * 1024 * 1024;
 const maxUploadFiles = 8;
+const baseStorageImageLimit = 10;
+const dailyLoginStorageCredit = 1;
+const artworkLikeStorageCredit = 1;
 const maxImageDimension = 32_768;
 const maxImagePixels = 50_000_000;
 const maxExplicitArtworkTags = 12;
@@ -141,6 +151,7 @@ const maxExpandedArtworkTags = 24;
 const maxTagLength = 64;
 const defaultAdminUserId = "usr_default_admin";
 const bootstrapPasswordHash = "bootstrap-env";
+const publicArtworkReviewSettingKey = "public_artwork_review_enabled";
 const rateLimitDefaults = {
   auth: { limit: 10, windowSeconds: 15 * minuteSeconds },
   resend: { limit: 3, windowSeconds: 15 * minuteSeconds },
@@ -536,6 +547,18 @@ const artworkModerationSchema = z.object({
   action: z.enum(["hide", "restore"])
 });
 
+const userRoleSchema = z.object({
+  role: z.enum(["member", "moderator", "admin"])
+});
+
+const artworkReviewSchema = z.object({
+  action: z.enum(["approve", "reject"])
+});
+
+const artworkReviewSettingsSchema = z.object({
+  publicArtworkReviewEnabled: z.boolean()
+});
+
 const markNotificationsReadSchema = z.object({
   id: z.string().trim().min(1).max(80).optional()
 });
@@ -886,11 +909,7 @@ const getCookie = (request: Request, name: string) => {
 const secureCookieSuffix = (context: AppContext) => {
   const requestUrl = new URL(context.req.url);
   const forwardedProto = context.req.header("X-Forwarded-Proto");
-  if (
-    requestUrl.protocol === "https:" ||
-    forwardedProto === "https" ||
-    context.env.PUBLIC_APP_URL.startsWith("https://")
-  ) {
+  if (requestUrl.protocol === "https:" || forwardedProto === "https") {
     return "; Secure";
   }
   return "";
@@ -1441,6 +1460,53 @@ const reindexCreatorSearchIndex = async (db: D1Database, creatorId: string) => {
   }
 };
 
+const getPublicArtworkReviewEnabled = async (db: D1Database) => {
+  try {
+    const row = await db
+      .prepare("SELECT value FROM platform_settings WHERE key = ? LIMIT 1")
+      .bind(publicArtworkReviewSettingKey)
+      .first<{ value: string }>();
+    return row?.value === "true";
+  } catch (error) {
+    console.warn("Unable to read public artwork review setting", error);
+    return false;
+  }
+};
+
+const setPublicArtworkReviewEnabled = async (db: D1Database, enabled: boolean) => {
+  await db
+    .prepare(
+      `INSERT INTO platform_settings (key, value, updated_at)
+       VALUES (?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET
+         value = excluded.value,
+         updated_at = CURRENT_TIMESTAMP`
+    )
+    .bind(publicArtworkReviewSettingKey, enabled ? "true" : "false")
+    .run();
+};
+
+const getPendingArtworkReviewCount = async (db: D1Database) => {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM artworks
+       WHERE hidden_at IS NULL
+         AND COALESCE(review_status, 'approved') = 'pending'`
+    )
+    .first<{ count: number }>();
+  return row?.count ?? 0;
+};
+
+const artworkReviewStatusForUpload = (
+  visibility: ArtworkVisibility,
+  user: CurrentUser,
+  publicArtworkReviewEnabled: boolean
+): ArtworkReviewStatus =>
+  publicArtworkReviewEnabled && visibility === "public" && !isStaffRole(user.role)
+    ? "pending"
+    : "approved";
+
 const getSubscribedTags = async (db: D1Database, userId: string | undefined) => {
   if (!userId) {
     return new Set<string>();
@@ -1584,6 +1650,7 @@ type ArtworkRow = {
   mature: number;
   mature_rating: string | null;
   visibility: string | null;
+  review_status: string | null;
   creator_id: string;
   creator_handle: string;
   creator_display_name: string;
@@ -1780,6 +1847,9 @@ type UserRow = {
   profile_visibility: string;
   suspended_at?: string | null;
   suspended_reason?: string | null;
+  storage_bonus_credits?: number | null;
+  storage_last_login_credit_date?: string | null;
+  storage_used_images?: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -1922,6 +1992,7 @@ const asAdminUserStatusFilter = (
   value === "active" ||
   value === "suspended" ||
   value === "unverified" ||
+  value === "moderator" ||
   value === "admin"
     ? value
     : "all";
@@ -2302,7 +2373,9 @@ const mediaKeyFromUrl = (url: string) => {
     const prefixes = ["/media/", "/media-thumbnail/", "/media-preview/"];
     const prefix = prefixes.find((item) => pathname.startsWith(item));
     const key = prefix ? pathname.slice(prefix.length) : "";
-    return key.startsWith("artworks/") && !key.includes("..") ? key : "";
+    return (key.startsWith("artworks/") || key.startsWith("profiles/")) && !key.includes("..")
+      ? key
+      : "";
   } catch {
     return "";
   }
@@ -2355,6 +2428,7 @@ const artworkFromRow = (row: ArtworkRow): Artwork => ({
   mature: Boolean(row.mature) || asMatureRating(row.mature_rating) !== "general",
   matureRating: asMatureRating(row.mature_rating ?? (row.mature ? "restricted" : "general")),
   visibility: asArtworkVisibility(row.visibility),
+  reviewStatus: asArtworkReviewStatus(row.review_status),
   creator: {
     id: row.creator_id,
     handle: row.creator_handle,
@@ -2380,17 +2454,61 @@ const commentFromRow = (
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   canManage: Boolean(
-    viewerRole === "admin" || (viewerId && (viewerId === row.user_id || viewerId === artworkOwnerId))
+    isStaffRole(viewerRole) || (viewerId && (viewerId === row.user_id || viewerId === artworkOwnerId))
   )
 });
+
+const asUserRole = (value: string | null | undefined): UserRole =>
+  value === "admin" || value === "moderator" ? value : "member";
+
+const isStaffRole = (role: UserRole | undefined) => role === "admin" || role === "moderator";
+
+const asArtworkReviewStatus = (value: string | null | undefined): ArtworkReviewStatus => {
+  if (value === "pending" || value === "rejected") {
+    return value;
+  }
+  return "approved";
+};
+
+const storageCreditDate = () => new Date().toISOString().slice(0, 10);
+
+const userStorageSelectSql = (userAlias = "users") => `
+        ${userAlias}.storage_bonus_credits,
+        ${userAlias}.storage_last_login_credit_date,
+        (
+          SELECT COUNT(artwork_images.id)
+          FROM artworks
+          JOIN artwork_images ON artwork_images.artwork_id = artworks.id
+          WHERE artworks.creator_id = ${userAlias}.id
+        ) AS storage_used_images`;
+
+const userStorageFromRow = (
+  row: Pick<
+    UserRow,
+    "storage_bonus_credits" | "storage_last_login_credit_date" | "storage_used_images"
+  >
+): UserStorage => {
+  const bonusCredits = Math.max(0, Number(row.storage_bonus_credits ?? 0));
+  const usedImages = Math.max(0, Number(row.storage_used_images ?? 0));
+  const imageLimit = baseStorageImageLimit + bonusCredits;
+  return {
+    baseLimit: baseStorageImageLimit,
+    bonusCredits,
+    imageLimit,
+    usedImages,
+    remainingImages: Math.max(0, imageLimit - usedImages),
+    lastDailyCreditDate: row.storage_last_login_credit_date ?? null
+  };
+};
 
 const authUserFromRow = (row: UserRow): AuthUser => ({
   id: row.id,
   email: row.email,
   username: row.username,
   displayName: row.display_name,
-  role: row.role === "admin" ? "admin" : "member",
-  emailVerified: Boolean(row.email_verified_at)
+  role: asUserRole(row.role),
+  emailVerified: Boolean(row.email_verified_at),
+  storage: userStorageFromRow(row)
 });
 
 const adminUserFromRow = (row: Omit<UserRow, "password_hash">): AdminUserSummary => ({
@@ -2398,7 +2516,7 @@ const adminUserFromRow = (row: Omit<UserRow, "password_hash">): AdminUserSummary
   email: row.email,
   username: row.username,
   displayName: row.display_name,
-  role: row.role === "admin" ? "admin" : "member",
+  role: asUserRole(row.role),
   emailVerified: Boolean(row.email_verified_at),
   suspendedAt: row.suspended_at ?? null,
   createdAt: row.created_at
@@ -2429,7 +2547,8 @@ const publicAuthUser = (user: AuthUser): AuthUser => ({
   username: user.username,
   displayName: user.displayName,
   role: user.role,
-  emailVerified: user.emailVerified
+  emailVerified: user.emailVerified,
+  storage: user.storage
 });
 
 const ensureCreatorIdentity = async (db: D1Database, user: CurrentUser) => {
@@ -2443,6 +2562,82 @@ const ensureCreatorIdentity = async (db: D1Database, user: CurrentUser) => {
     )
     .bind(user.id, user.username, user.displayName)
     .run();
+};
+
+const getUserStorage = async (db: D1Database, userId: string) => {
+  const row = await db
+    .prepare(
+      `SELECT
+        ${userStorageSelectSql("users")}
+       FROM users
+       WHERE users.id = ?
+       LIMIT 1`
+    )
+    .bind(userId)
+    .first<
+      Pick<
+        UserRow,
+        "storage_bonus_credits" | "storage_last_login_credit_date" | "storage_used_images"
+      >
+    >();
+  return row ? userStorageFromRow(row) : null;
+};
+
+const uploadStorageLimitMessage = (storage: UserStorage, requestedImages: number) => {
+  if (requestedImages <= storage.remainingImages) {
+    return null;
+  }
+  const requestedLabel = `${requestedImages} image${requestedImages === 1 ? "" : "s"}`;
+  const remainingLabel = `${storage.remainingImages} image${storage.remainingImages === 1 ? "" : "s"}`;
+  return `Storage limit reached. You can upload ${remainingLabel} now, but selected ${requestedLabel}. Earn more image slots from daily logins or likes received.`;
+};
+
+const awardDailyLoginStorageCredit = async (db: D1Database, userId: string) => {
+  const today = storageCreditDate();
+  const result = await db
+    .prepare(
+      `UPDATE users
+       SET storage_bonus_credits = COALESCE(storage_bonus_credits, 0) + ?,
+           storage_last_login_credit_date = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND COALESCE(storage_last_login_credit_date, '') <> ?`
+    )
+    .bind(dailyLoginStorageCredit, today, userId, today)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+};
+
+const awardArtworkLikeStorageCredit = async (
+  db: D1Database,
+  creatorUserId: string,
+  likerUserId: string,
+  artworkId: string
+) => {
+  if (creatorUserId === likerUserId) {
+    return false;
+  }
+  const award = await db
+    .prepare(
+      `INSERT OR IGNORE INTO artwork_like_credit_awards
+        (artwork_id, liker_user_id, creator_user_id)
+       VALUES (?, ?, ?)`
+    )
+    .bind(artworkId, likerUserId, creatorUserId)
+    .run();
+  if ((award.meta.changes ?? 0) === 0) {
+    return false;
+  }
+  await db
+    .prepare(
+      `UPDATE users
+       SET storage_bonus_credits = COALESCE(storage_bonus_credits, 0) + ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`
+    )
+    .bind(artworkLikeStorageCredit, creatorUserId)
+    .run();
+  return true;
 };
 
 const requireD1 = (db: D1Database | undefined) => {
@@ -2875,6 +3070,7 @@ const getCurrentUser = async (db: D1Database | undefined, request: Request) => {
         users.profile_visibility,
         users.suspended_at,
         users.suspended_reason,
+        ${userStorageSelectSql("users")},
         users.created_at,
         users.updated_at
        FROM auth_sessions
@@ -2932,6 +3128,21 @@ const requireAdmin = async (context: AppContext) => {
   }
   if (user.role !== "admin") {
     return { response: context.json({ message: "Administrator access is required." }, 403) };
+  }
+  return { db: context.env.DB, user };
+};
+
+const requireStaff = async (context: AppContext) => {
+  if (!context.env.DB) {
+    return { response: authUnavailable(context) };
+  }
+
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return { response: context.json({ message: "Sign in as a moderator." }, 401) };
+  }
+  if (!isStaffRole(user.role)) {
+    return { response: context.json({ message: "Moderator access is required." }, 403) };
   }
   return { db: context.env.DB, user };
 };
@@ -3050,7 +3261,7 @@ const canViewProfileVisibility = (
   ownerId: string,
   viewer: CurrentUser | undefined
 ) => {
-  if (viewer?.role === "admin" || viewer?.id === ownerId) {
+  if (isStaffRole(viewer?.role) || viewer?.id === ownerId) {
     return true;
   }
   if (visibility === "public") {
@@ -3064,7 +3275,7 @@ const profileVisibilitySql = (userAlias: string) =>
     ${userAlias}.profile_visibility = 'public'
     OR (? IS NOT NULL AND ${userAlias}.profile_visibility = 'members')
     OR ${userAlias}.id = ?
-    OR ? = 'admin'
+    OR ? IN ('admin', 'moderator')
   )`;
 
 const canViewCreatorProfile = async (
@@ -3100,6 +3311,7 @@ const artworkSelect = `
     artworks.mature,
     artworks.mature_rating,
     artworks.visibility,
+    artworks.review_status,
     creators.id AS creator_id,
     creators.handle AS creator_handle,
     creators.display_name AS creator_display_name,
@@ -3203,12 +3415,12 @@ const publicArtworkVisibilitySql = "COALESCE(artworks.visibility, 'public') = 'p
 const ownerAwareArtworkVisibilitySql = () =>
   `(COALESCE(artworks.visibility, 'public') = 'public'
     OR artworks.creator_id = ?
-    OR ? = 'admin')`;
+    OR ? IN ('admin', 'moderator'))`;
 
 const directArtworkVisibilitySql = () =>
   `(COALESCE(artworks.visibility, 'public') IN ('public', 'unlisted')
     OR artworks.creator_id = ?
-    OR ? = 'admin')`;
+    OR ? IN ('admin', 'moderator'))`;
 
 const artworkVisibilityBindValues = (viewer: CurrentUser | undefined) => [
   viewer?.id ?? "",
@@ -3219,7 +3431,7 @@ const canViewDirectArtworkVisibility = (
   visibility: ArtworkVisibility,
   creatorId: string,
   viewer: CurrentUser | undefined
-) => visibility !== "private" || viewer?.id === creatorId || viewer?.role === "admin";
+) => visibility !== "private" || viewer?.id === creatorId || isStaffRole(viewer?.role);
 
 const galleryAccessWhere = (
   viewer: CurrentUser | undefined,
@@ -3228,6 +3440,7 @@ const galleryAccessWhere = (
 ) => {
   const clauses = [
     "artworks.hidden_at IS NULL",
+    "COALESCE(artworks.review_status, 'approved') = 'approved'",
     publicArtworkVisibilitySql,
     profileVisibilitySql("creator_user")
   ];
@@ -3910,14 +4123,21 @@ const getArtworkFromD1 = async (
     .prepare(
       `${artworkSelect}
        WHERE artworks.id = ?
-         AND (artworks.hidden_at IS NULL OR ? = 'admin')
+         AND (artworks.hidden_at IS NULL OR ? IN ('admin', 'moderator'))
+         AND (
+           COALESCE(artworks.review_status, 'approved') = 'approved'
+           OR artworks.creator_id = ?
+           OR ? IN ('admin', 'moderator')
+         )
          AND ${directArtworkVisibilitySql()}
          AND ${profileVisibilitySql("creator_user")}
        LIMIT 1`
     )
     .bind(
       id,
-      viewer?.role === "admin" ? "admin" : "member",
+      viewer?.role ?? "member",
+      viewer?.id ?? "",
+      viewer?.role ?? "member",
       ...artworkVisibilityBindValues(viewer),
       ...profileVisibilityBindValues(viewer)
     )
@@ -4024,6 +4244,7 @@ const getProfileUser = async (db: D1Database, username: string) =>
         users.profile_visibility,
         users.suspended_at,
         users.suspended_reason,
+        ${userStorageSelectSql("users")},
         users.created_at,
         users.updated_at,
         creators.avatar_url,
@@ -4055,6 +4276,7 @@ const getUserRowById = async (db: D1Database, id: string) =>
         profile_visibility,
         suspended_at,
         suspended_reason,
+        ${userStorageSelectSql("users")},
         created_at,
         updated_at
        FROM users
@@ -4081,6 +4303,7 @@ const getUserRowByEmail = async (db: D1Database, email: string) =>
         profile_visibility,
         suspended_at,
         suspended_reason,
+        ${userStorageSelectSql("users")},
         created_at,
         updated_at
        FROM users
@@ -6018,13 +6241,23 @@ app.get("/api/auth/session", async (context) => {
   const user = await getCurrentUser(context.env.DB, context.req.raw);
   const sessionToken = getCookie(context.req.raw, sessionCookieName);
   const csrfToken = user && sessionToken ? await issueCsrfToken(context, sessionToken) : null;
+  let responseUser = user;
+  let dailyStorageCreditAwarded = false;
+  if (user && context.env.DB) {
+    dailyStorageCreditAwarded = await awardDailyLoginStorageCredit(context.env.DB, user.id);
+    if (dailyStorageCreditAwarded) {
+      const updatedUser = await getUserRowById(context.env.DB, user.id);
+      responseUser = updatedUser ? currentUserFromRow(updatedUser) : user;
+    }
+  }
   if (!user) {
     context.header("Set-Cookie", clearSessionCookie(context), { append: true });
     context.header("Set-Cookie", clearCsrfCookie(context), { append: true });
   }
   return context.json<AuthSessionResponse>({
-    user: user ? publicAuthUser(user) : null,
-    csrfToken
+    user: responseUser ? publicAuthUser(responseUser) : null,
+    csrfToken,
+    dailyStorageCreditAwarded
   });
 });
 
@@ -7491,10 +7724,17 @@ app.post("/api/auth/register", async (context) => {
   try {
     await context.env.DB.prepare(
       `INSERT INTO users
-        (id, email, username, display_name, password_hash)
-       VALUES (?, ?, ?, ?, ?)`
+        (id, email, username, display_name, password_hash, storage_last_login_credit_date)
+       VALUES (?, ?, ?, ?, ?, ?)`
     )
-      .bind(userId, email, username, displayName, await hashPassword(parsed.data.password))
+      .bind(
+        userId,
+        email,
+        username,
+        displayName,
+        await hashPassword(parsed.data.password),
+        storageCreditDate()
+      )
       .run();
   } catch (error) {
     if (isUniqueConstraintError(error)) {
@@ -7518,6 +7758,7 @@ app.post("/api/auth/register", async (context) => {
       profile_visibility,
       suspended_at,
       suspended_reason,
+      ${userStorageSelectSql("users")},
       created_at,
       updated_at
      FROM users
@@ -7586,6 +7827,7 @@ app.post("/api/auth/login", async (context) => {
       profile_visibility,
       suspended_at,
       suspended_reason,
+      ${userStorageSelectSql("users")},
       created_at,
       updated_at
      FROM users
@@ -7621,6 +7863,12 @@ app.post("/api/auth/login", async (context) => {
     return context.json({ message: "This account is suspended." }, 403);
   }
 
+  const dailyStorageCreditAwarded = await awardDailyLoginStorageCredit(context.env.DB, user.id);
+  const responseUser =
+    dailyStorageCreditAwarded
+      ? (await getUserRowById(context.env.DB, user.id)) ?? user
+      : user;
+
   let sessionToken: string;
   let csrfToken: string;
   try {
@@ -7635,9 +7883,9 @@ app.post("/api/auth/login", async (context) => {
   }
 
   return context.json<AuthResponse>({
-    user: authUserFromRow(user),
+    user: authUserFromRow(responseUser),
     csrfToken,
-    message: "Signed in."
+    message: dailyStorageCreditAwarded ? "Signed in. Daily storage credit added." : "Signed in."
   });
 });
 
@@ -8064,6 +8312,7 @@ app.get("/api/admin/stats", async (context) => {
           COUNT(*) AS total_users,
           SUM(CASE WHEN email_verified_at IS NOT NULL THEN 1 ELSE 0 END) AS verified_users,
           SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) AS admins,
+          SUM(CASE WHEN role = 'moderator' THEN 1 ELSE 0 END) AS moderators,
           SUM(CASE WHEN suspended_at IS NOT NULL THEN 1 ELSE 0 END) AS suspended_users
          FROM users`
       )
@@ -8071,6 +8320,7 @@ app.get("/api/admin/stats", async (context) => {
         total_users: number;
         verified_users: number | null;
         admins: number | null;
+        moderators: number | null;
         suspended_users: number | null;
       }>(),
     admin.db
@@ -8135,6 +8385,7 @@ app.get("/api/admin/stats", async (context) => {
       totalUsers: accountRows?.total_users ?? 0,
       verifiedUsers: accountRows?.verified_users ?? 0,
       admins: accountRows?.admins ?? 0,
+      moderators: accountRows?.moderators ?? 0,
       suspendedUsers: accountRows?.suspended_users ?? 0,
       activeSessions: sessionCount?.count ?? 0,
       pendingVerifications: pendingVerificationCount?.count ?? 0
@@ -8192,6 +8443,8 @@ app.get("/api/admin/users", async (context) => {
     clauses.push("suspended_at IS NOT NULL");
   } else if (status === "unverified") {
     clauses.push("email_verified_at IS NULL");
+  } else if (status === "moderator") {
+    clauses.push("role = 'moderator'");
   } else if (status === "admin") {
     clauses.push("role = 'admin'");
   }
@@ -8241,6 +8494,127 @@ app.get("/api/admin/users", async (context) => {
   });
 });
 
+app.post("/api/admin/users/:id/role", async (context) => {
+  const admin = await requireAdmin(context);
+  if (admin.response) {
+    return admin.response;
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "admin:user-role",
+    userId: admin.user.id,
+    ...rateLimitDefaults.admin
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const parsed = await parseJson(context, userRoleSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Role is invalid." }, 400);
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  const id = context.req.param("id");
+  const target = await admin.db
+    .prepare(
+      `SELECT
+        id,
+        email,
+        username,
+        display_name,
+        role,
+        email_verified_at,
+        date_of_birth,
+        mature_content_enabled,
+        bookmark_default_visibility,
+        profile_visibility,
+        suspended_at,
+        suspended_reason,
+        created_at,
+        updated_at
+       FROM users
+       WHERE id = ?
+       LIMIT 1`
+    )
+    .bind(id)
+    .first<Omit<UserRow, "password_hash">>();
+  if (!target) {
+    return context.json({ message: "User not found." }, 404);
+  }
+  if (target.id === admin.user.id) {
+    return context.json({ message: "You cannot change your own role here." }, 400);
+  }
+
+  const previousRole = asUserRole(target.role);
+  const nextRole = parsed.data.role;
+  if (previousRole === "admin" && nextRole !== "admin") {
+    const adminCount = await admin.db
+      .prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'")
+      .first<{ count: number }>();
+    if ((adminCount?.count ?? 0) <= 1) {
+      return context.json({ message: "At least one administrator is required." }, 400);
+    }
+  }
+
+  await admin.db
+    .prepare(
+      `UPDATE users
+       SET role = ?,
+           suspended_at = CASE WHEN ? IN ('admin', 'moderator') THEN NULL ELSE suspended_at END,
+           suspended_reason = CASE WHEN ? IN ('admin', 'moderator') THEN NULL ELSE suspended_reason END,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`
+    )
+    .bind(nextRole, nextRole, nextRole, id)
+    .run();
+
+  await createAdminAuditLog(admin.db, admin.user, {
+    action: "user.role",
+    targetType: "user",
+    targetId: id,
+    summary: `Changed @${target.username} from ${previousRole} to ${nextRole}.`,
+    metadata: {
+      username: target.username,
+      previousRole,
+      role: nextRole
+    }
+  });
+
+  const updated = await admin.db
+    .prepare(
+      `SELECT
+        id,
+        email,
+        username,
+        display_name,
+        role,
+        email_verified_at,
+        date_of_birth,
+        mature_content_enabled,
+        bookmark_default_visibility,
+        profile_visibility,
+        suspended_at,
+        suspended_reason,
+        created_at,
+        updated_at
+       FROM users
+       WHERE id = ?
+       LIMIT 1`
+    )
+    .bind(id)
+    .first<Omit<UserRow, "password_hash">>();
+  if (!updated) {
+    return context.json({ message: "User not found." }, 404);
+  }
+
+  return context.json<AdminUserActionResponse>({
+    user: adminUserFromRow(updated),
+    message: `User role updated to ${nextRole}.`
+  });
+});
+
 app.get("/api/admin/audit-log", async (context) => {
   const admin = await requireAdmin(context);
   if (admin.response) {
@@ -8274,6 +8648,216 @@ app.get("/api/admin/audit-log", async (context) => {
 
   return context.json<AdminAuditLogResponse>({
     entries: result.results.map(adminAuditLogFromRow)
+  });
+});
+
+app.get("/api/admin/artwork-review-settings", async (context) => {
+  const admin = await requireAdmin(context);
+  if (admin.response) {
+    return admin.response;
+  }
+  const [publicArtworkReviewEnabled, pendingCount] = await Promise.all([
+    getPublicArtworkReviewEnabled(admin.db),
+    getPendingArtworkReviewCount(admin.db)
+  ]);
+  return context.json<AdminArtworkReviewSettingsResponse>({
+    publicArtworkReviewEnabled,
+    pendingCount
+  });
+});
+
+app.put("/api/admin/artwork-review-settings", async (context) => {
+  const admin = await requireAdmin(context);
+  if (admin.response) {
+    return admin.response;
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "admin:artwork-review-settings",
+    userId: admin.user.id,
+    ...rateLimitDefaults.admin
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const parsed = await parseJson(context, artworkReviewSettingsSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Review setting is invalid." }, 400);
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  await setPublicArtworkReviewEnabled(admin.db, parsed.data.publicArtworkReviewEnabled);
+  await createAdminAuditLog(admin.db, admin.user, {
+    action: "artwork.review_setting",
+    targetType: "platform",
+    targetId: publicArtworkReviewSettingKey,
+    summary: `${parsed.data.publicArtworkReviewEnabled ? "Enabled" : "Disabled"} public artwork review.`,
+    metadata: {
+      publicArtworkReviewEnabled: parsed.data.publicArtworkReviewEnabled
+    }
+  });
+  return context.json<AdminArtworkReviewSettingsResponse>({
+    publicArtworkReviewEnabled: parsed.data.publicArtworkReviewEnabled,
+    pendingCount: await getPendingArtworkReviewCount(admin.db),
+    message: parsed.data.publicArtworkReviewEnabled
+      ? "Public artwork review enabled."
+      : "Public artwork review disabled."
+  });
+});
+
+app.get("/api/admin/artwork-reviews", async (context) => {
+  const admin = await requireStaff(context);
+  if (admin.response) {
+    return admin.response;
+  }
+  const limit = Math.min(
+    100,
+    Math.max(10, Number.parseInt(context.req.query("limit") ?? "40", 10) || 40)
+  );
+  const [publicArtworkReviewEnabled, totalRow, rows] = await Promise.all([
+    getPublicArtworkReviewEnabled(admin.db),
+    admin.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM artworks
+         WHERE hidden_at IS NULL
+           AND COALESCE(review_status, 'approved') = 'pending'`
+      )
+      .first<{ count: number }>(),
+    admin.db
+      .prepare(
+        `${artworkSelect}
+         WHERE artworks.hidden_at IS NULL
+           AND COALESCE(artworks.review_status, 'approved') = 'pending'
+         ORDER BY datetime(artworks.created_at) ASC, artworks.id ASC
+         LIMIT ?`
+      )
+      .bind(limit)
+      .all<ArtworkRow>()
+  ]);
+  return context.json<AdminArtworkReviewsResponse>({
+    publicArtworkReviewEnabled,
+    artworks: await withArtworkImages(admin.db, rows.results.map(artworkFromRow)),
+    totalCount: totalRow?.count ?? 0,
+    limit
+  });
+});
+
+app.post("/api/admin/artworks/:id/review", async (context) => {
+  const admin = await requireStaff(context);
+  if (admin.response) {
+    return admin.response;
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "admin:artwork-review",
+    userId: admin.user.id,
+    ...rateLimitDefaults.admin
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const parsed = await parseJson(context, artworkReviewSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Review action is invalid." }, 400);
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  const id = context.req.param("id");
+  const artwork = await admin.db
+    .prepare(
+      `SELECT
+        artworks.id,
+        artworks.creator_id,
+        artworks.title,
+        artworks.visibility,
+        artworks.review_status,
+        users.display_name AS creator_display_name
+       FROM artworks
+       JOIN users ON users.id = artworks.creator_id
+       WHERE artworks.id = ?
+         AND artworks.hidden_at IS NULL
+       LIMIT 1`
+    )
+    .bind(id)
+    .first<{
+      id: string;
+      creator_id: string;
+      title: string;
+      visibility: string | null;
+      review_status: string | null;
+      creator_display_name: string;
+    }>();
+  if (!artwork) {
+    return context.json({ message: "Artwork not found." }, 404);
+  }
+
+  const nextStatus: ArtworkReviewStatus = parsed.data.action === "approve" ? "approved" : "rejected";
+  await admin.db.batch([
+    admin.db
+      .prepare(
+        `UPDATE artworks
+         SET review_status = ?,
+             reviewed_by_user_id = ?,
+             reviewed_at = CURRENT_TIMESTAMP
+         WHERE id = ?`
+      )
+      .bind(nextStatus, admin.user.id, id),
+    parsed.data.action === "approve" && asArtworkVisibility(artwork.visibility) === "public"
+      ? admin.db.prepare(
+          `INSERT INTO activity_events (id, actor_user_id, type, artwork_id, message, created_at)
+           SELECT ?, ?, 'publish', ?, ?, CURRENT_TIMESTAMP
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM activity_events
+             WHERE artwork_id = ?
+               AND type = 'publish'
+           )`
+        ).bind(
+          `act_${crypto.randomUUID().replaceAll("-", "")}`,
+          artwork.creator_id,
+          id,
+          `${artwork.creator_display_name} published "${artwork.title}".`,
+          id
+        )
+      : admin.db.prepare("DELETE FROM activity_events WHERE artwork_id = ? AND type = 'publish'").bind(id)
+  ]);
+
+  await createAdminAuditLog(admin.db, admin.user, {
+    action: parsed.data.action === "approve" ? "artwork.review_approve" : "artwork.review_reject",
+    targetType: "artwork",
+    targetId: id,
+    summary: `${parsed.data.action === "approve" ? "Approved" : "Rejected"} artwork "${artwork.title}".`,
+    metadata: {
+      creatorId: artwork.creator_id,
+      title: artwork.title,
+      previousStatus: asArtworkReviewStatus(artwork.review_status),
+      reviewStatus: nextStatus
+    }
+  });
+  await createNotification(admin.db, {
+    userId: artwork.creator_id,
+    actorUserId: admin.user.id,
+    type: "moderation",
+    artworkId: id,
+    message:
+      parsed.data.action === "approve"
+        ? `Your artwork "${artwork.title}" was approved and published.`
+        : `Your artwork "${artwork.title}" was not approved for public publishing.`
+  });
+
+  const updated = await getArtworkFromD1(admin.db, id, admin.user);
+  if (!updated) {
+    return context.json({ message: "Artwork not found." }, 404);
+  }
+
+  return context.json<AdminArtworkReviewActionResponse>({
+    artwork: updated.artwork,
+    message: parsed.data.action === "approve" ? "Artwork approved and published." : "Artwork rejected."
   });
 });
 
@@ -8329,8 +8913,8 @@ app.post("/api/admin/users/:id/suspension", async (context) => {
   if (target.id === admin.user.id) {
     return context.json({ message: "You cannot suspend yourself." }, 400);
   }
-  if (target.role === "admin") {
-    return context.json({ message: "Administrators cannot be suspended here." }, 400);
+  if (isStaffRole(asUserRole(target.role))) {
+    return context.json({ message: "Staff accounts cannot be suspended here." }, 400);
   }
 
   if (parsed.data.suspended) {
@@ -8630,7 +9214,7 @@ app.delete(
 );
 
 app.get("/api/admin/reports", async (context) => {
-  const admin = await requireAdmin(context);
+  const admin = await requireStaff(context);
   if (admin.response) {
     return admin.response;
   }
@@ -8708,7 +9292,7 @@ app.get("/api/admin/reports", async (context) => {
 });
 
 app.post("/api/admin/reports/:id/resolve", async (context) => {
-  const admin = await requireAdmin(context);
+  const admin = await requireStaff(context);
   if (admin.response) {
     return admin.response;
   }
@@ -8807,7 +9391,7 @@ app.post("/api/admin/reports/:id/resolve", async (context) => {
 });
 
 app.post("/api/admin/artworks/:id/moderation", async (context) => {
-  const admin = await requireAdmin(context);
+  const admin = await requireStaff(context);
   if (admin.response) {
     return admin.response;
   }
@@ -9514,6 +10098,104 @@ app.put("/api/settings/profile", async (context) => {
       avatarUrl: updated.avatar_url ?? "",
       bio: updated.bio ?? ""
     }
+  });
+});
+
+app.post("/api/settings/profile/avatar", async (context) => {
+  if (!context.env.DB || !context.env.ARTWORKS) {
+    return context.json(
+      { message: "D1 and R2 bindings are required to upload profile pictures." },
+      503
+    );
+  }
+  const db = context.env.DB;
+  const user = await getCurrentUser(db, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to edit your profile." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "settings:profile-avatar",
+    userId: user.id,
+    ...rateLimitDefaults.profile
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  const body = await context.req.parseBody({ all: true });
+  const files = normalizeUploadFiles(body.avatar ?? body.file ?? body.files);
+  if (files.length !== 1) {
+    return context.json({ message: "Choose exactly one profile picture." }, 400);
+  }
+
+  const file = files[0];
+  if (file.size > maxAvatarUploadBytes) {
+    return context.json({ message: "Profile picture must be 4 MB or smaller." }, 413);
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const metadata = readUploadImageMetadata(bytes);
+  if (!metadata) {
+    return context.json({ message: "Profile picture must be JPEG, PNG, WebP, or GIF." }, 415);
+  }
+  if (file.type && allowedUploadTypes.has(file.type) && file.type !== metadata.contentType) {
+    return context.json({ message: "Profile picture content does not match its file type." }, 415);
+  }
+  const extension = allowedUploadTypes.get(metadata.contentType);
+  if (!extension) {
+    return context.json({ message: "Profile picture must be JPEG, PNG, WebP, or GIF." }, 415);
+  }
+
+  const previousProfile = await getProfileUser(db, user.username);
+  const previousKey = mediaKeyFromUrl(previousProfile?.avatar_url ?? "");
+  const objectKey = `profiles/${user.id}/avatar-${crypto.randomUUID().replaceAll("-", "")}.${extension}`;
+  const objectUrl = `/media/${objectKey}`;
+  await context.env.ARTWORKS.put(objectKey, bytes, {
+    httpMetadata: {
+      contentType: metadata.contentType
+    },
+    customMetadata: {
+      userId: user.id,
+      width: String(metadata.width),
+      height: String(metadata.height)
+    }
+  });
+
+  await ensureCreatorProfile(db, user, {
+    username: user.username,
+    displayName: user.displayName,
+    avatarUrl: objectUrl,
+    bio: previousProfile?.bio ?? ""
+  });
+  await reindexCreatorSearchIndex(db, user.id);
+
+  if (
+    previousKey &&
+    previousKey !== objectKey &&
+    previousKey.startsWith(`profiles/${user.id}/`)
+  ) {
+    context.env.ARTWORKS.delete(previousKey).catch((error) => {
+      console.warn("Unable to delete replaced profile picture", error);
+    });
+  }
+
+  const updated = await getProfileUser(db, user.username);
+  if (!updated) {
+    return context.json({ message: "Profile could not be loaded." }, 500);
+  }
+
+  return context.json<ProfileSettingsResponse>({
+    user: authUserFromRow(updated),
+    profile: {
+      username: updated.username,
+      displayName: updated.display_name,
+      avatarUrl: updated.avatar_url ?? "",
+      bio: updated.bio ?? ""
+    },
+    message: "Profile picture uploaded."
   });
 });
 
@@ -10594,6 +11276,12 @@ app.put("/api/artworks/:id", async (context) => {
   }
 
   const tags = await canonicalizeArtworkTags(context.env.DB, parseTagInput(parsed.data.tags));
+  const publicArtworkReviewEnabled = await getPublicArtworkReviewEnabled(context.env.DB);
+  const reviewStatus = artworkReviewStatusForUpload(
+    parsed.data.visibility,
+    user,
+    publicArtworkReviewEnabled
+  );
   await context.env.DB.batch([
     context.env.DB.prepare(
       `UPDATE artworks
@@ -10602,7 +11290,10 @@ app.put("/api/artworks/:id", async (context) => {
            tags_json = ?,
            mature = ?,
            mature_rating = ?,
-           visibility = ?
+           visibility = ?,
+           review_status = ?,
+           reviewed_by_user_id = CASE WHEN ? = 'pending' THEN NULL ELSE reviewed_by_user_id END,
+           reviewed_at = CASE WHEN ? = 'pending' THEN NULL ELSE reviewed_at END
        WHERE id = ?`
     )
       .bind(
@@ -10612,11 +11303,14 @@ app.put("/api/artworks/:id", async (context) => {
         parsed.data.matureRating === "general" ? 0 : 1,
         parsed.data.matureRating,
         parsed.data.visibility,
+        reviewStatus,
+        reviewStatus,
+        reviewStatus,
         id
       ),
     context.env.DB.prepare("DELETE FROM artwork_tags WHERE artwork_id = ?").bind(id),
     ...artworkTagInsertStatements(context.env.DB, id, tags),
-    parsed.data.visibility === "public"
+    parsed.data.visibility === "public" && reviewStatus === "approved"
       ? context.env.DB.prepare(
           `INSERT INTO activity_events (id, actor_user_id, type, artwork_id, message, created_at)
            SELECT ?, ?, 'publish', ?, ?, CURRENT_TIMESTAMP
@@ -10646,7 +11340,7 @@ app.put("/api/artworks/:id", async (context) => {
 
   return context.json<UpdateArtworkResponse>({
     artwork: updated.artwork,
-    message: "Artwork updated."
+    message: reviewStatus === "pending" ? "Artwork submitted for review." : "Artwork updated."
   });
 });
 
@@ -10726,6 +11420,14 @@ app.post("/api/artworks/:id/images", async (context) => {
   }
   if (files.length > remainingSlots) {
     return context.json({ message: `Add ${remainingSlots} image${remainingSlots === 1 ? "" : "s"} or fewer.` }, 400);
+  }
+  const storage = await getUserStorage(db, artwork.creator_id);
+  if (!storage) {
+    return context.json({ message: "Artwork owner could not be loaded." }, 404);
+  }
+  const storageLimitMessage = uploadStorageLimitMessage(storage, files.length);
+  if (storageLimitMessage) {
+    return context.json({ message: storageLimitMessage }, 400);
   }
 
   const preparedImages: PreparedUploadImage[] = [];
@@ -10839,8 +11541,11 @@ app.post("/api/artworks/:id/images", async (context) => {
     return context.json({ message: "Artwork not found" }, 404);
   }
 
+  const responseUserRow = await getUserRowById(db, user.id);
+  const responseUser = responseUserRow ? currentUserFromRow(responseUserRow) : user;
   return context.json<AddArtworkImagesResponse>({
     artwork: updated.artwork,
+    user: publicAuthUser(responseUser),
     message: `${newImages.length} image${newImages.length === 1 ? "" : "s"} added.`
   });
 });
@@ -11266,10 +11971,13 @@ app.delete("/api/artworks/:id/images/:imageId", async (context) => {
     return context.json({ message: "Artwork not found" }, 404);
   }
 
+  const responseUserRow = await getUserRowById(db, user.id);
+  const responseUser = responseUserRow ? currentUserFromRow(responseUserRow) : user;
   return context.json<DeleteArtworkImageResponse>({
     deleted: true,
     imageId,
     artwork: updated.artwork,
+    user: publicAuthUser(responseUser),
     message: "Image removed."
   });
 });
@@ -11351,6 +12059,7 @@ app.post("/api/artworks/:id/like", async (context) => {
     .bind(user.id, id)
     .first<{ artwork_id: string }>();
 
+  let likeAdded = false;
   try {
     if (existing) {
       await context.env.DB.batch([
@@ -11362,16 +12071,27 @@ app.post("/api/artworks/:id/like", async (context) => {
         ).bind(id)
       ]);
     } else {
-      await context.env.DB.batch([
-        context.env.DB.prepare(
-          "INSERT OR IGNORE INTO artwork_likes (user_id, artwork_id) VALUES (?, ?)"
-        ).bind(user.id, id),
-        context.env.DB.prepare(
+      const likeResult = await context.env.DB.prepare(
+        "INSERT OR IGNORE INTO artwork_likes (user_id, artwork_id) VALUES (?, ?)"
+      )
+        .bind(user.id, id)
+        .run();
+      if ((likeResult.meta.changes ?? 0) > 0) {
+        likeAdded = true;
+        await context.env.DB.prepare(
           "UPDATE artworks SET like_count = like_count + 1 WHERE id = ?"
-        ).bind(id)
-      ]);
+        )
+          .bind(id)
+          .run();
+        await awardArtworkLikeStorageCredit(
+          context.env.DB,
+          artworkExists.creator_id,
+          user.id,
+          artworkExists.id
+        );
+      }
     }
-    if (!existing) {
+    if (likeAdded) {
       await createNotification(context.env.DB, {
         userId: artworkExists.creator_id,
         actorUserId: user.id,
@@ -11597,7 +12317,7 @@ app.delete("/api/comments/:id", async (context) => {
     return context.json({ message: "Comment not found." }, 404);
   }
   if (
-    user.role !== "admin" &&
+    !isStaffRole(user.role) &&
     user.id !== comment.user_id &&
     user.id !== comment.artwork_creator_id
   ) {
@@ -11613,7 +12333,7 @@ app.delete("/api/comments/:id", async (context) => {
     ).bind(comment.artwork_id),
     context.env.DB.prepare("DELETE FROM activity_events WHERE comment_id = ?").bind(id)
   ]);
-  if (user.role === "admin" && comment.user_id) {
+  if (isStaffRole(user.role) && comment.user_id) {
     await createNotification(context.env.DB, {
       userId: comment.user_id,
       actorUserId: user.id,
@@ -12025,9 +12745,12 @@ app.delete("/api/artworks/:id", async (context) => {
     context.env.DB.prepare("DELETE FROM artworks WHERE id = ?").bind(id)
   ]);
 
+  const responseUserRow = await getUserRowById(context.env.DB, user.id);
+  const responseUser = responseUserRow ? currentUserFromRow(responseUserRow) : user;
   return context.json<DeleteArtworkResponse>({
     deleted: true,
     artworkId: id,
+    user: publicAuthUser(responseUser),
     message: "Artwork deleted."
   });
 });
@@ -12094,6 +12817,14 @@ app.post("/api/upload", async (context) => {
   if (files.length > maxUploadFiles) {
     return context.json({ message: `Upload ${maxUploadFiles} images or fewer.` }, 400);
   }
+  const storage = await getUserStorage(context.env.DB, user.id);
+  if (!storage) {
+    return context.json({ message: "Account storage could not be loaded." }, 500);
+  }
+  const storageLimitMessage = uploadStorageLimitMessage(storage, files.length);
+  if (storageLimitMessage) {
+    return context.json({ message: storageLimitMessage }, 400);
+  }
   const preparedImages: PreparedUploadImage[] = [];
   for (const [index, file] of files.entries()) {
     if (file.size > maxUploadBytes) {
@@ -12123,6 +12854,12 @@ app.post("/api/upload", async (context) => {
   const tags = await canonicalizeArtworkTags(context.env.DB, parseTagInput(parsed.data.tags));
   const now = new Date().toISOString();
   const images: ArtworkImage[] = [];
+  const publicArtworkReviewEnabled = await getPublicArtworkReviewEnabled(context.env.DB);
+  const reviewStatus = artworkReviewStatusForUpload(
+    parsed.data.visibility,
+    user,
+    publicArtworkReviewEnabled
+  );
 
   for (const image of preparedImages) {
     const imageId = `img_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -12223,7 +12960,8 @@ app.post("/api/upload", async (context) => {
     createdAt: now,
     mature: matureRating !== "general",
     matureRating,
-    visibility: parsed.data.visibility
+    visibility: parsed.data.visibility,
+    reviewStatus
   };
 
   const db = context.env.DB;
@@ -12247,8 +12985,9 @@ app.post("/api/upload", async (context) => {
         created_at,
         mature,
         mature_rating,
-        visibility
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        visibility,
+        review_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       artwork.id,
       artwork.creator.id,
@@ -12267,7 +13006,8 @@ app.post("/api/upload", async (context) => {
       artwork.createdAt,
       artwork.mature ? 1 : 0,
       artwork.matureRating,
-      artwork.visibility
+      artwork.visibility,
+      artwork.reviewStatus
     ),
     ...artwork.images.map((image) =>
       db.prepare(
@@ -12303,7 +13043,7 @@ app.post("/api/upload", async (context) => {
       creator: `${artwork.creator.displayName} ${artwork.creator.handle}`
     })
   ];
-  if (artwork.visibility === "public") {
+  if (artwork.visibility === "public" && artwork.reviewStatus === "approved") {
     statements.push(
       db.prepare(
         `INSERT INTO activity_events (id, actor_user_id, type, artwork_id, message, created_at)
@@ -12320,10 +13060,16 @@ app.post("/api/upload", async (context) => {
 
   await context.env.DB.batch(statements);
 
+  const responseUserRow = await getUserRowById(context.env.DB, user.id);
+  const responseUser = responseUserRow ? currentUserFromRow(responseUserRow) : user;
   return context.json<UploadResponse>({
     artwork,
+    user: publicAuthUser(responseUser),
     persisted: true,
-    message: "Artwork published."
+    message:
+      artwork.reviewStatus === "pending"
+        ? "Artwork submitted for review."
+        : "Artwork published."
   });
 });
 
@@ -12336,6 +13082,9 @@ const artworkIdFromMediaKey = (key: string) => {
 };
 
 const mediaAccessForRequest = async (context: AppContext, key: string) => {
+  if (key.startsWith("profiles/") && !key.includes("..")) {
+    return { cacheControl: publicMediaCacheControl };
+  }
   if (!key.startsWith("artworks/") || key.includes("..")) {
     return {
       response: context.json({ message: "Object not found" }, 404),
@@ -12352,6 +13101,7 @@ const mediaAccessForRequest = async (context: AppContext, key: string) => {
         artworks.mature,
         artworks.mature_rating,
         artworks.visibility,
+        artworks.review_status,
         artworks.hidden_at,
         creator_user.profile_visibility
        FROM artworks
@@ -12366,6 +13116,7 @@ const mediaAccessForRequest = async (context: AppContext, key: string) => {
         mature: number;
         mature_rating: string | null;
         visibility: string | null;
+        review_status: string | null;
         hidden_at: string | null;
         profile_visibility: string;
       }>();
@@ -12377,7 +13128,14 @@ const mediaAccessForRequest = async (context: AppContext, key: string) => {
     }
     const profileVisibility = asProfileVisibility(artwork.profile_visibility);
     const artworkVisibility = asArtworkVisibility(artwork.visibility);
+    const reviewStatus = asArtworkReviewStatus(artwork.review_status);
     const mature = Boolean(artwork.mature) || asMatureRating(artwork.mature_rating) !== "general";
+    if (reviewStatus !== "approved" && artwork.creator_id !== viewer?.id && !isStaffRole(viewer?.role)) {
+      return {
+        response: context.json({ message: "Object not found" }, 404),
+        cacheControl: protectedMediaCacheControl
+      };
+    }
     if (!canViewDirectArtworkVisibility(artworkVisibility, artwork.creator_id, viewer)) {
       return {
         response: context.json({ message: "Object not found" }, 404),

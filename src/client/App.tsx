@@ -53,6 +53,9 @@ import type {
   AccountDeactivationResponse,
   AccountExportResponse,
   AccountSession,
+  AdminArtworkReviewActionResponse,
+  AdminArtworkReviewSettingsResponse,
+  AdminArtworkReviewsResponse,
   AdminAuditLogResponse,
   AuthConfigResponse,
   AuthResponse,
@@ -139,7 +142,8 @@ import type {
   UserProfileResponse,
   UpdateArtworkResponse,
   UnblockUserResponse,
-  UploadResponse
+  UploadResponse,
+  UserRole
 } from "../shared/types";
 
 type HealthResponse = {
@@ -182,7 +186,14 @@ const adminUserStatusFilterOptions: { value: AdminUserStatusFilter; label: strin
   { value: "active", label: "Active" },
   { value: "suspended", label: "Suspended" },
   { value: "unverified", label: "Unverified" },
+  { value: "moderator", label: "Moderators" },
   { value: "admin", label: "Admins" }
+];
+
+const userRoleOptions: { value: UserRole; label: string }[] = [
+  { value: "member", label: "Member" },
+  { value: "moderator", label: "Moderator" },
+  { value: "admin", label: "Administrator" }
 ];
 
 const matureFilterOptions: { value: MatureFilter; label: string }[] = [
@@ -271,6 +282,9 @@ const formatDateTime = (value: string) => {
 
 const formatReportReason = (reason: string) =>
   reportReasonOptions.find((option) => option.value === reason)?.label ?? reason;
+
+const formatUserRole = (role: UserRole) =>
+  userRoleOptions.find((option) => option.value === role)?.label ?? role;
 
 const formatAuditAction = (action: string) =>
   action
@@ -499,6 +513,7 @@ function App() {
   const [adminUserLimit, setAdminUserLimit] = useState(40);
   const [adminTags, setAdminTags] = useState<AdminTagsResponse | null>(null);
   const [adminAuditLog, setAdminAuditLog] = useState<AdminAuditLogResponse | null>(null);
+  const [adminArtworkReviews, setAdminArtworkReviews] = useState<AdminArtworkReviewsResponse | null>(null);
   const [dashboardMessage, setDashboardMessage] = useState("");
   const [authConfig, setAuthConfig] = useState<AuthConfigResponse | null>(null);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
@@ -509,6 +524,8 @@ function App() {
   const [tagSubscriptions, setTagSubscriptions] = useState<TagSubscriptionsResponse | null>(null);
   const [collections, setCollections] = useState<CollectionsResponse | null>(null);
   const [seriesList, setSeriesList] = useState<ArtworkSeriesListResponse | null>(null);
+  const canAdminister = currentUser?.role === "admin";
+  const canModerate = currentUser?.role === "admin" || currentUser?.role === "moderator";
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [passwordResetToken, setPasswordResetToken] = useState("");
@@ -708,12 +725,12 @@ function App() {
     const emailChanged = params.get("emailChanged");
     const resetToken = params.get("resetToken");
     if (verified === "1") {
-      setAuthNotice("Email verified. Your account is ready.");
+      setAuthNotice("Email confirmation complete. Your account is verified.");
     } else if (verified === "invalid") {
-      setAuthNotice("Verification link is invalid or expired.");
+      setAuthNotice("Email confirmation link is invalid or expired.");
     }
     if (emailChanged === "1") {
-      setAuthNotice("Email changed. Other sessions were signed out.");
+      setAuthNotice("Email change confirmed. Your sign-in email was updated successfully.");
     } else if (emailChanged === "invalid") {
       setAuthNotice("Email change link is invalid or expired.");
     }
@@ -821,7 +838,7 @@ function App() {
   }, [currentUser]);
 
   const loadAdminAuditLog = useCallback(async () => {
-    if (currentUser?.role !== "admin") {
+    if (!canAdminister) {
       setAdminAuditLog(null);
       return;
     }
@@ -833,10 +850,10 @@ function App() {
       );
     }
     setAdminAuditLog(payload);
-  }, [currentUser?.role]);
+  }, [canAdminister]);
 
   const loadAdminReports = useCallback(async () => {
-    if (currentUser?.role !== "admin") {
+    if (!canModerate) {
       setAdminReports(null);
       return;
     }
@@ -861,11 +878,11 @@ function App() {
     adminReportReason,
     adminReportStatus,
     adminReportTarget,
-    currentUser?.role
+    canModerate
   ]);
 
   const loadAdminUsers = useCallback(async () => {
-    if (currentUser?.role !== "admin") {
+    if (!canAdminister) {
       setAdminUsers(null);
       return;
     }
@@ -887,7 +904,25 @@ function App() {
       );
     }
     setAdminUsers(payload);
-  }, [adminUserLimit, adminUserQuery, adminUserStatus, currentUser?.role]);
+  }, [adminUserLimit, adminUserQuery, adminUserStatus, canAdminister]);
+
+  const loadAdminArtworkReviews = useCallback(async () => {
+    if (!canModerate) {
+      setAdminArtworkReviews(null);
+      return;
+    }
+    const response = await fetch("/api/admin/artwork-reviews?limit=40", {
+      credentials: "include"
+    });
+    const payload = (await response.json()) as AdminArtworkReviewsResponse | { message?: string };
+    if (!response.ok || !("artworks" in payload)) {
+      throw new Error(
+        ("message" in payload ? payload.message : undefined) ??
+          "Unable to load artwork reviews."
+      );
+    }
+    setAdminArtworkReviews(payload);
+  }, [canModerate]);
 
   useEffect(() => {
     if (!authReady || !currentUser) {
@@ -900,6 +935,7 @@ function App() {
       setAdminUsers(null);
       setAdminTags(null);
       setAdminAuditLog(null);
+      setAdminArtworkReviews(null);
       return;
     }
     loadNotifications().catch((error: unknown) => {
@@ -930,8 +966,8 @@ function App() {
     if (!authReady) {
       return;
     }
-    if (currentUser?.role !== "admin") {
-      setDashboardMessage("Administrator access is required.");
+    if (!canModerate) {
+      setDashboardMessage("Moderator access is required.");
       setView("home");
       if (window.location.hash === "#dashboard") {
         window.history.pushState(null, "", window.location.pathname + window.location.search);
@@ -946,26 +982,33 @@ function App() {
         console.error("Unable to load health state", error);
       });
 
-    fetch("/api/admin/stats", { credentials: "include" })
-      .then(async (response) => {
-        const payload = (await response.json()) as AdminStatsResponse | { message?: string };
-        if (!response.ok) {
-          const message =
-            "message" in payload && payload.message
-              ? payload.message
-              : "Unable to load dashboard stats.";
-          throw new Error(message);
-        }
-        return payload as AdminStatsResponse;
-      })
-      .then((stats) => {
-        setAdminStats(stats);
-        setDashboardMessage("");
-      })
-      .catch((error: unknown) => {
-        setAdminStats(null);
-        setDashboardMessage(error instanceof Error ? error.message : "Unable to load dashboard stats.");
-      });
+    if (canAdminister) {
+      fetch("/api/admin/stats", { credentials: "include" })
+        .then(async (response) => {
+          const payload = (await response.json()) as AdminStatsResponse | { message?: string };
+          if (!response.ok) {
+            const message =
+              "message" in payload && payload.message
+                ? payload.message
+                : "Unable to load dashboard stats.";
+            throw new Error(message);
+          }
+          return payload as AdminStatsResponse;
+        })
+        .then((stats) => {
+          setAdminStats(stats);
+          setDashboardMessage("");
+        })
+        .catch((error: unknown) => {
+          setAdminStats(null);
+          setDashboardMessage(error instanceof Error ? error.message : "Unable to load dashboard stats.");
+        });
+    } else {
+      setAdminStats(null);
+      setAdminUsers(null);
+      setAdminTags(null);
+      setAdminAuditLog(null);
+    }
 
     loadAdminReports().catch((error: unknown) => {
       setAdminReports(null);
@@ -977,33 +1020,42 @@ function App() {
       setDashboardMessage(error instanceof Error ? error.message : "Unable to load users.");
     });
 
-    fetch("/api/admin/tags", { credentials: "include" })
-      .then(async (response) => {
-        const payload = (await response.json()) as AdminTagsResponse | { message?: string };
-        if (!response.ok) {
-          const message =
-            "message" in payload && payload.message ? payload.message : "Unable to load tags.";
-          throw new Error(message);
-        }
-        if (!("aliases" in payload)) {
-          throw new Error("Unable to load tags.");
-        }
-        return payload;
-      })
-      .then(setAdminTags)
-      .catch((error: unknown) => {
-        setAdminTags(null);
-        setDashboardMessage(error instanceof Error ? error.message : "Unable to load tags.");
-      });
+    if (canAdminister) {
+      fetch("/api/admin/tags", { credentials: "include" })
+        .then(async (response) => {
+          const payload = (await response.json()) as AdminTagsResponse | { message?: string };
+          if (!response.ok) {
+            const message =
+              "message" in payload && payload.message ? payload.message : "Unable to load tags.";
+            throw new Error(message);
+          }
+          if (!("aliases" in payload)) {
+            throw new Error("Unable to load tags.");
+          }
+          return payload;
+        })
+        .then(setAdminTags)
+        .catch((error: unknown) => {
+          setAdminTags(null);
+          setDashboardMessage(error instanceof Error ? error.message : "Unable to load tags.");
+        });
+    }
 
     loadAdminAuditLog().catch((error: unknown) => {
       setAdminAuditLog(null);
       setDashboardMessage(error instanceof Error ? error.message : "Unable to load audit log.");
     });
+
+    loadAdminArtworkReviews().catch((error: unknown) => {
+      setAdminArtworkReviews(null);
+      setDashboardMessage(error instanceof Error ? error.message : "Unable to load artwork reviews.");
+    });
   }, [
     authReady,
-    currentUser?.role,
+    canAdminister,
+    canModerate,
     loadAdminAuditLog,
+    loadAdminArtworkReviews,
     loadAdminReports,
     loadAdminUsers,
     view
@@ -1134,6 +1186,9 @@ function App() {
     : isSubscriptionsView
       ? "Subscribed tags"
       : "All work";
+  const showHomeSortTabs = !isBookmarksView && !isSubscriptionsView;
+  const accountNotice = dashboardMessage || authNotice;
+  const hasAccountNotice = Boolean(accountNotice || (currentUser && !currentUser.emailVerified));
 
   const pushRoute = (
     path: string,
@@ -1259,8 +1314,8 @@ function App() {
   };
 
   const showDashboard = () => {
-    if (currentUser?.role !== "admin") {
-      setDashboardMessage("Administrator access is required.");
+    if (!canModerate) {
+      setDashboardMessage("Moderator access is required.");
       openAuth("login");
       return;
     }
@@ -1442,6 +1497,7 @@ function App() {
         ...current,
         artworks: current.artworks
           .map((item) => (item.id === updatedArtwork.id ? updatedArtwork : item))
+          .filter((item) => item.reviewStatus === "approved")
           .filter((item) => sort !== "bookmarks" || item.bookmarked)
       };
     });
@@ -1541,6 +1597,7 @@ function App() {
       setAuthNotice(payload.message ?? "Unable to delete artwork.");
       return;
     }
+    setCurrentUser(payload.user);
     setGallery((current) =>
       current
         ? {
@@ -1619,6 +1676,7 @@ function App() {
     if (!response.ok || !("artwork" in payload)) {
       throw new Error(payload.message ?? "Unable to remove image.");
     }
+    setCurrentUser(payload.user);
     syncArtwork(payload.artwork);
     return payload.message;
   };
@@ -1646,6 +1704,7 @@ function App() {
     if (!response.ok || !("artwork" in payload)) {
       throw new Error(payload.message ?? "Unable to add images.");
     }
+    setCurrentUser(payload.user);
     syncArtwork(payload.artwork);
     return payload.message;
   };
@@ -1984,6 +2043,131 @@ function App() {
         : current
     );
     void loadAdminUsers().catch(() => undefined);
+    void loadAdminAuditLog().catch(() => undefined);
+    setDashboardMessage(payload.message);
+  };
+
+  const handleUpdateUserRole = async (user: AdminUserSummary, role: UserRole) => {
+    const response = await fetch(`/api/admin/users/${user.id}/role`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify({ role })
+    });
+    const payload = (await response.json()) as AdminUserActionResponse | { message?: string };
+    if (!response.ok || !("user" in payload)) {
+      setDashboardMessage(payload.message ?? "Unable to update user role.");
+      return;
+    }
+    const adminDelta =
+      user.role !== "admin" && payload.user.role === "admin"
+        ? 1
+        : user.role === "admin" && payload.user.role !== "admin"
+          ? -1
+          : 0;
+    const moderatorDelta =
+      user.role !== "moderator" && payload.user.role === "moderator"
+        ? 1
+        : user.role === "moderator" && payload.user.role !== "moderator"
+          ? -1
+          : 0;
+    setAdminStats((current) =>
+      current
+        ? {
+            ...current,
+            accounts: {
+              ...current.accounts,
+              admins: Math.max(0, current.accounts.admins + adminDelta),
+              moderators: Math.max(0, current.accounts.moderators + moderatorDelta),
+              suspendedUsers:
+                user.suspendedAt && !payload.user.suspendedAt
+                  ? Math.max(0, current.accounts.suspendedUsers - 1)
+                  : current.accounts.suspendedUsers
+            },
+            recentUsers: current.recentUsers.map((item) =>
+              item.id === payload.user.id ? payload.user : item
+            )
+          }
+        : current
+    );
+    setAdminUsers((current) =>
+      current
+        ? {
+            ...current,
+            users: current.users.map((item) =>
+              item.id === payload.user.id ? payload.user : item
+            )
+          }
+        : current
+    );
+    void loadAdminUsers().catch(() => undefined);
+    void loadAdminAuditLog().catch(() => undefined);
+    setDashboardMessage(payload.message);
+  };
+
+  const handleToggleArtworkReview = async (enabled: boolean) => {
+    const response = await fetch("/api/admin/artwork-review-settings", {
+      method: "PUT",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify({ publicArtworkReviewEnabled: enabled })
+    });
+    const payload = (await response.json()) as AdminArtworkReviewSettingsResponse | { message?: string };
+    if (!response.ok || !("publicArtworkReviewEnabled" in payload)) {
+      setDashboardMessage(payload.message ?? "Unable to update artwork review setting.");
+      return;
+    }
+    setAdminArtworkReviews((current) =>
+      current
+        ? {
+            ...current,
+            publicArtworkReviewEnabled: payload.publicArtworkReviewEnabled,
+            totalCount: payload.pendingCount
+          }
+        : {
+            publicArtworkReviewEnabled: payload.publicArtworkReviewEnabled,
+            artworks: [],
+            totalCount: payload.pendingCount,
+            limit: 40
+          }
+    );
+    void loadAdminArtworkReviews().catch(() => undefined);
+    void loadAdminAuditLog().catch(() => undefined);
+    setDashboardMessage(payload.message ?? "Artwork review setting updated.");
+  };
+
+  const handleReviewArtwork = async (artwork: Artwork, action: "approve" | "reject") => {
+    const response = await fetch(`/api/admin/artworks/${artwork.id}/review`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify({ action })
+    });
+    const payload = (await response.json()) as AdminArtworkReviewActionResponse | { message?: string };
+    if (!response.ok || !("artwork" in payload)) {
+      setDashboardMessage(payload.message ?? "Unable to review artwork.");
+      return;
+    }
+    setAdminArtworkReviews((current) =>
+      current
+        ? {
+            ...current,
+            artworks: current.artworks.filter((item) => item.id !== payload.artwork.id),
+            totalCount: Math.max(0, current.totalCount - 1)
+          }
+        : current
+    );
+    syncArtwork(payload.artwork);
+    void loadAdminArtworkReviews().catch(() => undefined);
     void loadAdminAuditLog().catch(() => undefined);
     setDashboardMessage(payload.message);
   };
@@ -2462,8 +2646,12 @@ function App() {
       return false;
     }
 
+    setCurrentUser(payload.user);
     setGallery((current) => {
       if (!current) {
+        return current;
+      }
+      if (payload.artwork.reviewStatus !== "approved") {
         return current;
       }
       return {
@@ -2476,9 +2664,9 @@ function App() {
     return true;
   };
 
-  const handleSettingsUser = (user: AuthUser) => {
+  const handleSettingsUser = (user: AuthUser, notice = "Settings saved.") => {
     setCurrentUser(user);
-    setAuthNotice("Settings saved.");
+    setAuthNotice(notice);
     setContentAccessRevision((revision) => revision + 1);
   };
 
@@ -2645,6 +2833,21 @@ function App() {
         </div>
       </header>
 
+      {hasAccountNotice ? (
+        <div className="global-account-notice">
+          <AccountNotice
+            notice={accountNotice}
+            siteKey={authConfig?.turnstileSiteKey ?? ""}
+            user={currentUser}
+            onDismiss={() => {
+              setAuthNotice("");
+              setDashboardMessage("");
+            }}
+            onResend={handleResendVerification}
+          />
+        </div>
+      ) : null}
+
       <div className="page-frame">
         <aside className="left-menu" aria-label="Main sections">
           <button
@@ -2772,7 +2975,7 @@ function App() {
               </button>
             </>
           ) : null}
-          {currentUser?.role === "admin" ? (
+          {canModerate ? (
             <button
               className={classNames("menu-item", view === "dashboard" && "is-active")}
               type="button"
@@ -2816,6 +3019,8 @@ function App() {
             userLimit={adminUserLimit}
             adminTags={adminTags}
             adminAuditLog={adminAuditLog}
+            adminArtworkReviews={adminArtworkReviews}
+            canAdminister={canAdminister}
             message={dashboardMessage}
             source={gallery?.source ?? "empty"}
             tagsCount={gallery?.tags.length ?? 0}
@@ -2831,6 +3036,9 @@ function App() {
             onUserQueryChange={setAdminUserQuery}
             onUserStatusChange={setAdminUserStatus}
             onUserLimitChange={setAdminUserLimit}
+            onUpdateUserRole={handleUpdateUserRole}
+            onToggleArtworkReview={handleToggleArtworkReview}
+            onReviewArtwork={handleReviewArtwork}
             onModerateArtwork={handleModerateReportedArtwork}
             onDeleteReportedComment={handleDeleteReportedComment}
             onToggleUserSuspension={handleToggleUserSuspension}
@@ -2967,6 +3175,7 @@ function App() {
             csrfToken={csrfToken}
             currentUser={currentUser}
             onAuthRequired={() => openAuth("login")}
+            onNotice={setAuthNotice}
             onOpenProfileSettings={showProfileSettings}
             onPasswordChanged={(payload) => {
               setCurrentUser(payload.user);
@@ -2987,16 +3196,6 @@ function App() {
         ) : (
           <>
             <section className="feed-main">
-              <AccountNotice
-                notice={dashboardMessage || authNotice}
-                siteKey={authConfig?.turnstileSiteKey ?? ""}
-                user={currentUser}
-                onDismiss={() => {
-                  setAuthNotice("");
-                  setDashboardMessage("");
-                }}
-                onResend={handleResendVerification}
-              />
               <MatureAccessNotice
                 matureAccess={gallery?.matureAccess ?? null}
                 onLogin={() => openAuth("login")}
@@ -3036,22 +3235,24 @@ function App() {
                 </div>
               </div>
 
-              <div className="work-tabs" aria-label="Sort artwork">
-                {homeSortOptions.map((option) => {
-                  const Icon = option.icon;
-                  return (
-                    <button
-                      key={option.value}
-                      className={classNames("work-tab", sort === option.value && "is-active")}
-                      type="button"
-                      onClick={() => setSort(option.value)}
-                    >
-                      <Icon size={16} />
-                      {option.label}
-                    </button>
-                  );
-                })}
-              </div>
+              {showHomeSortTabs ? (
+                <div className="work-tabs" aria-label="Sort artwork">
+                  {homeSortOptions.map((option) => {
+                    const Icon = option.icon;
+                    return (
+                      <button
+                        key={option.value}
+                        className={classNames("work-tab", sort === option.value && "is-active")}
+                        type="button"
+                        onClick={() => setSort(option.value)}
+                      >
+                        <Icon size={16} />
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
 
               <div className="tag-row" aria-label="Popular tags">
                 {prominentTags.map((tag) => {
@@ -3180,7 +3381,13 @@ function App() {
                     type="button"
                     onClick={() => showProfile(creator.handle)}
                   >
-                    <img src={creator.avatarUrl} alt="" />
+                    {creator.avatarUrl ? (
+                      <img src={creator.avatarUrl} alt="" />
+                    ) : (
+                      <div className="creator-row-avatar-fallback" aria-hidden="true">
+                        {creator.displayName.slice(0, 1).toUpperCase()}
+                      </div>
+                    )}
                     <div>
                       <strong>{creator.displayName}</strong>
                       <span>@{creator.handle}</span>
@@ -3234,6 +3441,7 @@ function App() {
         open={uploadOpen}
         message={uploadMessage}
         siteKey={authConfig?.turnstileSiteKey ?? ""}
+        currentUser={currentUser}
         matureAccess={gallery?.matureAccess ?? null}
         onClose={() => setUploadOpen(false)}
         onOpenPrivacySecurity={showPrivacySecurity}
@@ -3289,11 +3497,11 @@ function AccountControl({
 
   return (
     <div className="account-chip" title={user.displayName}>
-      <span className={classNames("verify-dot", (user.emailVerified || user.role === "admin") && "is-verified")} />
+      <span className={classNames("verify-dot", (user.emailVerified || user.role !== "member") && "is-verified")} />
       <button className="account-name" type="button" onClick={onProfile}>
         {user.displayName}
       </button>
-      <small>{user.role === "admin" ? "Admin" : user.emailVerified ? "Verified" : "Pending"}</small>
+      <small>{user.role !== "member" ? formatUserRole(user.role) : user.emailVerified ? "Verified" : "Pending"}</small>
       <button className="icon-button account-settings" type="button" onClick={onSettings} aria-label="Account settings">
         <Settings size={16} />
       </button>
@@ -3327,6 +3535,12 @@ function AccountNotice({
   if (!notice && !needsVerification) {
     return null;
   }
+  const noticeHeading = notice || "Verify your email";
+  const noticeDetail = needsVerification
+    ? notice
+      ? "Verify your email to keep full account access."
+      : "Check your inbox for the account link."
+    : "";
 
   const handleResend = async () => {
     if (!resendToken) {
@@ -3351,8 +3565,8 @@ function AccountNotice({
       <div className="account-notice-copy">
         <MailCheck size={20} />
         <div>
-          <strong>{needsVerification ? "Verify your email" : notice}</strong>
-          {needsVerification ? <span>{notice || "Check your inbox for the account link."}</span> : null}
+          <strong>{noticeHeading}</strong>
+          {noticeDetail ? <span>{noticeDetail}</span> : null}
         </div>
       </div>
       {needsVerification ? (
@@ -3438,7 +3652,7 @@ function TurnstileWidget({ siteKey, action, onToken, compact = false }: Turnstil
         "expired-callback": () => onToken(""),
         "error-callback": () => onToken(""),
         theme: "light",
-        size: compact ? "compact" : "normal"
+        size: "normal"
       });
       return true;
     };
@@ -4350,6 +4564,8 @@ type DashboardProps = {
   userLimit: number;
   adminTags: AdminTagsResponse | null;
   adminAuditLog: AdminAuditLogResponse | null;
+  adminArtworkReviews: AdminArtworkReviewsResponse | null;
+  canAdminister: boolean;
   message: string;
   source: GalleryResponse["source"];
   tagsCount: number;
@@ -4365,6 +4581,9 @@ type DashboardProps = {
   onUserQueryChange: (query: string) => void;
   onUserStatusChange: (status: AdminUserStatusFilter) => void;
   onUserLimitChange: (limit: number) => void;
+  onUpdateUserRole: (user: AdminUserSummary, role: UserRole) => void;
+  onToggleArtworkReview: (enabled: boolean) => void;
+  onReviewArtwork: (artwork: Artwork, action: "approve" | "reject") => void;
   onModerateArtwork: (report: ModerationReport, action: "hide" | "restore") => void;
   onDeleteReportedComment: (report: ModerationReport) => void;
   onToggleUserSuspension: (
@@ -4393,6 +4612,8 @@ function Dashboard({
   userLimit,
   adminTags,
   adminAuditLog,
+  adminArtworkReviews,
+  canAdminister,
   message,
   source,
   tagsCount,
@@ -4408,6 +4629,9 @@ function Dashboard({
   onUserQueryChange,
   onUserStatusChange,
   onUserLimitChange,
+  onUpdateUserRole,
+  onToggleArtworkReview,
+  onReviewArtwork,
   onModerateArtwork,
   onDeleteReportedComment,
   onToggleUserSuspension,
@@ -4424,6 +4648,8 @@ function Dashboard({
   const accountStats = adminStats?.accounts;
   const reports = adminReports?.reports ?? [];
   const auditEntries = adminAuditLog?.entries ?? [];
+  const pendingReviewArtworks = adminArtworkReviews?.artworks ?? [];
+  const publicArtworkReviewEnabled = adminArtworkReviews?.publicArtworkReviewEnabled ?? false;
   const filteredReportTotal = adminReports?.totalCount ?? reports.length;
   const reportStatusLabel =
     reportStatusFilterOptions.find((option) => option.value === reportStatus)?.label ?? "Open";
@@ -4512,6 +4738,11 @@ function Dashboard({
             active={Boolean(accountStats?.admins)}
           />
           <StatusLine
+            label="Moderators"
+            value={formatCount(accountStats?.moderators ?? 0)}
+            active={Boolean(accountStats?.moderators)}
+          />
+          <StatusLine
             label="Suspended users"
             value={formatCount(accountStats?.suspendedUsers ?? 0)}
             active={Boolean(accountStats?.suspendedUsers)}
@@ -4571,7 +4802,8 @@ function Dashboard({
           />
         </section>
 
-        <section className="dashboard-panel recent-users-panel">
+        {canAdminister ? (
+          <section className="dashboard-panel recent-users-panel">
           <div className="panel-title">
             <ShieldCheck size={18} />
             User directory
@@ -4639,17 +4871,30 @@ function Dashboard({
           )}
           {directoryUsers.map((user) => (
             <div className="admin-user-row" key={user.id}>
-              <span className={classNames("verify-dot", user.emailVerified && "is-verified")} />
+              <span className={classNames("verify-dot", (user.emailVerified || user.role !== "member") && "is-verified")} />
               <div>
                 <strong>{user.displayName}</strong>
                 <span>
-                  @{user.username} · {user.email} · {user.role}
+                  @{user.username} · {user.email} · {formatUserRole(user.role)}
                   {!user.emailVerified ? " · unverified" : ""}
                   {user.suspendedAt ? " · suspended" : ""} ·{" "}
                   {dateFormat.format(new Date(user.createdAt))}
                 </span>
               </div>
-              {user.role !== "admin" ? (
+              <label className="admin-user-role-select">
+                Role
+                <select
+                  value={user.role}
+                  onChange={(event) => onUpdateUserRole(user, event.target.value as UserRole)}
+                >
+                  {userRoleOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {user.role === "member" ? (
                 <button
                   className={classNames("text-button", user.suspendedAt && "is-danger")}
                   type="button"
@@ -4662,6 +4907,67 @@ function Dashboard({
           ))}
           {adminUsers && directoryUsers.length === 0 ? (
             <p className="muted">No users match these filters.</p>
+          ) : null}
+          </section>
+        ) : null}
+
+        <section className="dashboard-panel artwork-review-panel">
+          <div className="panel-title">
+            <ShieldCheck size={18} />
+            Public artwork review
+          </div>
+          {canAdminister ? (
+            <label className="toggle-row review-toggle">
+              Require review before public publishing
+              <input
+                type="checkbox"
+                checked={publicArtworkReviewEnabled}
+                onChange={(event) => onToggleArtworkReview(event.target.checked)}
+              />
+            </label>
+          ) : null}
+          {adminArtworkReviews ? (
+            <p className="muted">
+              {publicArtworkReviewEnabled ? "Review gate is on." : "Review gate is off."}{" "}
+              {formatCount(adminArtworkReviews.totalCount)} pending artwork
+              {adminArtworkReviews.totalCount === 1 ? "" : "s"}.
+            </p>
+          ) : (
+            <p className="muted">Loading artwork reviews.</p>
+          )}
+          <div className="artwork-review-list">
+            {pendingReviewArtworks.map((artwork) => (
+              <article className="artwork-review-row" key={artwork.id}>
+                <img src={artwork.thumbnailUrl} alt="" />
+                <div>
+                  <strong>{artwork.title}</strong>
+                  <span>
+                    @{artwork.creator.handle} · {artwork.visibility} · {formatDateTime(artwork.createdAt)}
+                  </span>
+                </div>
+                <div className="artwork-review-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => onReviewArtwork(artwork, "approve")}
+                  >
+                    <ShieldCheck size={15} />
+                    Approve
+                  </button>
+                  <button
+                    className="danger-button"
+                    type="button"
+                    onClick={() => onReviewArtwork(artwork, "reject")}
+                  >
+                    <X size={15} />
+                    Reject
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+          {adminArtworkReviews && pendingReviewArtworks.length === 0 ? (
+            <p className="muted">No artwork is waiting for review.</p>
           ) : null}
         </section>
 
@@ -4768,7 +5074,7 @@ function Dashboard({
                       Delete comment
                     </button>
                   ) : null}
-                  {report.targetType === "user" ? (
+                  {canAdminister && report.targetType === "user" ? (
                     <button
                       className="danger-button"
                       type="button"
@@ -4805,15 +5111,18 @@ function Dashboard({
           ) : null}
         </section>
 
-        <TagGovernancePanel
-          data={adminTags}
-          onSaveAlias={onSaveTagAlias}
-          onDeleteAlias={onDeleteTagAlias}
-          onSaveImplication={onSaveTagImplication}
-          onDeleteImplication={onDeleteTagImplication}
-        />
+        {canAdminister ? (
+          <TagGovernancePanel
+            data={adminTags}
+            onSaveAlias={onSaveTagAlias}
+            onDeleteAlias={onDeleteTagAlias}
+            onSaveImplication={onSaveTagImplication}
+            onDeleteImplication={onDeleteTagImplication}
+          />
+        ) : null}
 
-        <section className="dashboard-panel audit-log-panel">
+        {canAdminister ? (
+          <section className="dashboard-panel audit-log-panel">
           <div className="panel-title">
             <FileText size={18} />
             Audit log
@@ -4834,7 +5143,8 @@ function Dashboard({
           {adminAuditLog && auditEntries.length === 0 ? (
             <p className="muted">No admin actions recorded yet.</p>
           ) : null}
-        </section>
+          </section>
+        ) : null}
 
         <section className="dashboard-panel recent-panel">
           <div className="panel-title">
@@ -7847,7 +8157,7 @@ type ProfileSettingsPageProps = {
   onAuthRequired: () => void;
   onOpenPrivacySecurity: () => void;
   onOpenProfile: (username: string) => void;
-  onSaved: (user: AuthUser) => void;
+  onSaved: (user: AuthUser, notice?: string) => void;
 };
 
 function ProfileSettingsPage({
@@ -7868,6 +8178,8 @@ function ProfileSettingsPage({
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!currentUser) {
@@ -7934,14 +8246,56 @@ function ProfileSettingsPage({
       }
       setSettings(payload);
       setFormState(payload.profile);
-      onSaved(payload.user);
-      setMessage("Profile saved.");
+      const nextMessage = "Profile saved.";
+      onSaved(payload.user, nextMessage);
+      setMessage(nextMessage);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Profile could not be saved.");
     } finally {
       setSaving(false);
     }
   };
+  const handleAvatarUpload = async (file: File | undefined) => {
+    if (!file) {
+      return;
+    }
+    setAvatarUploading(true);
+    setMessage("");
+    try {
+      const body = new FormData();
+      body.append("avatar", file);
+      const response = await fetch("/api/settings/profile/avatar", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          [csrfHeaderName]: csrfToken
+        },
+        body
+      });
+      const payload = (await response.json()) as ProfileSettingsResponse | { message?: string };
+      if (!response.ok || !("profile" in payload)) {
+        throw new Error(
+          ("message" in payload ? payload.message : undefined) ??
+            "Profile picture could not be uploaded."
+        );
+      }
+      setSettings(payload);
+      setFormState(payload.profile);
+      const nextMessage = payload.message ?? "Profile picture uploaded.";
+      onSaved(payload.user, nextMessage);
+      setMessage(nextMessage);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Profile picture could not be uploaded.");
+    } finally {
+      setAvatarUploading(false);
+      if (avatarInputRef.current) {
+        avatarInputRef.current.value = "";
+      }
+    }
+  };
+  const avatarInitial = (formState.displayName || formState.username || currentUser?.displayName || "U")
+    .slice(0, 1)
+    .toUpperCase();
 
   return (
     <section className="content-main settings-page">
@@ -7964,6 +8318,36 @@ function ProfileSettingsPage({
       ) : null}
       {settings ? (
         <form className="settings-form" onSubmit={handleSubmit}>
+          <div className="profile-avatar-upload">
+            <div className="profile-avatar-upload-preview" aria-hidden="true">
+              {formState.avatarUrl ? <img src={formState.avatarUrl} alt="" /> : <span>{avatarInitial}</span>}
+            </div>
+            <div className="profile-avatar-upload-copy">
+              <strong>Profile picture</strong>
+              <span>Upload a square JPEG, PNG, WebP, or GIF up to 4 MB.</span>
+              <div className="profile-avatar-upload-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  disabled={avatarUploading}
+                  onClick={() => avatarInputRef.current?.click()}
+                >
+                  <ImageUp size={16} />
+                  {avatarUploading ? "Uploading" : "Upload picture"}
+                </button>
+              </div>
+              <input
+                ref={avatarInputRef}
+                className="visually-hidden"
+                type="file"
+                accept="image/*"
+                onChange={(event) => {
+                  const [file] = Array.from(event.currentTarget.files ?? []);
+                  void handleAvatarUpload(file);
+                }}
+              />
+            </div>
+          </div>
           <label>
             Display name
             <input
@@ -8023,8 +8407,9 @@ type PrivacySecurityPageProps = {
   csrfToken: string;
   currentUser: AuthUser | null;
   onAuthRequired: () => void;
+  onNotice: (message: string) => void;
   onOpenProfileSettings: () => void;
-  onSaved: (user: AuthUser) => void;
+  onSaved: (user: AuthUser, notice?: string) => void;
   onPasswordChanged: (payload: PasswordChangeResponse) => void;
   onSessionsChanged: (payload: RevokeSessionsResponse) => void;
   onAccountDeactivated: (payload: AccountDeactivationResponse) => void;
@@ -8034,6 +8419,7 @@ function PrivacySecurityPage({
   csrfToken,
   currentUser,
   onAuthRequired,
+  onNotice,
   onOpenProfileSettings,
   onSaved,
   onPasswordChanged,
@@ -8265,8 +8651,9 @@ function PrivacySecurityPage({
       setDateOfBirth(payload.privacy.dateOfBirth ?? "");
       setMatureContentEnabled(payload.privacy.matureContentEnabled);
       setMutedTagsInput(payload.privacy.mutedTags.join(", "));
-      onSaved(payload.user);
-      setMessage("Privacy settings saved.");
+      const nextMessage = "Privacy settings saved.";
+      onSaved(payload.user, nextMessage);
+      setMessage(nextMessage);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Privacy settings could not be saved.");
     } finally {
@@ -8298,7 +8685,9 @@ function PrivacySecurityPage({
         );
       }
       setNotificationPreferences(payload.preferences);
-      setNotificationPreferencesMessage(payload.message ?? "Notification preferences saved.");
+      const nextMessage = payload.message ?? "Notification preferences saved.";
+      setNotificationPreferencesMessage(nextMessage);
+      onNotice(nextMessage);
     } catch (error) {
       setNotificationPreferencesMessage(
         error instanceof Error
@@ -8371,6 +8760,7 @@ function PrivacySecurityPage({
       setEmailChangeAddress("");
       setEmailChangePassword("");
       setEmailChangeMessage(payload.message);
+      onNotice(payload.message);
     } catch (error) {
       setEmailChangeMessage(
         error instanceof Error ? error.message : "Confirmation email could not be sent."
@@ -8431,6 +8821,7 @@ function PrivacySecurityPage({
       }
       setBlockedUsersData({ users: payload.users });
       setBlockedUsersMessage(payload.message);
+      onNotice(payload.message);
     } catch (error) {
       setBlockedUsersMessage(error instanceof Error ? error.message : "User could not be unblocked.");
     } finally {
@@ -9255,6 +9646,11 @@ function ArtworkCard({
             {artworkVisibilityLabel(artwork.visibility)}
           </span>
         ) : null}
+        {artwork.reviewStatus !== "approved" ? (
+          <span className={classNames("rating-badge", `is-review-${artwork.reviewStatus}`)}>
+            {artwork.reviewStatus}
+          </span>
+        ) : null}
       </button>
       <div className="art-card-body">
         <h3>{artwork.title}</h3>
@@ -9931,6 +10327,11 @@ function ArtworkDialog({
               {artworkVisibilityLabel(artwork.visibility)}
             </span>
           ) : null}
+          {artwork.reviewStatus !== "approved" ? (
+            <span className={classNames("rating-badge visibility-badge", `is-review-${artwork.reviewStatus}`)}>
+              {artwork.reviewStatus}
+            </span>
+          ) : null}
           <p>{artwork.caption}</p>
           <div className="tag-row modal-tags">
             {artwork.tags.map((tag) => (
@@ -10385,6 +10786,7 @@ type UploadDrawerProps = {
   open: boolean;
   message: string;
   siteKey: string;
+  currentUser: AuthUser | null;
   matureAccess: MatureAccess | null;
   onClose: () => void;
   onOpenPrivacySecurity: () => void;
@@ -10532,6 +10934,7 @@ function UploadDrawer({
   open,
   message,
   siteKey,
+  currentUser,
   matureAccess,
   onClose,
   onOpenPrivacySecurity,
@@ -10539,14 +10942,25 @@ function UploadDrawer({
 }: UploadDrawerProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [fileName, setFileName] = useState("Choose image");
+  const [selectedFileCount, setSelectedFileCount] = useState(0);
   const [turnstileToken, setTurnstileToken] = useState("");
   const [tags, setTags] = useState(["original", "study"]);
   const matureBlocked = matureAccess ? !matureAccess.allowed : true;
   const [localMessage, setLocalMessage] = useState("");
+  const storage = currentUser?.storage ?? null;
+  const selectedOverStorage = Boolean(
+    storage && selectedFileCount > 0 && selectedFileCount > storage.remainingImages
+  );
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLocalMessage("");
+    if (storage && selectedFileCount > storage.remainingImages) {
+      setLocalMessage(
+        `You have ${storage.remainingImages} image slot${storage.remainingImages === 1 ? "" : "s"} available.`
+      );
+      return;
+    }
     if (!turnstileToken) {
       setLocalMessage("Complete the check first.");
       return;
@@ -10557,6 +10971,7 @@ function UploadDrawer({
     if (published) {
       setTags(["original", "study"]);
       setFileName("Choose image");
+      setSelectedFileCount(0);
     }
   };
 
@@ -10615,6 +11030,19 @@ function UploadDrawer({
               </button>
             </div>
           ) : null}
+          {storage ? (
+            <div className={classNames("storage-status", selectedOverStorage && "is-over-limit")}>
+              <HardDrive size={18} />
+              <span>
+                <strong>
+                  {formatCount(storage.remainingImages)} / {formatCount(storage.imageLimit)} image slots available
+                </strong>
+                <small>
+                  {formatCount(storage.usedImages)} used · {formatCount(storage.bonusCredits)} earned
+                </small>
+              </span>
+            </div>
+          ) : null}
           <button
             className="file-picker"
             type="button"
@@ -10639,6 +11067,14 @@ function UploadDrawer({
                 setFileName(files[0].name);
               } else {
                 setFileName(`${files.length} images selected`);
+              }
+              setSelectedFileCount(files.length);
+              if (storage && files.length > storage.remainingImages) {
+                setLocalMessage(
+                  `You have ${storage.remainingImages} image slot${storage.remainingImages === 1 ? "" : "s"} available.`
+                );
+              } else if (localMessage) {
+                setLocalMessage("");
               }
             }}
           />
