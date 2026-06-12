@@ -4794,6 +4794,8 @@ function NotificationsPage({
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const notifications = data?.notifications ?? [];
+  const showLoadingState = loading && !data;
+  const showEmptyState = Boolean(data && !loading && !message && notifications.length === 0);
 
   useEffect(() => {
     if (!currentUser) {
@@ -4853,7 +4855,7 @@ function NotificationsPage({
         </button>
       </div>
 
-      {loading ? <p className="empty-feed">Loading notifications.</p> : null}
+      {showLoadingState ? <p className="empty-feed">Loading notifications.</p> : null}
       {message ? <p className="empty-feed">{message}</p> : null}
 
       <div className="notification-page-list">
@@ -4890,7 +4892,7 @@ function NotificationsPage({
           );
         })}
       </div>
-      {data && notifications.length === 0 ? (
+      {showEmptyState ? (
         <p className="empty-feed">No notifications yet.</p>
       ) : null}
     </section>
@@ -4964,6 +4966,8 @@ function CreatorAnalyticsPage({
   }
 
   const summary = data?.summary;
+  const showInitialLoading = loading && !data;
+  const showContent = Boolean(data && !message);
   const maxDailyViews = Math.max(1, ...(data?.daily ?? []).map((day) => day.views));
   const totalInteractions =
     (summary?.likes ?? 0) + (summary?.bookmarks ?? 0) + (summary?.comments ?? 0);
@@ -4988,85 +4992,89 @@ function CreatorAnalyticsPage({
         </button>
       </div>
 
-      {loading ? <p className="empty-feed">Loading analytics.</p> : null}
+      {showInitialLoading ? <p className="empty-feed">Loading analytics.</p> : null}
       {message ? <p className="empty-feed">{message}</p> : null}
 
-      <div className="analytics-summary-grid">
-        <MetricTile label="Total views" value={formatCount(summary?.totalViews ?? 0)} />
-        <MetricTile label="7-day views" value={formatCount(summary?.views7d ?? 0)} />
-        <MetricTile label="Followers" value={formatCount(summary?.followers ?? 0)} />
-        <MetricTile label="Engagement" value={`${overallEngagement}%`} />
-        <MetricTile label="Artworks" value={formatCount(summary?.artworks ?? 0)} />
-        <MetricTile label="Mature works" value={formatCount(summary?.matureArtworks ?? 0)} />
-      </div>
-
-      <div className="analytics-grid">
-        <section className="dashboard-panel analytics-trend-panel">
-          <div className="panel-title">
-            <BarChart3 size={18} />
-            30-day trend
+      {showContent ? (
+        <>
+          <div className="analytics-summary-grid">
+            <MetricTile label="Total views" value={formatCount(summary?.totalViews ?? 0)} />
+            <MetricTile label="7-day views" value={formatCount(summary?.views7d ?? 0)} />
+            <MetricTile label="Followers" value={formatCount(summary?.followers ?? 0)} />
+            <MetricTile label="Engagement" value={`${overallEngagement}%`} />
+            <MetricTile label="Artworks" value={formatCount(summary?.artworks ?? 0)} />
+            <MetricTile label="Mature works" value={formatCount(summary?.matureArtworks ?? 0)} />
           </div>
-          <div className="analytics-bars" aria-label="Views by day">
-            {(data?.daily ?? []).map((day) => {
-              const height = Math.max(4, Math.round((day.views / maxDailyViews) * 100));
-              return (
-                <span className="analytics-bar-wrap" key={day.date}>
-                  <span
-                    className="analytics-bar"
-                    style={{ height: `${height}%` }}
-                    title={`${day.date}: ${formatCount(day.views)} views`}
-                  />
-                  <small>{new Date(`${day.date}T00:00:00.000Z`).getUTCDate()}</small>
+
+          <div className="analytics-grid">
+            <section className="dashboard-panel analytics-trend-panel">
+              <div className="panel-title">
+                <BarChart3 size={18} />
+                30-day trend
+              </div>
+              <div className="analytics-bars" aria-label="Views by day">
+                {(data?.daily ?? []).map((day) => {
+                  const height = Math.max(4, Math.round((day.views / maxDailyViews) * 100));
+                  return (
+                    <span className="analytics-bar-wrap" key={day.date}>
+                      <span
+                        className="analytics-bar"
+                        style={{ height: `${height}%` }}
+                        title={`${day.date}: ${formatCount(day.views)} views`}
+                      />
+                      <small>{new Date(`${day.date}T00:00:00.000Z`).getUTCDate()}</small>
+                    </span>
+                  );
+                })}
+              </div>
+              <div className="analytics-day-totals">
+                <span>
+                  <Eye size={14} />
+                  {formatCount(summary?.views30d ?? 0)} views
                 </span>
-              );
-            })}
-          </div>
-          <div className="analytics-day-totals">
-            <span>
-              <Eye size={14} />
-              {formatCount(summary?.views30d ?? 0)} views
-            </span>
-            <span>
-              <Heart size={14} />
-              {formatCount((data?.daily ?? []).reduce((total, day) => total + day.likes, 0))} likes
-            </span>
-            <span>
-              <Bookmark size={14} />
-              {formatCount((data?.daily ?? []).reduce((total, day) => total + day.bookmarks, 0))} bookmarks
-            </span>
-            <span>
-              <MessageCircle size={14} />
-              {formatCount((data?.daily ?? []).reduce((total, day) => total + day.comments, 0))} comments
-            </span>
-          </div>
-        </section>
+                <span>
+                  <Heart size={14} />
+                  {formatCount((data?.daily ?? []).reduce((total, day) => total + day.likes, 0))} likes
+                </span>
+                <span>
+                  <Bookmark size={14} />
+                  {formatCount((data?.daily ?? []).reduce((total, day) => total + day.bookmarks, 0))} bookmarks
+                </span>
+                <span>
+                  <MessageCircle size={14} />
+                  {formatCount((data?.daily ?? []).reduce((total, day) => total + day.comments, 0))} comments
+                </span>
+              </div>
+            </section>
 
-        <section className="dashboard-panel analytics-list-panel">
-          <div className="panel-title">
-            <TrendingUp size={18} />
-            Top works
-          </div>
-          {(data?.topArtworks ?? []).map((item) => (
-            <AnalyticsArtworkRow item={item} key={item.artwork.id} onOpen={onOpenArtwork} />
-          ))}
-          {data && data.topArtworks.length === 0 ? (
-            <p className="muted">Post artwork to start collecting analytics.</p>
-          ) : null}
-        </section>
+            <section className="dashboard-panel analytics-list-panel">
+              <div className="panel-title">
+                <TrendingUp size={18} />
+                Top works
+              </div>
+              {(data?.topArtworks ?? []).map((item) => (
+                <AnalyticsArtworkRow item={item} key={item.artwork.id} onOpen={onOpenArtwork} />
+              ))}
+              {data && data.topArtworks.length === 0 ? (
+                <p className="muted">Post artwork to start collecting analytics.</p>
+              ) : null}
+            </section>
 
-        <section className="dashboard-panel analytics-list-panel">
-          <div className="panel-title">
-            <Calendar size={18} />
-            Recent works
+            <section className="dashboard-panel analytics-list-panel">
+              <div className="panel-title">
+                <Calendar size={18} />
+                Recent works
+              </div>
+              {(data?.recentArtworks ?? []).map((item) => (
+                <AnalyticsArtworkRow item={item} key={item.artwork.id} onOpen={onOpenArtwork} />
+              ))}
+              {data && data.recentArtworks.length === 0 ? (
+                <p className="muted">No recent works yet.</p>
+              ) : null}
+            </section>
           </div>
-          {(data?.recentArtworks ?? []).map((item) => (
-            <AnalyticsArtworkRow item={item} key={item.artwork.id} onOpen={onOpenArtwork} />
-          ))}
-          {data && data.recentArtworks.length === 0 ? (
-            <p className="muted">No recent works yet.</p>
-          ) : null}
-        </section>
-      </div>
+        </>
+      ) : null}
 
       {data ? (
         <p className="analytics-footnote">

@@ -891,17 +891,20 @@ h1 {
   font-weight: 800;
   line-height: 1.25;
   text-align: left;
+  text-decoration: none;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.art-title-button:hover,
-.art-title-button:focus-visible {
+.art-title-button:hover {
   color: var(--blue-dark);
-  outline: 0;
-  text-decoration: underline;
-  text-decoration-thickness: 2px;
-  text-underline-offset: 3px;
+}
+
+.art-title-button:focus-visible {
+  border-radius: 4px;
+  color: var(--blue-dark);
+  outline: 2px solid rgba(0, 223, 238, 0.55);
+  outline-offset: 2px;
 }
 
 .creator-mini {
