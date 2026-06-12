@@ -77,6 +77,9 @@ import type {
   MarkNotificationsReadResponse,
   ModerationReport,
   MfaMethod,
+  Novel,
+  NovelListResponse,
+  NovelResponse,
   NotificationPreferences,
   NotificationPreferencesResponse,
   NotificationType,
@@ -2199,6 +2202,31 @@ type ArtworkRow = {
   creator_profile_visibility: string;
 };
 
+type NovelRow = {
+  id: string;
+  creator_id: string;
+  title: string;
+  excerpt: string | null;
+  body: string;
+  cover_color: string | null;
+  tags_json: string;
+  word_count: number | null;
+  read_minutes: number | null;
+  like_count: number | null;
+  view_count: number | null;
+  created_at: string;
+  mature: number | null;
+  mature_rating: string | null;
+  visibility: string | null;
+  creator_handle: string;
+  creator_display_name: string;
+  creator_avatar_url: string | null;
+  creator_bio: string | null;
+  creator_follower_count: number | null;
+  creator_following: number | null;
+  creator_profile_visibility: string;
+};
+
 type ArtworkImageRow = {
   id: string;
   artwork_id: string;
@@ -3039,6 +3067,136 @@ const artworkFromRow = (row: ArtworkRow, env?: Partial<ArtworkMediaEnv>): Artwor
   }
 });
 
+const fallbackNovelCreators: Creator[] = [
+  {
+    id: "usr_default_admin",
+    handle: "admin",
+    displayName: "NEHub Editorial",
+    avatarUrl: "",
+    bio: "Curated platform writing and release notes.",
+    followerCount: 0,
+    following: false
+  },
+  {
+    id: "usr_mika",
+    handle: "mika",
+    displayName: "Mika",
+    avatarUrl: "",
+    bio: "Writes small luminous city fragments.",
+    followerCount: 128,
+    following: false
+  },
+  {
+    id: "usr_sora",
+    handle: "sora",
+    displayName: "Sora",
+    avatarUrl: "",
+    bio: "Serial fiction, soft science, and train stations.",
+    followerCount: 94,
+    following: false
+  }
+];
+
+const fallbackNovels: Novel[] = [
+  {
+    id: "nov_neon_platform",
+    title: "Neon Platform at 5:17",
+    excerpt:
+      "A night train waits under a sky full of maintenance drones, and Yui is carrying the only ticket that can wake the terminal city.",
+    body:
+      "The platform clock had stopped at 5:17, but every vending machine still hummed like morning was negotiable.\n\nYui kept the paper ticket folded inside her glove. It was warm despite the cold, inked with a destination that did not exist on any public route map. When the last train rolled in without a driver, the doors opened only wide enough for one person and a spill of blue light.\n\nShe looked back once at the sleeping terminal city. Every tower window blinked in sequence, an old signal from an old promise. Then she stepped across the threshold and heard the announcement say her name.",
+    coverColor: "#00dfee",
+    creator: fallbackNovelCreators[1],
+    tags: ["sci-fi", "train", "city"],
+    wordCount: 111,
+    readMinutes: 1,
+    likeCount: 420,
+    viewCount: 3200,
+    createdAt: "2026-05-18T09:00:00.000Z",
+    mature: false,
+    matureRating: "general",
+    visibility: "public"
+  },
+  {
+    id: "nov_glass_courtyard",
+    title: "Glass Courtyard Letters",
+    excerpt:
+      "Two artists share a studio wall, trading unsigned notes through cracks in the plaster until the building decides to answer.",
+    body:
+      "The first letter was no bigger than a paint chip. It fell from the wall on a Tuesday and landed in Ren's water cup with a sound like a tiny bell.\n\nDo you hear the courtyard breathing? it asked.\n\nRen blamed the old pipes until a second note arrived with a pressed violet and a map of shadows that matched the studio at sunset. Across the wall, someone laughed softly, not at him but with the same surprise. By winter, the wall had become a mailbox, a calendar, and eventually a door.",
+    coverColor: "#fa9ebc",
+    creator: fallbackNovelCreators[2],
+    tags: ["romance", "studio", "letters"],
+    wordCount: 101,
+    readMinutes: 1,
+    likeCount: 310,
+    viewCount: 2400,
+    createdAt: "2026-05-10T14:30:00.000Z",
+    mature: false,
+    matureRating: "general",
+    visibility: "public"
+  },
+  {
+    id: "nov_static_halo",
+    title: "Static Halo",
+    excerpt:
+      "A broadcast archivist finds a voice hidden between dead channels and follows it into a memory that should have expired.",
+    body:
+      "Every forbidden broadcast began with static, but this one began with rain.\n\nNoa isolated the frequency after midnight, working by the archive room's amber lamp. A voice counted backward from thirteen. Behind it, someone was playing a piano with three missing keys. The metadata said the file had been deleted nine years before she was born.\n\nWhen the voice reached one, the monitor reflected a hallway instead of her face. At the far end stood a child holding a recorder, waiting for Noa to press play.",
+    coverColor: "#b57edc",
+    creator: fallbackNovelCreators[0],
+    tags: ["mystery", "archive", "signal"],
+    wordCount: 100,
+    readMinutes: 1,
+    likeCount: 260,
+    viewCount: 1900,
+    createdAt: "2026-04-28T11:15:00.000Z",
+    mature: false,
+    matureRating: "general",
+    visibility: "public"
+  }
+];
+
+const excerptFromBody = (body: string) => {
+  const normalized = body.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 180) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 177).trimEnd()}...`;
+};
+
+const estimateWordCount = (body: string) =>
+  body.trim().split(/\s+/).filter(Boolean).length;
+
+const novelFromRow = (row: NovelRow): Novel => {
+  const wordCount = row.word_count && row.word_count > 0 ? row.word_count : estimateWordCount(row.body);
+  return {
+    id: row.id,
+    title: row.title,
+    excerpt: row.excerpt?.trim() || excerptFromBody(row.body),
+    body: row.body,
+    coverColor: row.cover_color || "#fa9ebc",
+    creator: {
+      id: row.creator_id,
+      handle: row.creator_handle,
+      displayName: row.creator_display_name,
+      avatarUrl: row.creator_avatar_url ?? "",
+      bio: row.creator_bio ?? "",
+      followerCount: row.creator_follower_count ?? 0,
+      following: Boolean(row.creator_following)
+    },
+    tags: parseTags(row.tags_json),
+    wordCount,
+    readMinutes: row.read_minutes && row.read_minutes > 0 ? row.read_minutes : Math.max(1, Math.ceil(wordCount / 220)),
+    likeCount: row.like_count ?? 0,
+    viewCount: row.view_count ?? 0,
+    createdAt: row.created_at,
+    mature: Boolean(row.mature) || asMatureRating(row.mature_rating) !== "general",
+    matureRating: asMatureRating(row.mature_rating),
+    visibility: asArtworkVisibility(row.visibility)
+  };
+};
+
 const commentFromRow = (
   row: CommentRow,
   viewerId: string | undefined,
@@ -3817,6 +3975,12 @@ const isMissingColumnError = (error: unknown, columnNames: string[]) =>
     new RegExp(`no such column: .*\\b${columnName}\\b|table .* has no column named ${columnName}`, "i").test(
       error.message
     )
+  );
+
+const isMissingTableError = (error: unknown, tableNames: string[]) =>
+  error instanceof Error &&
+  tableNames.some((tableName) =>
+    new RegExp(`no such table: .*\\b${tableName}\\b`, "i").test(error.message)
   );
 
 const maskEmail = (email: string) => {
@@ -5020,6 +5184,184 @@ const getRelatedArtworksForArtwork = async (
   const followedArtworks = await withViewerArtworkFollowing(db, viewer?.id, artworksWithImages);
   const likedArtworks = await withViewerLikes(db, viewer?.id, followedArtworks);
   return withViewerBookmarks(db, viewer?.id, likedArtworks);
+};
+
+const novelSelect = `
+  SELECT
+    novels.id,
+    novels.creator_id,
+    novels.title,
+    novels.excerpt,
+    novels.body,
+    novels.cover_color,
+    novels.tags_json,
+    novels.word_count,
+    novels.read_minutes,
+    novels.like_count,
+    novels.view_count,
+    novels.created_at,
+    novels.mature,
+    novels.mature_rating,
+    novels.visibility,
+    creators.handle AS creator_handle,
+    creators.display_name AS creator_display_name,
+    creators.avatar_url AS creator_avatar_url,
+    creators.bio AS creator_bio,
+    creators.follower_count AS creator_follower_count,
+    creators.following AS creator_following,
+    creator_user.profile_visibility AS creator_profile_visibility
+  FROM novels
+  JOIN creators ON creators.id = novels.creator_id
+  JOIN users AS creator_user ON creator_user.id = novels.creator_id
+`;
+
+const novelTagCounts = (novels: Novel[]) => {
+  const counts = new Map<string, number>();
+  for (const novel of novels) {
+    for (const tag of novel.tags) {
+      counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
+};
+
+const filterNovels = (
+  novels: Novel[],
+  matureAccess: MatureAccess,
+  search: string,
+  tag: string,
+  rating: MatureFilter
+) => {
+  const normalizedSearch = search.trim().toLowerCase();
+  const normalizedTag = tag.trim().toLowerCase();
+  return novels
+    .filter((novel) => !novel.mature || matureAccess.allowed)
+    .filter((novel) => rating === "all" || novel.matureRating === rating)
+    .filter((novel) => {
+      if (!normalizedTag) {
+        return true;
+      }
+      return novel.tags.some((novelTag) => novelTag.toLowerCase() === normalizedTag);
+    })
+    .filter((novel) => {
+      if (!normalizedSearch) {
+        return true;
+      }
+      const haystack = [
+        novel.title,
+        novel.excerpt,
+        novel.body,
+        novel.creator.displayName,
+        novel.creator.handle,
+        ...novel.tags
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(normalizedSearch);
+    })
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+};
+
+const getD1Novels = async (
+  db: D1Database,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess,
+  search: string,
+  tag: string,
+  rating: MatureFilter,
+  limit: number
+) => {
+  const clauses = [
+    "COALESCE(novels.visibility, 'public') = 'public'",
+    profileVisibilitySql("creator_user")
+  ];
+  const bindings: Array<string | number | null> = [...profileVisibilityBindValues(viewer)];
+
+  if (!matureAccess.allowed || rating === "general") {
+    clauses.push("COALESCE(novels.mature, 0) = 0");
+    clauses.push("COALESCE(novels.mature_rating, 'general') = 'general'");
+  } else if (rating !== "all") {
+    clauses.push("COALESCE(novels.mature_rating, 'general') = ?");
+    bindings.push(rating);
+  }
+
+  if (viewer) {
+    clauses.push(
+      `NOT EXISTS (
+        SELECT 1
+        FROM user_blocks
+        WHERE (blocker_user_id = ? AND blocked_user_id = novels.creator_id)
+           OR (blocker_user_id = novels.creator_id AND blocked_user_id = ?)
+      )`
+    );
+    bindings.push(viewer.id, viewer.id);
+  }
+
+  const result = await db
+    .prepare(
+      `${novelSelect}
+       WHERE ${clauses.join("\n         AND ")}
+       ORDER BY datetime(novels.created_at) DESC, novels.id DESC
+       LIMIT ?`
+    )
+    .bind(...bindings, 120)
+    .all<NovelRow>();
+  const filtered = filterNovels(
+    result.results.map((row) => novelFromRow(row)),
+    matureAccess,
+    search,
+    tag,
+    rating
+  );
+  return filtered.slice(0, limit);
+};
+
+const getNovelFromD1 = async (
+  db: D1Database,
+  id: string,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess
+) => {
+  const row = await db
+    .prepare(
+      `${novelSelect}
+       WHERE novels.id = ?
+         AND (
+           COALESCE(novels.visibility, 'public') IN ('public', 'unlisted')
+           OR novels.creator_id = ?
+           OR ? IN ('admin', 'moderator')
+         )
+         AND ${profileVisibilitySql("creator_user")}
+       LIMIT 1`
+    )
+    .bind(id, viewer?.id ?? "", viewer?.role ?? "member", ...profileVisibilityBindValues(viewer))
+    .first<NovelRow>();
+  if (!row) {
+    return undefined;
+  }
+
+  const novel = novelFromRow(row);
+  if (novel.mature && !matureAccess.allowed) {
+    return undefined;
+  }
+  if (viewer && (await userBlockedPair(db, viewer.id, novel.creator.id))) {
+    return undefined;
+  }
+
+  await db
+    .prepare("UPDATE novels SET view_count = COALESCE(view_count, 0) + 1 WHERE id = ?")
+    .bind(id)
+    .run()
+    .catch((error: unknown) => {
+      console.warn("Unable to record novel view", error);
+    });
+
+  return {
+    ...novel,
+    viewCount: novel.viewCount + 1
+  };
 };
 
 const getArtworkFromD1 = async (
@@ -12719,6 +13061,107 @@ app.get("/api/rankings", async (context) => {
   });
 });
 
+app.get("/api/novels", async (context) => {
+  const search = context.req.query("q") ?? "";
+  const tag = context.req.query("tag") ?? "";
+  const rating = asMatureFilter(context.req.query("rating") ?? null);
+  const limit = Math.min(
+    60,
+    Math.max(6, Number.parseInt(context.req.query("limit") ?? "24", 10) || 24)
+  );
+  const viewer = context.env.DB ? await getCurrentUser(context.env.DB, context.req.raw) : undefined;
+  const matureAccess = matureAccessFor(context, viewer);
+
+  if (context.env.DB) {
+    try {
+      const novels = await getD1Novels(
+        context.env.DB,
+        viewer,
+        matureAccess,
+        search,
+        tag,
+        rating,
+        limit
+      );
+      if (novels.length > 0 || search.trim() || tag.trim()) {
+        return context.json<NovelListResponse>({
+          novels,
+          featuredNovel: novels[0] ?? null,
+          tags: novelTagCounts(novels),
+          totalCount: novels.length,
+          source: "d1",
+          matureAccess
+        });
+      }
+    } catch (error) {
+      if (!isMissingTableError(error, ["novels"])) {
+        console.warn("Unable to read novels from D1", error);
+      }
+    }
+  }
+
+  const novels = filterNovels(fallbackNovels, matureAccess, search, tag, rating).slice(0, limit);
+  return context.json<NovelListResponse>({
+    novels,
+    featuredNovel: novels[0] ?? null,
+    tags: novelTagCounts(novels),
+    totalCount: novels.length,
+    source: "fallback",
+    matureAccess
+  });
+});
+
+app.get("/api/novels/:id", async (context) => {
+  const id = context.req.param("id");
+  const viewer = context.env.DB ? await getCurrentUser(context.env.DB, context.req.raw) : undefined;
+  const matureAccess = matureAccessFor(context, viewer);
+
+  if (context.env.DB) {
+    try {
+      const novel = await getNovelFromD1(context.env.DB, id, viewer, matureAccess);
+      if (novel) {
+        const relatedNovels = (await getD1Novels(
+          context.env.DB,
+          viewer,
+          matureAccess,
+          "",
+          novel.tags[0] ?? "",
+          matureAccess.allowed ? "all" : "general",
+          6
+        )).filter((item) => item.id !== novel.id);
+        return context.json<NovelResponse>({
+          novel,
+          relatedNovels,
+          source: "d1",
+          matureAccess
+        });
+      }
+    } catch (error) {
+      if (!isMissingTableError(error, ["novels"])) {
+        console.warn("Unable to read novel from D1", error);
+      }
+    }
+  }
+
+  const novel = fallbackNovels.find((item) => item.id === id);
+  if (!novel || (novel.mature && !matureAccess.allowed)) {
+    return context.json({ message: "Novel not found" }, 404);
+  }
+  const relatedNovels = filterNovels(
+    fallbackNovels.filter((item) => item.id !== novel.id),
+    matureAccess,
+    "",
+    novel.tags[0] ?? "",
+    matureAccess.allowed ? "all" : "general"
+  ).slice(0, 6);
+  return context.json<NovelResponse>({
+    novel,
+    relatedNovels,
+    source: "fallback",
+    matureAccess
+  });
+});
+
 app.get("/api/artworks/:id", async (context) => {
   const id = context.req.param("id");
 
@@ -14913,6 +15356,134 @@ app.get("/media-preview/*", async (context) =>
 app.get("/media/*", async (context) =>
   streamMediaObject(context, context.req.path.replace(/^\/media\//, ""))
 );
+
+const indexHtmlResponse = async (context: AppContext, html: string) =>
+  new Response(html, {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "public, max-age=60"
+    }
+  });
+
+const indexHtml = async (context: AppContext) => {
+  const indexUrl = new URL("/", context.req.url);
+  const assetResponse = await context.env.ASSETS.fetch(new Request(indexUrl, context.req.raw));
+  if (!assetResponse.ok) {
+    return { assetResponse, html: "" };
+  }
+  return { assetResponse, html: await assetResponse.text() };
+};
+
+app.get("/novels", async (context) => {
+  const { assetResponse, html } = await indexHtml(context);
+  if (!assetResponse.ok) {
+    return assetResponse;
+  }
+  return indexHtmlResponse(context, html);
+});
+
+app.get("/novels/:id", async (context) => {
+  const { assetResponse, html: originalHtml } = await indexHtml(context);
+  if (!assetResponse.ok) {
+    return assetResponse;
+  }
+
+  let html = originalHtml;
+  const id = context.req.param("id");
+  const fallbackNovel = fallbackNovels.find((novel) => novel.id === id);
+  let metaNovel: Pick<Novel, "title" | "excerpt" | "creator" | "mature" | "matureRating"> | null =
+    fallbackNovel ?? null;
+
+  if (context.env.DB) {
+    try {
+      const row = await context.env.DB.prepare(
+        `SELECT
+          novels.title,
+          novels.excerpt,
+          novels.body,
+          novels.mature,
+          novels.mature_rating,
+          novels.visibility,
+          novels.creator_id,
+          creator_user.profile_visibility,
+          creators.display_name AS creator_display_name,
+          creators.handle AS creator_handle
+         FROM novels
+         JOIN creators ON creators.id = novels.creator_id
+         JOIN users AS creator_user ON creator_user.id = novels.creator_id
+         WHERE novels.id = ?
+         LIMIT 1`
+      )
+        .bind(id)
+        .first<{
+          title: string;
+          excerpt: string | null;
+          body: string;
+          mature: number | null;
+          mature_rating: string | null;
+          visibility: string | null;
+          creator_id: string;
+          profile_visibility: string;
+          creator_display_name: string;
+          creator_handle: string;
+        }>();
+      if (
+        row &&
+        asArtworkVisibility(row.visibility) === "public" &&
+        canViewProfileVisibility(
+          asProfileVisibility(row.profile_visibility),
+          row.creator_id,
+          undefined
+        )
+      ) {
+        const rating = asMatureRating(row.mature_rating);
+        metaNovel = {
+          title: row.title,
+          excerpt: row.excerpt?.trim() || excerptFromBody(row.body),
+          mature: Boolean(row.mature) || rating !== "general",
+          matureRating: rating,
+          creator: {
+            id: row.creator_id,
+            handle: row.creator_handle,
+            displayName: row.creator_display_name,
+            avatarUrl: "",
+            bio: "",
+            followerCount: 0,
+            following: false
+          }
+        };
+      }
+    } catch (error) {
+      if (!isMissingTableError(error, ["novels"])) {
+        console.warn("Unable to inject novel metadata", error);
+      }
+    }
+  }
+
+  if (metaNovel) {
+    const title = metaNovel.mature
+      ? `${matureRatingLabelForMeta(metaNovel.matureRating)} novel on ${context.env.PUBLIC_APP_NAME}`
+      : `${metaNovel.title} by ${metaNovel.creator.displayName}`;
+    const description = metaNovel.mature
+      ? "Open NEHub to read this novel with your mature-content settings."
+      : metaNovel.excerpt || `Novel by ${metaNovel.creator.displayName} on ${context.env.PUBLIC_APP_NAME}.`;
+    const url = new URL(context.req.path, context.env.PUBLIC_APP_URL).toString();
+    const meta = `<title>${escapeHtml(title)} · ${escapeHtml(context.env.PUBLIC_APP_NAME)}</title>
+    <meta name="description" content="${escapeHtml(description)}" />
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="${escapeHtml(context.env.PUBLIC_APP_NAME)}" />
+    <meta property="og:title" content="${escapeHtml(title)}" />
+    <meta property="og:description" content="${escapeHtml(description)}" />
+    <meta property="og:url" content="${escapeHtml(url)}" />
+    <meta name="twitter:card" content="summary" />`;
+    html = html
+      .replace(/<title>.*?<\/title>/, "")
+      .replace(/<meta\s+name="description"[^>]*>\s*/i, "")
+      .replace("</head>", `    ${meta}\n  </head>`);
+  }
+
+  return indexHtmlResponse(context, html);
+});
 
 app.get("/artworks/:id", async (context) => {
   const indexUrl = new URL("/", context.req.url);

@@ -30,6 +30,7 @@ import {
   LogOut,
   MailCheck,
   MessageCircle,
+  NotebookText,
   Pencil,
   Search,
   Server,
@@ -47,7 +48,7 @@ import {
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import type { CSSProperties, FormEvent, ReactNode } from "react";
 import type {
   ActivityItem,
   ActivityResponse,
@@ -115,6 +116,9 @@ import type {
   ModerationReport,
   NotificationPreferencesResponse,
   NotificationsResponse,
+  Novel,
+  NovelListResponse,
+  NovelResponse,
   PasswordChangeResponse,
   EmailChangeRequestResponse,
   EmailConfirmationKind,
@@ -455,6 +459,8 @@ const artworkVisibilityLabel = (visibility: ArtworkVisibility) =>
 type ViewMode =
   | "home"
   | "artwork"
+  | "novels"
+  | "novel"
   | "dashboard"
   | "profile"
   | "tag"
@@ -507,106 +513,103 @@ type RouteState = {
   view: ViewMode;
   username: string;
   artworkId: string;
+  novelId: string;
   collectionId: string;
   seriesId: string;
   tag: string;
 };
 
+const routeState = (
+  view: ViewMode,
+  values: Partial<Omit<RouteState, "view">> = {}
+): RouteState => ({
+  view,
+  username: values.username ?? "",
+  artworkId: values.artworkId ?? "",
+  novelId: values.novelId ?? "",
+  collectionId: values.collectionId ?? "",
+  seriesId: values.seriesId ?? "",
+  tag: values.tag ?? ""
+});
+
 const getInitialRoute = (): RouteState => {
   if (typeof window === "undefined") {
-    return { view: "home", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("home");
   }
   if (window.location.hash === "#dashboard") {
-    return { view: "dashboard", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("dashboard");
   }
   const pathname = decodeURIComponent(window.location.pathname);
   if (pathname.startsWith("/artworks/")) {
-    return {
-      view: "artwork",
-      username: "",
-      artworkId: pathname.slice("/artworks/".length).replace(/^\/+|\/+$/g, ""),
-      collectionId: "",
-      seriesId: "",
-      tag: ""
-    };
+    return routeState("artwork", {
+      artworkId: pathname.slice("/artworks/".length).replace(/^\/+|\/+$/g, "")
+    });
+  }
+  if (pathname.startsWith("/novels/")) {
+    return routeState("novel", {
+      novelId: pathname.slice("/novels/".length).replace(/^\/+|\/+$/g, "")
+    });
+  }
+  if (pathname === "/novels") {
+    return routeState("novels");
   }
   if (pathname.startsWith("/tags/")) {
-    return {
-      view: "tag",
-      username: "",
-      artworkId: "",
-      collectionId: "",
-      seriesId: "",
+    return routeState("tag", {
       tag: pathname.slice("/tags/".length).replace(/^\/+|\/+$/g, "")
-    };
+    });
   }
   if (pathname === "/analytics") {
-    return { view: "analytics", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("analytics");
   }
   if (pathname === "/creators") {
-    return { view: "creatorDiscover", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("creatorDiscover");
   }
   if (pathname === "/rankings") {
-    return { view: "rankings", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("rankings");
   }
   if (pathname === "/notifications") {
-    return { view: "notifications", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("notifications");
   }
   if (pathname === "/collections/discover") {
-    return { view: "collectionDiscover", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("collectionDiscover");
   }
   if (pathname.startsWith("/collections/")) {
-    return {
-      view: "collection",
-      username: "",
-      artworkId: "",
+    return routeState("collection", {
       collectionId: pathname.slice("/collections/".length).replace(/^\/+|\/+$/g, ""),
-      seriesId: "",
-      tag: ""
-    };
+    });
   }
   if (pathname === "/collections") {
-    return { view: "collections", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("collections");
   }
   if (pathname.startsWith("/series/")) {
-    return {
-      view: "series",
-      username: "",
-      artworkId: "",
-      collectionId: "",
+    return routeState("series", {
       seriesId: pathname.slice("/series/".length).replace(/^\/+|\/+$/g, ""),
-      tag: ""
-    };
+    });
   }
   if (pathname === "/series") {
-    return { view: "seriesList", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("seriesList");
   }
   if (pathname.startsWith("/@")) {
-    return {
-      view: "profile",
+    return routeState("profile", {
       username: pathname.slice(2).replace(/^\/+|\/+$/g, ""),
-      artworkId: "",
-      collectionId: "",
-      seriesId: "",
-      tag: ""
-    };
+    });
   }
   if (pathname === "/settings/profile") {
-    return { view: "profileSettings", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("profileSettings");
   }
   if (pathname === "/settings/privacy-security") {
-    return { view: "privacySecurity", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("privacySecurity");
   }
   if (pathname === "/email-confirmation") {
-    return { view: "emailConfirmation", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("emailConfirmation");
   }
   if (pathname === "/terms") {
-    return { view: "terms", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("terms");
   }
   if (pathname === "/privacy") {
-    return { view: "privacy", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+    return routeState("privacy");
   }
-  return { view: "home", username: "", artworkId: "", collectionId: "", seriesId: "", tag: "" };
+  return routeState("home");
 };
 
 function App() {
@@ -649,6 +652,7 @@ function App() {
   const [view, setView] = useState<ViewMode>(initialRoute.view);
   const [profileUsername, setProfileUsername] = useState(initialRoute.username);
   const [routeArtworkId, setRouteArtworkId] = useState(initialRoute.artworkId);
+  const [routeNovelId, setRouteNovelId] = useState(initialRoute.novelId);
   const [routeCollectionId, setRouteCollectionId] = useState(initialRoute.collectionId);
   const [routeSeriesId, setRouteSeriesId] = useState(initialRoute.seriesId);
   const [routeTag, setRouteTag] = useState(initialRoute.tag);
@@ -661,6 +665,9 @@ function App() {
   const [matureFilter, setMatureFilter] = useState<MatureFilter>("all");
   const [selectedArtwork, setSelectedArtwork] = useState<Artwork | null>(null);
   const [artworkDetail, setArtworkDetail] = useState<ArtworkResponse | null>(null);
+  const [novelsData, setNovelsData] = useState<NovelListResponse | null>(null);
+  const [novelDetail, setNovelDetail] = useState<NovelResponse | null>(null);
+  const [novelLoading, setNovelLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
@@ -694,6 +701,18 @@ function App() {
     return params;
   }, [activeTag, matureFilter, query, sort]);
   const galleryUrl = useMemo(() => `/api/gallery?${galleryParams.toString()}`, [galleryParams]);
+  const novelParams = useMemo(() => {
+    const params = new URLSearchParams();
+    params.set("limit", "24");
+    if (query.trim()) {
+      params.set("q", query.trim());
+    }
+    if (matureFilter !== "all") {
+      params.set("rating", matureFilter);
+    }
+    return params;
+  }, [matureFilter, query]);
+  const novelsUrl = useMemo(() => `/api/novels?${novelParams.toString()}`, [novelParams]);
 
   useEffect(() => {
     const search = query.trim();
@@ -761,6 +780,39 @@ function App() {
       cancelled = true;
     };
   }, [contentAccessRevision, currentUser?.id, galleryUrl]);
+
+  useEffect(() => {
+    if (view !== "novels") {
+      return;
+    }
+
+    let cancelled = false;
+    fetch(novelsUrl, { credentials: "include" })
+      .then(async (response) => {
+        const payload = (await response.json()) as NovelListResponse | { message?: string };
+        if (!response.ok || !("novels" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ?? "Novels could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setNovelsData(payload);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setNovelsData(null);
+        }
+        console.error("Unable to load novels", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [contentAccessRevision, currentUser?.id, novelsUrl, view]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1188,11 +1240,13 @@ function App() {
       setView(route.view);
       setProfileUsername(route.username);
       setRouteArtworkId(route.artworkId);
+      setRouteNovelId(route.novelId);
       setRouteCollectionId(route.collectionId);
       setRouteSeriesId(route.seriesId);
       setRouteTag(route.tag);
       setSelectedArtwork(null);
       setArtworkDetail(null);
+      setNovelDetail(null);
     };
 
     window.addEventListener("hashchange", handleRouteChange);
@@ -1247,6 +1301,46 @@ function App() {
       cancelled = true;
     };
   }, [routeArtworkId]);
+
+  useEffect(() => {
+    if (!routeNovelId) {
+      setNovelDetail(null);
+      return;
+    }
+
+    let cancelled = false;
+    setNovelLoading(true);
+    fetch(`/api/novels/${encodeURIComponent(routeNovelId)}`, { credentials: "include" })
+      .then(async (response) => {
+        const payload = (await response.json()) as NovelResponse | { message?: string };
+        if (!response.ok || !("novel" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ?? "Novel could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((detail) => {
+        if (!cancelled) {
+          setNovelDetail(detail);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setAuthNotice(error instanceof Error ? error.message : "Novel could not be loaded.");
+          setNovelDetail(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setNovelLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [routeNovelId]);
 
   useEffect(() => {
     if (!selectedArtwork) {
@@ -1330,6 +1424,7 @@ function App() {
     setView(nextView);
     setProfileUsername(username);
     setRouteArtworkId("");
+    setRouteNovelId("");
     setRouteCollectionId(collectionId);
     setRouteSeriesId(seriesId);
     setRouteTag(tag);
@@ -1341,6 +1436,13 @@ function App() {
   const showHome = (nextSort: SortMode) => {
     pushRoute("/", "home");
     setSort(nextSort);
+  };
+
+  const showNovels = () => {
+    setSelectedArtwork(null);
+    setArtworkDetail(null);
+    setNovelDetail(null);
+    pushRoute("/novels", "novels");
   };
 
   const showBookmarks = () => {
@@ -1372,6 +1474,7 @@ function App() {
     }
     setSelectedArtwork(null);
     setArtworkDetail(null);
+    setNovelDetail(null);
     pushRoute(`/tags/${encodeURIComponent(cleaned)}`, "tag", "", "", "", cleaned);
   };
 
@@ -1412,6 +1515,7 @@ function App() {
     }
     setSelectedArtwork(null);
     setArtworkDetail(null);
+    setNovelDetail(null);
     pushRoute(`/collections/${encodeURIComponent(collectionId)}`, "collection", "", collectionId);
   };
 
@@ -1430,6 +1534,7 @@ function App() {
     }
     setSelectedArtwork(null);
     setArtworkDetail(null);
+    setNovelDetail(null);
     pushRoute(`/series/${encodeURIComponent(seriesId)}`, "series", "", "", seriesId);
   };
 
@@ -1482,6 +1587,7 @@ function App() {
   const openArtwork = (artwork: Artwork) => {
     setSelectedArtwork(artwork);
     setRouteArtworkId(artwork.id);
+    setRouteNovelId("");
     setView("home");
     setProfileUsername("");
     setRouteCollectionId("");
@@ -1497,6 +1603,7 @@ function App() {
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setRouteArtworkId(artworkId);
+    setRouteNovelId("");
     setView("artwork");
     setProfileUsername("");
     setRouteCollectionId("");
@@ -1510,6 +1617,26 @@ function App() {
 
   const openArtworkPage = (artwork: Artwork) => {
     openArtworkById(artwork.id);
+  };
+
+  const openNovel = (novelId: string) => {
+    if (!novelId) {
+      return;
+    }
+    setSelectedArtwork(null);
+    setArtworkDetail(null);
+    setNovelDetail(null);
+    setRouteArtworkId("");
+    setRouteNovelId(novelId);
+    setView("novel");
+    setProfileUsername("");
+    setRouteCollectionId("");
+    setRouteSeriesId("");
+    setRouteTag("");
+    const path = `/novels/${encodeURIComponent(novelId)}`;
+    if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== path) {
+      window.history.pushState(null, "", path);
+    }
   };
 
   const openSuggestedTag = (tag: string) => {
@@ -2900,11 +3027,21 @@ function App() {
               <span>art diary</span>
             </div>
             <nav className="main-nav" aria-label="Content types">
-              <button className="is-active" type="button">
+              <button
+                className={classNames(view === "home" && "is-active")}
+                type="button"
+                onClick={() => showHome("latest")}
+              >
                 Illustrations
               </button>
               <button type="button">Manga</button>
-              <button type="button">Novels</button>
+              <button
+                className={classNames((view === "novels" || view === "novel") && "is-active")}
+                type="button"
+                onClick={showNovels}
+              >
+                Novels
+              </button>
             </nav>
           </div>
 
@@ -3261,6 +3398,27 @@ function App() {
             onDeleteTagAlias={handleDeleteTagAlias}
             onSaveTagImplication={handleSaveTagImplication}
             onDeleteTagImplication={handleDeleteTagImplication}
+          />
+        ) : view === "novels" ? (
+          <NovelsPage
+            data={novelsData}
+            matureFilter={matureFilter}
+            query={query}
+            onMatureFilterChange={setMatureFilter}
+            onAuthRequired={() => openAuth("login")}
+            onOpenNovel={openNovel}
+            onOpenProfile={showProfile}
+            onPrivacySecurity={showPrivacySecurity}
+          />
+        ) : view === "novel" ? (
+          <NovelDetailPage
+            detail={novelDetail}
+            loading={novelLoading}
+            onBack={showNovels}
+            onAuthRequired={() => openAuth("login")}
+            onOpenNovel={openNovel}
+            onOpenProfile={showProfile}
+            onPrivacySecurity={showPrivacySecurity}
           />
         ) : view === "profile" ? (
           <ProfilePage
@@ -10759,6 +10917,321 @@ function MetricTile({ label, value }: MetricTileProps) {
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+type NovelsPageProps = {
+  data: NovelListResponse | null;
+  matureFilter: MatureFilter;
+  query: string;
+  onMatureFilterChange: (filter: MatureFilter) => void;
+  onAuthRequired: () => void;
+  onOpenNovel: (novelId: string) => void;
+  onOpenProfile: (username: string) => void;
+  onPrivacySecurity: () => void;
+};
+
+function NovelsPage({
+  data,
+  matureFilter,
+  query,
+  onMatureFilterChange,
+  onAuthRequired,
+  onOpenNovel,
+  onOpenProfile,
+  onPrivacySecurity
+}: NovelsPageProps) {
+  const novels = data?.novels ?? [];
+  const featuredNovel = data?.featuredNovel ?? novels[0] ?? null;
+  const sideNovels = novels.filter((novel) => novel.id !== featuredNovel?.id).slice(0, 4);
+  const totalWords = novels.reduce((sum, novel) => sum + novel.wordCount, 0);
+
+  return (
+    <section className="content-main novels-page">
+      <MatureAccessNotice matureAccess={data?.matureAccess ?? null} onLogin={onAuthRequired} onPrivacySecurity={onPrivacySecurity} />
+      <div className="novels-hero">
+        <div className="novels-hero-copy">
+          <p className="eyebrow">NEHub novels</p>
+          <h1>Latest creator fiction</h1>
+          <p>
+            Short stories, serial chapters, and luminous fragments from NEHub creators.
+          </p>
+          <div className="novels-hero-stats" aria-label="Novel stats">
+            <span>
+              <strong>{formatCount(data?.totalCount ?? novels.length)}</strong>
+              novels
+            </span>
+            <span>
+              <strong>{formatCount(totalWords)}</strong>
+              words
+            </span>
+            <span>
+              <strong>{formatCount(data?.tags.length ?? 0)}</strong>
+              tags
+            </span>
+          </div>
+        </div>
+        {featuredNovel ? (
+          <button
+            className="featured-novel"
+            type="button"
+            onClick={() => onOpenNovel(featuredNovel.id)}
+            style={{ "--novel-cover": featuredNovel.coverColor } as CSSProperties}
+          >
+            <span className="novel-cover-mark">N</span>
+            <span>
+              <small>Featured</small>
+              <strong>{featuredNovel.title}</strong>
+              <em>{featuredNovel.excerpt}</em>
+            </span>
+          </button>
+        ) : null}
+      </div>
+
+      <div className="novels-toolbar">
+        <div>
+          <h2>{query.trim() ? "Novel search results" : "Latest novels"}</h2>
+          <p>
+            {data
+              ? `${formatCount(novels.length)} readable ${novels.length === 1 ? "story" : "stories"}`
+              : "Loading novels."}
+          </p>
+        </div>
+        <label className="rating-filter novel-rating-filter">
+          <Shield size={15} />
+          <select
+            value={matureFilter}
+            onChange={(event) => onMatureFilterChange(event.target.value as MatureFilter)}
+          >
+            {matureFilterOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {data?.tags.length ? (
+        <div className="tag-row novel-tag-row" aria-label="Novel tags">
+          {data.tags.slice(0, 10).map((tag) => (
+            <span className="tag-pill novel-tag-pill" key={tag.name}>
+              #{tag.name}
+              <span>{tag.count}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="novel-grid" aria-live="polite">
+        {novels.map((novel, index) => (
+          <NovelCard
+            key={novel.id}
+            novel={novel}
+            index={index}
+            onOpenNovel={onOpenNovel}
+            onOpenProfile={onOpenProfile}
+          />
+        ))}
+      </div>
+
+      {!data ? <p className="empty-feed">Loading novels.</p> : null}
+      {data && novels.length === 0 ? (
+        <p className="empty-feed">No novels match this view yet.</p>
+      ) : null}
+
+      {sideNovels.length ? (
+        <aside className="novel-inline-rail" aria-label="More novels">
+          <div className="panel-title">
+            <NotebookText size={18} />
+            Continue reading
+          </div>
+          {sideNovels.map((novel) => (
+            <button
+              className="novel-mini-row"
+              key={novel.id}
+              type="button"
+              onClick={() => onOpenNovel(novel.id)}
+            >
+              <span style={{ background: novel.coverColor }} />
+              <strong>{novel.title}</strong>
+              <small>{novel.readMinutes} min</small>
+            </button>
+          ))}
+        </aside>
+      ) : null}
+    </section>
+  );
+}
+
+type NovelCardProps = {
+  novel: Novel;
+  index: number;
+  onOpenNovel: (novelId: string) => void;
+  onOpenProfile: (username: string) => void;
+};
+
+function NovelCard({ novel, index, onOpenNovel, onOpenProfile }: NovelCardProps) {
+  const novelPath = `/novels/${encodeURIComponent(novel.id)}`;
+  return (
+    <article
+      className="novel-card"
+      style={{ "--novel-cover": novel.coverColor, animationDelay: `${Math.min(index * 36, 260)}ms` } as CSSProperties}
+    >
+      <a
+        className="novel-card-main"
+        href={novelPath}
+        onClick={(event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+            return;
+          }
+          event.preventDefault();
+          onOpenNovel(novel.id);
+        }}
+      >
+        <span className="novel-spine" aria-hidden="true" />
+        <span className="novel-card-content">
+          <small>{novel.id}</small>
+          <strong>{novel.title}</strong>
+          <em>{novel.excerpt}</em>
+        </span>
+      </a>
+      <div className="novel-card-footer">
+        <button className="creator-mini creator-mini-link" type="button" onClick={() => onOpenProfile(novel.creator.handle)}>
+          {novel.creator.avatarUrl ? (
+            <img src={novel.creator.avatarUrl} alt="" />
+          ) : (
+            <DefaultAvatar className="creator-mini-avatar" name={novel.creator.displayName} />
+          )}
+          <span>{novel.creator.displayName}</span>
+        </button>
+        <span>{novel.readMinutes} min</span>
+      </div>
+      <div className="novel-card-meta">
+        <span>
+          <Heart size={14} />
+          {formatCount(novel.likeCount)}
+        </span>
+        <span>
+          <Eye size={14} />
+          {formatCount(novel.viewCount)}
+        </span>
+        <span>{dateFormat.format(new Date(novel.createdAt))}</span>
+      </div>
+    </article>
+  );
+}
+
+type NovelDetailPageProps = {
+  detail: NovelResponse | null;
+  loading: boolean;
+  onBack: () => void;
+  onAuthRequired: () => void;
+  onOpenNovel: (novelId: string) => void;
+  onOpenProfile: (username: string) => void;
+  onPrivacySecurity: () => void;
+};
+
+function NovelDetailPage({
+  detail,
+  loading,
+  onBack,
+  onAuthRequired,
+  onOpenNovel,
+  onOpenProfile,
+  onPrivacySecurity
+}: NovelDetailPageProps) {
+  if (!detail) {
+    return (
+      <section className="content-main novel-detail-page">
+        <p className="empty-feed">{loading ? "Loading novel." : "Novel could not be loaded."}</p>
+      </section>
+    );
+  }
+  const novel = detail.novel;
+  const paragraphs = novel.body.split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean);
+  const relatedNovels = detail.relatedNovels;
+
+  return (
+    <article className="content-main novel-detail-page">
+      <MatureAccessNotice matureAccess={detail?.matureAccess ?? null} onLogin={onAuthRequired} onPrivacySecurity={onPrivacySecurity} />
+      <header className="novel-detail-hero" style={{ "--novel-cover": novel.coverColor } as CSSProperties}>
+        <button className="secondary-button novel-back-button" type="button" onClick={onBack}>
+          <ChevronUp size={16} />
+          Novels
+        </button>
+        <div className="novel-detail-title">
+          <p className="eyebrow">{novel.id}</p>
+          <h1>{novel.title}</h1>
+          <p>{novel.excerpt}</p>
+          <button className="creator-mini creator-mini-link novel-author-link" type="button" onClick={() => onOpenProfile(novel.creator.handle)}>
+            {novel.creator.avatarUrl ? (
+              <img src={novel.creator.avatarUrl} alt="" />
+            ) : (
+              <DefaultAvatar className="creator-mini-avatar" name={novel.creator.displayName} />
+            )}
+            <span>{novel.creator.displayName}</span>
+          </button>
+        </div>
+        <div className="novel-detail-metrics" aria-label="Novel metrics">
+          <span>
+            <strong>{formatCount(novel.wordCount)}</strong>
+            words
+          </span>
+          <span>
+            <strong>{novel.readMinutes}</strong>
+            min
+          </span>
+          <span>
+            <strong>{formatCount(novel.viewCount)}</strong>
+            views
+          </span>
+        </div>
+      </header>
+
+      <div className="novel-reading-layout">
+        <div className="novel-body">
+          {paragraphs.map((paragraph, index) => (
+            <p key={`${novel.id}-${index}`}>{paragraph}</p>
+          ))}
+        </div>
+        <aside className="novel-detail-side">
+          <section className="side-panel">
+            <div className="panel-title">
+              <NotebookText size={18} />
+              Story tags
+            </div>
+            <div className="tag-row novel-detail-tags">
+              {novel.tags.map((tag) => (
+                <span className="tag-pill novel-tag-pill" key={tag}>
+                  #{tag}
+                </span>
+              ))}
+            </div>
+          </section>
+          {relatedNovels.length ? (
+            <section className="side-panel">
+              <div className="panel-title">
+                <Sparkles size={18} />
+                Related
+              </div>
+              {relatedNovels.map((relatedNovel) => (
+                <button
+                  className="novel-mini-row"
+                  key={relatedNovel.id}
+                  type="button"
+                  onClick={() => onOpenNovel(relatedNovel.id)}
+                >
+                  <span style={{ background: relatedNovel.coverColor }} />
+                  <strong>{relatedNovel.title}</strong>
+                  <small>{relatedNovel.readMinutes} min</small>
+                </button>
+              ))}
+            </section>
+          ) : null}
+        </aside>
+      </div>
+    </article>
   );
 }
 

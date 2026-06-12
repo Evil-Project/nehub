@@ -101,6 +101,40 @@ export type ArtworkResponse = {
   source: "d1";
 };
 
+export type Novel = {
+  id: string;
+  title: string;
+  excerpt: string;
+  body: string;
+  coverColor: string;
+  creator: Creator;
+  tags: string[];
+  wordCount: number;
+  readMinutes: number;
+  likeCount: number;
+  viewCount: number;
+  createdAt: string;
+  mature: boolean;
+  matureRating: MatureRating;
+  visibility: ArtworkVisibility;
+};
+
+export type NovelListResponse = {
+  novels: Novel[];
+  featuredNovel: Novel | null;
+  tags: { name: string; count: number }[];
+  totalCount: number;
+  source: "d1" | "fallback";
+  matureAccess: MatureAccess;
+};
+
+export type NovelResponse = {
+  novel: Novel;
+  relatedNovels: Novel[];
+  source: "d1" | "fallback";
+  matureAccess: MatureAccess;
+};
+
 export type RankingItem = {
   artwork: Artwork;
   score: number;
