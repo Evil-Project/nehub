@@ -476,8 +476,8 @@ img {
 }
 
 .page-frame.is-novel-section {
-  grid-template-columns: 210px minmax(0, 1fr);
-  width: min(1260px, 100%);
+  grid-template-columns: 210px minmax(0, 1fr) 320px;
+  width: min(1480px, 100%);
 }
 
 .global-account-notice {
@@ -1361,7 +1361,7 @@ h1 {
 }
 
 .page-frame.is-novel-section .content-main {
-  grid-column: 2;
+  grid-column: 2 / -1;
 }
 
 .dashboard-heading {

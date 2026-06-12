@@ -457,7 +457,7 @@ const artworkVisibilityLabel = (visibility: ArtworkVisibility) =>
   artworkVisibilityOptions.find((option) => option.value === visibility)?.label ?? "Public";
 
 type ViewMode =
-  | "home"
+  | "illustrations"
   | "artwork"
   | "novels"
   | "novel"
@@ -478,6 +478,24 @@ type ViewMode =
   | "emailConfirmation"
   | "terms"
   | "privacy";
+const novelSectionSlugs = [
+  "home",
+  "following",
+  "creators",
+  "tags",
+  "novels",
+  "rankings",
+  "bookmarks",
+  "collections",
+  "terms",
+  "privacy"
+] as const;
+type NovelSection = (typeof novelSectionSlugs)[number];
+const novelSectionSlugSet = new Set<string>(novelSectionSlugs);
+const authRequiredNovelSections = new Set<NovelSection>(["tags", "bookmarks"]);
+const novelSectionRequiresAuth = (section: NovelSection) => authRequiredNovelSections.has(section);
+const novelSectionAuthNotice = (section: NovelSection) =>
+  section === "bookmarks" ? "Sign in to view your novel bookmarks." : "Sign in to view novel tags.";
 type AuthMode = "login" | "register";
 type AuthFlow = "auth" | "resetRequest" | "resetConfirm" | "mfa";
 type TurnstileAction =
@@ -514,6 +532,7 @@ type RouteState = {
   username: string;
   artworkId: string;
   novelId: string;
+  novelSection: NovelSection;
   collectionId: string;
   seriesId: string;
   tag: string;
@@ -527,6 +546,7 @@ const routeState = (
   username: values.username ?? "",
   artworkId: values.artworkId ?? "",
   novelId: values.novelId ?? "",
+  novelSection: values.novelSection ?? "home",
   collectionId: values.collectionId ?? "",
   seriesId: values.seriesId ?? "",
   tag: values.tag ?? ""
@@ -534,24 +554,33 @@ const routeState = (
 
 const getInitialRoute = (): RouteState => {
   if (typeof window === "undefined") {
-    return routeState("home");
+    return routeState("illustrations");
   }
   if (window.location.hash === "#dashboard") {
     return routeState("dashboard");
   }
   const pathname = decodeURIComponent(window.location.pathname);
+  if (pathname === "/") {
+    return routeState("illustrations");
+  }
   if (pathname.startsWith("/artworks/")) {
     return routeState("artwork", {
       artworkId: pathname.slice("/artworks/".length).replace(/^\/+|\/+$/g, "")
     });
   }
   if (pathname.startsWith("/novels/")) {
+    const novelPath = pathname.slice("/novels/".length).replace(/^\/+|\/+$/g, "");
+    if (novelSectionSlugSet.has(novelPath)) {
+      return routeState("novels", {
+        novelSection: novelPath as NovelSection
+      });
+    }
     return routeState("novel", {
-      novelId: pathname.slice("/novels/".length).replace(/^\/+|\/+$/g, "")
+      novelId: novelPath
     });
   }
   if (pathname === "/novels") {
-    return routeState("novels");
+    return routeState("novels", { novelSection: "home" });
   }
   if (pathname.startsWith("/tags/")) {
     return routeState("tag", {
@@ -609,7 +638,7 @@ const getInitialRoute = (): RouteState => {
   if (pathname === "/privacy") {
     return routeState("privacy");
   }
-  return routeState("home");
+  return routeState("illustrations");
 };
 
 function App() {
@@ -653,16 +682,19 @@ function App() {
   const [profileUsername, setProfileUsername] = useState(initialRoute.username);
   const [routeArtworkId, setRouteArtworkId] = useState(initialRoute.artworkId);
   const [routeNovelId, setRouteNovelId] = useState(initialRoute.novelId);
+  const [routeNovelSection, setRouteNovelSection] = useState<NovelSection>(initialRoute.novelSection);
   const [routeCollectionId, setRouteCollectionId] = useState(initialRoute.collectionId);
   const [routeSeriesId, setRouteSeriesId] = useState(initialRoute.seriesId);
   const [routeTag, setRouteTag] = useState(initialRoute.tag);
   const [sort, setSort] = useState<SortMode>("latest");
-  const [query, setQuery] = useState("");
+  const [illustrationQuery, setIllustrationQuery] = useState("");
+  const [novelQuery, setNovelQuery] = useState("");
   const [searchSuggestions, setSearchSuggestions] = useState<SearchSuggestionsResponse | null>(null);
   const [searchSuggestionsOpen, setSearchSuggestionsOpen] = useState(false);
   const [searchSuggestionsLoading, setSearchSuggestionsLoading] = useState(false);
   const [activeTag, setActiveTag] = useState("");
-  const [matureFilter, setMatureFilter] = useState<MatureFilter>("all");
+  const [illustrationMatureFilter, setIllustrationMatureFilter] = useState<MatureFilter>("all");
+  const [novelMatureFilter, setNovelMatureFilter] = useState<MatureFilter>("all");
   const [selectedArtwork, setSelectedArtwork] = useState<Artwork | null>(null);
   const [artworkDetail, setArtworkDetail] = useState<ArtworkResponse | null>(null);
   const [novelsData, setNovelsData] = useState<NovelListResponse | null>(null);
@@ -674,8 +706,11 @@ function App() {
   const [uploadSubmitting, setUploadSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [postAuthSort, setPostAuthSort] = useState<SortMode | null>(null);
+  const [postAuthNovelSection, setPostAuthNovelSection] = useState<NovelSection | null>(null);
   const [galleryLoadingMore, setGalleryLoadingMore] = useState(false);
   const [contentAccessRevision, setContentAccessRevision] = useState(0);
+  const isNovelSection = view === "novels" || view === "novel";
+  const isIllustrationsSection = view === "illustrations" || view === "artwork";
 
   const refreshAuthSession = useCallback(async () => {
     const response = await fetch("/api/auth/session", { credentials: "include" });
@@ -689,33 +724,40 @@ function App() {
     const params = new URLSearchParams();
     params.set("sort", sort);
     params.set("limit", "36");
-    if (query.trim()) {
-      params.set("q", query.trim());
+    if (illustrationQuery.trim()) {
+      params.set("q", illustrationQuery.trim());
     }
     if (activeTag) {
       params.set("tag", activeTag);
     }
-    if (matureFilter !== "all") {
-      params.set("rating", matureFilter);
+    if (illustrationMatureFilter !== "all") {
+      params.set("rating", illustrationMatureFilter);
     }
     return params;
-  }, [activeTag, matureFilter, query, sort]);
+  }, [activeTag, illustrationMatureFilter, illustrationQuery, sort]);
   const galleryUrl = useMemo(() => `/api/gallery?${galleryParams.toString()}`, [galleryParams]);
   const novelParams = useMemo(() => {
     const params = new URLSearchParams();
     params.set("limit", "24");
-    if (query.trim()) {
-      params.set("q", query.trim());
+    if (novelQuery.trim()) {
+      params.set("q", novelQuery.trim());
     }
-    if (matureFilter !== "all") {
-      params.set("rating", matureFilter);
+    if (novelMatureFilter !== "all") {
+      params.set("rating", novelMatureFilter);
     }
     return params;
-  }, [matureFilter, query]);
+  }, [novelMatureFilter, novelQuery]);
   const novelsUrl = useMemo(() => `/api/novels?${novelParams.toString()}`, [novelParams]);
 
   useEffect(() => {
-    const search = query.trim();
+    if (!isIllustrationsSection) {
+      setSearchSuggestions(null);
+      setSearchSuggestionsLoading(false);
+      setSearchSuggestionsOpen(false);
+      return;
+    }
+
+    const search = illustrationQuery.trim();
     if (search.length < 2) {
       setSearchSuggestions(null);
       setSearchSuggestionsLoading(false);
@@ -760,7 +802,7 @@ function App() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [contentAccessRevision, currentUser?.id, query]);
+  }, [contentAccessRevision, currentUser?.id, illustrationQuery, isIllustrationsSection]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1141,7 +1183,7 @@ function App() {
     }
     if (!canModerate) {
       setDashboardMessage("Moderator access is required.");
-      setView("home");
+      setView("illustrations");
       if (window.location.hash === "#dashboard") {
         window.history.pushState(null, "", window.location.pathname + window.location.search);
       }
@@ -1241,6 +1283,7 @@ function App() {
       setProfileUsername(route.username);
       setRouteArtworkId(route.artworkId);
       setRouteNovelId(route.novelId);
+      setRouteNovelSection(route.novelSection);
       setRouteCollectionId(route.collectionId);
       setRouteSeriesId(route.seriesId);
       setRouteTag(route.tag);
@@ -1256,6 +1299,21 @@ function App() {
       window.removeEventListener("popstate", handleRouteChange);
     };
   }, []);
+
+  useEffect(() => {
+    if (!authReady || currentUser || view !== "novels" || !novelSectionRequiresAuth(routeNovelSection)) {
+      return;
+    }
+    setPostAuthSort(null);
+    setPostAuthNovelSection(routeNovelSection);
+    setAuthMode("login");
+    setAuthNotice(novelSectionAuthNotice(routeNovelSection));
+    setAuthOpen(true);
+    setSelectedArtwork(null);
+    setArtworkDetail(null);
+    setNovelDetail(null);
+    pushRoute("/novels", "novels", "", "home");
+  }, [authReady, currentUser, routeNovelSection, view]);
 
   useEffect(() => {
     if (!routeArtworkId) {
@@ -1390,6 +1448,42 @@ function App() {
       .map((artwork) => ({ artwork, score: artwork.likeCount }));
   const totalLikes = artworks.reduce((sum, artwork) => sum + artwork.likeCount, 0);
   const totalViews = artworks.reduce((sum, artwork) => sum + artwork.viewCount, 0);
+  const novels = novelsData?.novels ?? [];
+  const featuredNovel = novelsData?.featuredNovel ?? novels[0] ?? null;
+  const totalNovelWords = novels.reduce((sum, novel) => sum + novel.wordCount, 0);
+  const novelCreators = [...new Map(novels.map((novel) => [novel.creator.id, novel.creator])).values()];
+  const followedNovelCreators = novelCreators.filter((creator) => creator.following);
+  const followedNovelCreatorIds = new Set(followedNovelCreators.map((creator) => creator.id));
+  const followedNovels = novels.filter((novel) => followedNovelCreatorIds.has(novel.creator.id));
+  const novelRankingItems = [...novels]
+    .sort((left, right) => right.likeCount - left.likeCount || right.viewCount - left.viewCount)
+    .slice(0, 8);
+  const bookmarkedNovels: Novel[] = [];
+  const novelCollections: Array<{ id: string; title: string; detail: string }> = [];
+  const novelSectionTitleMap: Record<NovelSection, string> = {
+    home: "Latest creator fiction",
+    following: "Following novels",
+    creators: "Novel creators",
+    tags: "Story tags",
+    novels: "All novels",
+    rankings: "Novel rankings",
+    bookmarks: "Bookmarked novels",
+    collections: "Novel collections",
+    terms: "Novel terms",
+    privacy: "Novel privacy"
+  };
+  const novelSectionDescriptionMap: Record<NovelSection, string> = {
+    home: "Short stories, serial chapters, and luminous fragments from NEHub creators.",
+    following: "Stories from creators you already follow.",
+    creators: "Authors publishing fiction across NEHub.",
+    tags: "Browse the labels shaping the current fiction feed.",
+    novels: "The complete readable shelf currently loaded from NEHub.",
+    rankings: "A quick ranking view built from the current novels feed.",
+    bookmarks: "A dedicated home for saved fiction once novel bookmarks are supported.",
+    collections: "A dedicated home for grouped fiction once novel collections are supported.",
+    terms: "Read the terms without leaving the novels section.",
+    privacy: "Read the privacy policy without leaving the novels section."
+  };
   const isBookmarksView = sort === "bookmarks";
   const isSubscriptionsView = sort === "subscriptions";
   const feedTitle = isBookmarksView
@@ -1412,12 +1506,13 @@ function App() {
   const hasAccountNotice =
     view !== "emailConfirmation" &&
     Boolean(accountNotice || (currentUser && !currentUser.emailVerified));
-  const isNovelSection = view === "novels" || view === "novel";
+  const activeSearchQuery = isNovelSection ? novelQuery : illustrationQuery;
 
   const pushRoute = (
     path: string,
     nextView: ViewMode,
     username = "",
+    novelSection: NovelSection = "home",
     collectionId = "",
     seriesId = "",
     tag = ""
@@ -1426,6 +1521,7 @@ function App() {
     setProfileUsername(username);
     setRouteArtworkId("");
     setRouteNovelId("");
+    setRouteNovelSection(novelSection);
     setRouteCollectionId(collectionId);
     setRouteSeriesId(seriesId);
     setRouteTag(tag);
@@ -1434,38 +1530,52 @@ function App() {
     }
   };
 
-  const showHome = (nextSort: SortMode) => {
-    pushRoute("/", "home");
+  const showIllustrations = (nextSort: SortMode) => {
+    pushRoute("/", "illustrations");
     setSort(nextSort);
   };
 
-  const showNovels = () => {
+  const openNovelSection = (section: NovelSection = "home") => {
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setNovelDetail(null);
-    pushRoute("/novels", "novels");
+    pushRoute(section === "home" ? "/novels" : `/novels/${section}`, "novels", "", section);
+  };
+
+  const showNovels = (section: NovelSection = "home") => {
+    if (novelSectionRequiresAuth(section) && !currentUser) {
+      setPostAuthSort(null);
+      setPostAuthNovelSection(section);
+      setAuthMode("login");
+      setAuthNotice(novelSectionAuthNotice(section));
+      setAuthOpen(true);
+      return;
+    }
+    openNovelSection(section);
   };
 
   const showBookmarks = () => {
     if (!currentUser) {
       setPostAuthSort("bookmarks");
+      setPostAuthNovelSection(null);
       setAuthMode("login");
       setAuthNotice("Sign in to view your bookmarks.");
       setAuthOpen(true);
       return;
     }
-    showHome("bookmarks");
+    showIllustrations("bookmarks");
   };
 
   const showTagSubscriptions = () => {
     if (!currentUser) {
       setPostAuthSort("subscriptions");
+      setPostAuthNovelSection(null);
       setAuthMode("login");
       setAuthNotice("Sign in to follow tags.");
       setAuthOpen(true);
       return;
     }
-    showHome("subscriptions");
+    showIllustrations("subscriptions");
   };
 
   const showTag = (tag: string) => {
@@ -1476,7 +1586,7 @@ function App() {
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setNovelDetail(null);
-    pushRoute(`/tags/${encodeURIComponent(cleaned)}`, "tag", "", "", "", cleaned);
+    pushRoute(`/tags/${encodeURIComponent(cleaned)}`, "tag", "", undefined, "", "", cleaned);
   };
 
   const showCreatorDiscover = () => {
@@ -1517,7 +1627,7 @@ function App() {
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setNovelDetail(null);
-    pushRoute(`/collections/${encodeURIComponent(collectionId)}`, "collection", "", collectionId);
+    pushRoute(`/collections/${encodeURIComponent(collectionId)}`, "collection", "", undefined, collectionId);
   };
 
   const showSeriesList = () => {
@@ -1536,7 +1646,7 @@ function App() {
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setNovelDetail(null);
-    pushRoute(`/series/${encodeURIComponent(seriesId)}`, "series", "", "", seriesId);
+    pushRoute(`/series/${encodeURIComponent(seriesId)}`, "series", "", undefined, "", seriesId);
   };
 
   const showAnalytics = () => {
@@ -1589,7 +1699,7 @@ function App() {
     setSelectedArtwork(artwork);
     setRouteArtworkId(artwork.id);
     setRouteNovelId("");
-    setView("home");
+    setView("illustrations");
     setProfileUsername("");
     setRouteCollectionId("");
     setRouteSeriesId("");
@@ -1641,19 +1751,19 @@ function App() {
   };
 
   const openSuggestedTag = (tag: string) => {
-    setQuery(`#${tag}`);
+    setIllustrationQuery(`#${tag}`);
     setSearchSuggestionsOpen(false);
     showTag(tag);
   };
 
   const openSuggestedCreator = (username: string) => {
-    setQuery(`@${username}`);
+    setIllustrationQuery(`@${username}`);
     setSearchSuggestionsOpen(false);
     showProfile(username);
   };
 
   const openSuggestedArtwork = (artwork: SearchSuggestionsResponse["artworks"][number]) => {
-    setQuery(artwork.title);
+    setIllustrationQuery(artwork.title);
     setSearchSuggestionsOpen(false);
     openArtworkById(artwork.id);
   };
@@ -1663,7 +1773,7 @@ function App() {
     setArtworkDetail(null);
     setRouteArtworkId("");
     if (window.location.pathname.startsWith("/artworks/")) {
-      pushRoute("/", "home");
+      pushRoute("/", "illustrations");
     }
   };
 
@@ -1689,8 +1799,12 @@ function App() {
     setAuthNotice(payload.message);
     setAuthOpen(false);
     if (postAuthSort) {
-      showHome(postAuthSort);
+      showIllustrations(postAuthSort);
       setPostAuthSort(null);
+      setPostAuthNovelSection(null);
+    } else if (postAuthNovelSection) {
+      openNovelSection(postAuthNovelSection);
+      setPostAuthNovelSection(null);
     }
   };
 
@@ -1724,10 +1838,13 @@ function App() {
         view === "profileSettings" ||
         view === "privacySecurity" ||
         sort === "bookmarks" ||
-        sort === "subscriptions"
+        sort === "subscriptions" ||
+        (view === "novels" && novelSectionRequiresAuth(routeNovelSection))
       ) {
-        showHome("latest");
+        showIllustrations("latest");
       }
+      setPostAuthSort(null);
+      setPostAuthNovelSection(null);
     }
     setAuthNotice(payload.message);
   };
@@ -1747,7 +1864,7 @@ function App() {
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setAuthNotice(payload.message);
-    showHome("latest");
+    showIllustrations("latest");
     setContentAccessRevision((revision) => revision + 1);
   };
 
@@ -3008,7 +3125,7 @@ function App() {
     setContentAccessRevision((revision) => revision + 1);
   };
 
-  const searchSuggestionQueryActive = searchSuggestions?.query === query.trim();
+  const searchSuggestionQueryActive = searchSuggestions?.query === illustrationQuery.trim();
   const hasSearchSuggestions = Boolean(
     searchSuggestionQueryActive &&
       searchSuggestions &&
@@ -3025,13 +3142,13 @@ function App() {
             <div className="brand-mark">N</div>
             <div className="brand-wordmark" aria-label="NEHub">
               <strong>NEHub</strong>
-              <span>art diary</span>
+              <span>{isNovelSection ? "novel diary" : "art diary"}</span>
             </div>
             <nav className="main-nav" aria-label="Content types">
               <button
-                className={classNames(view === "home" && "is-active")}
+                className={classNames(isIllustrationsSection && sort === "latest" && "is-active")}
                 type="button"
-                onClick={() => showHome("latest")}
+                onClick={() => showIllustrations("latest")}
               >
                 Illustrations
               </button>
@@ -3039,7 +3156,7 @@ function App() {
               <button
                 className={classNames((view === "novels" || view === "novel") && "is-active")}
                 type="button"
-                onClick={showNovels}
+                onClick={() => showNovels("home")}
               >
                 Novels
               </button>
@@ -3049,24 +3166,29 @@ function App() {
           <div className={classNames("searchbox", searchSuggestionsOpen && "is-open")}>
             <Search size={18} />
             <input
-              value={query}
+              value={activeSearchQuery}
               onBlur={() => {
                 window.setTimeout(() => setSearchSuggestionsOpen(false), 120);
               }}
               onChange={(event) => {
-                setQuery(event.target.value);
-                setSearchSuggestionsOpen(true);
+                if (isNovelSection) {
+                  setNovelQuery(event.target.value);
+                  setSearchSuggestionsOpen(false);
+                } else {
+                  setIllustrationQuery(event.target.value);
+                  setSearchSuggestionsOpen(true);
+                }
               }}
-              onFocus={() => setSearchSuggestionsOpen(true)}
+              onFocus={() => setSearchSuggestionsOpen(isIllustrationsSection)}
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
                   setSearchSuggestionsOpen(false);
                 }
               }}
-              placeholder="Search works, creators, tags"
+              placeholder={isNovelSection ? "Search novels, authors, tags" : "Search works, creators, tags"}
               type="search"
             />
-            {searchSuggestionsOpen && query.trim().length >= 2 ? (
+            {isIllustrationsSection && searchSuggestionsOpen && illustrationQuery.trim().length >= 2 ? (
               <div className="search-suggestions" role="listbox" aria-label="Search suggestions">
                 {searchSuggestionsLoading ? <p className="muted">Finding matches.</p> : null}
                 {searchSuggestionQueryActive && searchSuggestions?.tags.length ? (
@@ -3202,70 +3324,141 @@ function App() {
 
       <div className={classNames("page-frame", isNovelSection && "is-novel-section")}>
         <aside className="left-menu" aria-label="Main sections">
-          <button
-            className={classNames("menu-item", view === "home" && sort === "latest" && "is-active")}
-            type="button"
-            onClick={() => showHome("latest")}
-          >
-            <Home size={18} />
-            Home
-          </button>
-          <button
-            className={classNames("menu-item", view === "home" && sort === "following" && "is-active")}
-            type="button"
-            onClick={() => showHome("following")}
-          >
-            <Grid3X3 size={18} />
-            Following
-          </button>
-          <button
-            className={classNames("menu-item", view === "creatorDiscover" && "is-active")}
-            type="button"
-            onClick={showCreatorDiscover}
-          >
-            <UserPlus size={18} />
-            Creators
-          </button>
-          <button
-            className={classNames("menu-item", view === "home" && sort === "subscriptions" && "is-active")}
-            type="button"
-            onClick={showTagSubscriptions}
-          >
-            <Bell size={18} />
-            Tags
-          </button>
-          <button
-            className={classNames("menu-item", isNovelSection && "is-active")}
-            type="button"
-            onClick={showNovels}
-          >
-            <NotebookText size={18} />
-            Novels
-          </button>
-          <button
-            className={classNames("menu-item", view === "rankings" && "is-active")}
-            type="button"
-            onClick={showRankings}
-          >
-            <Trophy size={18} />
-            Rankings
-          </button>
-          <button
-            className={classNames("menu-item", view === "home" && sort === "bookmarks" && "is-active")}
-            type="button"
-            onClick={showBookmarks}
-          >
-            <Bookmark size={18} />
-            Bookmarks
-          </button>
-          <button
-            className={classNames("menu-item", view === "collectionDiscover" && "is-active")}
-            type="button"
-            onClick={showCollectionDiscover}
-          >
-            <FolderOpen size={18} />
-            Collections
-          </button>
+          {isNovelSection ? (
+            <>
+              <button
+                className={classNames("menu-item", view === "novels" && routeNovelSection === "home" && "is-active")}
+                type="button"
+                onClick={() => showNovels("home")}
+              >
+                <Home size={18} />
+                Home
+              </button>
+              <button
+                className={classNames("menu-item", view === "novels" && routeNovelSection === "following" && "is-active")}
+                type="button"
+                onClick={() => showNovels("following")}
+              >
+                <Grid3X3 size={18} />
+                Following
+              </button>
+              <button
+                className={classNames("menu-item", view === "novels" && routeNovelSection === "creators" && "is-active")}
+                type="button"
+                onClick={() => showNovels("creators")}
+              >
+                <UserPlus size={18} />
+                Creators
+              </button>
+              <button
+                className={classNames("menu-item", view === "novels" && routeNovelSection === "tags" && "is-active")}
+                type="button"
+                onClick={() => showNovels("tags")}
+              >
+                <Bell size={18} />
+                Tags
+              </button>
+              <button
+                className={classNames("menu-item", view === "novels" && routeNovelSection === "bookmarks" && "is-active")}
+                type="button"
+                onClick={() => showNovels("bookmarks")}
+              >
+                <Bookmark size={18} />
+                Bookmarks
+              </button>
+              <button
+                className={classNames("menu-item", view === "novels" && routeNovelSection === "rankings" && "is-active")}
+                type="button"
+                onClick={() => showNovels("rankings")}
+              >
+                <Trophy size={18} />
+                Rankings
+              </button>
+              <button
+                className={classNames("menu-item", view === "novels" && routeNovelSection === "collections" && "is-active")}
+                type="button"
+                onClick={() => showNovels("collections")}
+              >
+                <FolderOpen size={18} />
+                Collections
+              </button>
+              <button
+                className={classNames("menu-item", view === "novels" && routeNovelSection === "terms" && "is-active")}
+                type="button"
+                onClick={() => showNovels("terms")}
+              >
+                <FileText size={18} />
+                Terms
+              </button>
+              <button
+                className={classNames("menu-item", view === "novels" && routeNovelSection === "privacy" && "is-active")}
+                type="button"
+                onClick={() => showNovels("privacy")}
+              >
+                <Shield size={18} />
+                Policy
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className={classNames("menu-item", view === "illustrations" && sort === "latest" && "is-active")}
+                type="button"
+                onClick={() => showIllustrations("latest")}
+              >
+                <Home size={18} />
+                Home
+              </button>
+              <button
+                className={classNames("menu-item", view === "illustrations" && sort === "following" && "is-active")}
+                type="button"
+                onClick={() => showIllustrations("following")}
+              >
+                <Grid3X3 size={18} />
+                Following
+              </button>
+              <button
+                className={classNames("menu-item", view === "creatorDiscover" && "is-active")}
+                type="button"
+                onClick={showCreatorDiscover}
+              >
+                <UserPlus size={18} />
+                Creators
+              </button>
+              <button
+                className={classNames("menu-item", view === "illustrations" && sort === "subscriptions" && "is-active")}
+                type="button"
+                onClick={showTagSubscriptions}
+              >
+                <Bell size={18} />
+                Tags
+              </button>
+              <button
+                className={classNames("menu-item", view === "illustrations" && sort === "bookmarks" && "is-active")}
+                type="button"
+                onClick={showBookmarks}
+              >
+                <Bookmark size={18} />
+                Bookmarks
+              </button>
+              <button
+                className={classNames("menu-item", view === "rankings" && "is-active")}
+                type="button"
+                onClick={showRankings}
+              >
+                <Trophy size={18} />
+                Rankings
+              </button>
+              <button
+                className={classNames("menu-item", view === "collectionDiscover" && "is-active")}
+                type="button"
+                onClick={showCollectionDiscover}
+              >
+                <FolderOpen size={18} />
+                Collections
+              </button>
+            </>
+          )}
           {currentUser ? (
             <>
               <button
@@ -3345,22 +3538,26 @@ function App() {
               Dashboard
             </button>
           ) : null}
-          <button
-            className={classNames("menu-item", view === "terms" && "is-active")}
-            type="button"
-            onClick={() => showPolicy("terms")}
-          >
-            <FileText size={18} />
-            Terms
-          </button>
-          <button
-            className={classNames("menu-item", view === "privacy" && "is-active")}
-            type="button"
-            onClick={() => showPolicy("privacy")}
-          >
-            <Shield size={18} />
-            Policy
-          </button>
+          {!isNovelSection ? (
+            <>
+              <button
+                className={classNames("menu-item", view === "terms" && "is-active")}
+                type="button"
+                onClick={() => showPolicy("terms")}
+              >
+                <FileText size={18} />
+                Terms
+              </button>
+              <button
+                className={classNames("menu-item", view === "privacy" && "is-active")}
+                type="button"
+                onClick={() => showPolicy("privacy")}
+              >
+                <Shield size={18} />
+                Policy
+              </button>
+            </>
+          ) : null}
         </aside>
 
         {view === "dashboard" ? (
@@ -3409,16 +3606,33 @@ function App() {
             onDeleteTagImplication={handleDeleteTagImplication}
           />
         ) : view === "novels" ? (
-          <NovelsPage
-            data={novelsData}
-            matureFilter={matureFilter}
-            query={query}
-            onMatureFilterChange={setMatureFilter}
-            onAuthRequired={() => openAuth("login")}
-            onOpenNovel={openNovel}
-            onOpenProfile={showProfile}
-            onPrivacySecurity={showPrivacySecurity}
-          />
+          routeNovelSection === "terms" ? (
+            <PolicyPage kind="terms" onOpenPrivacy={() => showNovels("privacy")} />
+          ) : routeNovelSection === "privacy" ? (
+            <PolicyPage kind="privacy" onOpenTerms={() => showNovels("terms")} />
+          ) : (
+            <NovelHubPage
+              section={routeNovelSection}
+              data={novelsData}
+              featuredNovel={featuredNovel}
+              novels={novels}
+              totalWords={totalNovelWords}
+              creators={novelCreators}
+              followedCreators={followedNovelCreators}
+              followedNovels={followedNovels}
+              rankingNovels={novelRankingItems}
+              bookmarkedNovels={bookmarkedNovels}
+              collections={novelCollections}
+              matureFilter={novelMatureFilter}
+              query={novelQuery}
+              onMatureFilterChange={setNovelMatureFilter}
+              onAuthRequired={() => openAuth("login")}
+              onOpenNovel={openNovel}
+              onOpenProfile={showProfile}
+              onPrivacySecurity={showPrivacySecurity}
+              onOpenSection={showNovels}
+            />
+          )
         ) : view === "novel" ? (
           <NovelDetailPage
             detail={novelDetail}
@@ -3574,7 +3788,7 @@ function App() {
           <EmailConfirmationPage
             currentUser={currentUser}
             onAuthRequired={() => openAuth("login")}
-            onHome={() => showHome("latest")}
+            onHome={() => showIllustrations("latest")}
             onOpenPrivacySecurity={showPrivacySecurity}
             onSessionRefresh={refreshAuthSession}
             siteKey={authConfig?.turnstileSiteKey ?? ""}
@@ -3589,7 +3803,7 @@ function App() {
             fallbackArtwork={artworkDetail.artwork}
             loading={detailLoading}
             presentation="page"
-            onClose={() => showHome("latest")}
+            onClose={() => showIllustrations("latest")}
             onLike={handleLike}
             onBookmark={handleBookmark}
             onDelete={handleDeleteArtwork}
@@ -3622,213 +3836,43 @@ function App() {
           <section className="content-main artwork-page-empty">
             <p className="empty-feed">{detailLoading ? "Loading artwork." : "Artwork could not be loaded."}</p>
           </section>
-        ) : (
-          <>
-            <section className="feed-main">
-              <MatureAccessNotice
-                matureAccess={gallery?.matureAccess ?? null}
-                onLogin={() => openAuth("login")}
-                onPrivacySecurity={showPrivacySecurity}
-              />
-              <div className="section-heading">
-                <div>
-                  <h1>{feedTitle}</h1>
-                  <p>{feedMeta}</p>
-                </div>
-                <div className="feed-controls">
-                  <label className="rating-filter">
-                    <Shield size={15} />
-                    <select
-                      value={matureFilter}
-                      onChange={(event) => setMatureFilter(event.target.value as MatureFilter)}
-                    >
-                      {matureFilterOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    className="filter-chip"
-                    type="button"
-                    onClick={() => {
-                      setActiveTag("");
-                      setQuery("");
-                      setMatureFilter("all");
-                    }}
-                  >
-                    {filterLabel}
-                    <ChevronDown size={15} />
-                  </button>
-                </div>
-              </div>
-
-              {showHomeSortTabs ? (
-                <div className="work-tabs" aria-label="Sort artwork">
-                  {homeSortOptions.map((option) => {
-                    const Icon = option.icon;
-                    return (
-                      <button
-                        key={option.value}
-                        className={classNames("work-tab", sort === option.value && "is-active")}
-                        type="button"
-                        onClick={() => setSort(option.value)}
-                      >
-                        <Icon size={16} />
-                        {option.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : null}
-
-              <div className="tag-row" aria-label="Popular tags">
-                {prominentTags.map((tag) => {
-                  const subscribed = subscribedTagSet.has(tag.name.toLowerCase());
-                  return (
-                    <span className="tag-control" key={tag.name}>
-                      <button
-                        className="tag-pill"
-                        type="button"
-                        onClick={() => showTag(tag.name)}
-                      >
-                        #{tag.name}
-                        <span>{tag.count}</span>
-                      </button>
-                      <button
-                        className={classNames("tag-follow-button", subscribed && "is-active")}
-                        type="button"
-                        aria-label={`${subscribed ? "Unfollow" : "Follow"} #${tag.name}`}
-                        onClick={() => handleToggleTagSubscription(tag.name)}
-                      >
-                        <Bell size={13} />
-                      </button>
-                    </span>
-                  );
-                })}
-              </div>
-
-              <div className="art-grid" aria-live="polite">
-                {artworks.map((artwork, index) => (
-                  <ArtworkCard
-                    key={artwork.id}
-                    artwork={artwork}
-                    index={index}
-                    onSelect={openArtwork}
-                    onOpenPage={openArtworkPage}
-                    onBookmark={handleBookmark}
-                    onOpenProfile={showProfile}
-                  />
-                ))}
-              </div>
-              {gallery?.nextCursor ? (
-                <div className="load-more-row">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={handleLoadMoreGallery}
-                    disabled={galleryLoadingMore}
-                  >
-                    {galleryLoadingMore ? "Loading" : "Load more"}
-                    <span>
-                      {formatCount(artworks.length)} / {formatCount(gallery.totalCount)}
-                    </span>
-                  </button>
-                </div>
-              ) : null}
-              {artworks.length === 0 ? (
-                <p className="empty-feed">
-                  {isBookmarksView
-                    ? "Bookmarked works will appear here after you save them."
-                    : "No artwork matches this view yet."}
-                </p>
-              ) : null}
-            </section>
-
-            <aside className="right-rail" aria-label="Recommendations">
-              <section className="side-panel ranking-panel">
-                <div className="panel-title ranking-title">
-                  <span>
-                    <Trophy size={18} />
-                    Ranking
-                  </span>
-                  <div className="mini-segmented" aria-label="Ranking period">
-                    {(["daily", "weekly"] as RankingPeriod[]).map((period) => (
-                      <button
-                        className={classNames(rankingPeriod === period && "is-active")}
-                        key={period}
-                        type="button"
-                        onClick={() => setRankingPeriod(period)}
-                      >
-                        {period === "daily" ? "Day" : "Week"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {rankingItems.slice(0, 5).map(({ artwork, score }, index) => (
-                  <button
-                    className="ranking-row"
-                    key={artwork.id}
-                    type="button"
-                    onClick={() => openArtwork(artwork)}
-                  >
-                    <span className="rank-number">{index + 1}</span>
-                    <img
-                      src={artwork.thumbnailUrl}
-                      alt=""
-                      loading="lazy"
-                      decoding="async"
-                    />
-                    <span>
-                      <strong>{artwork.title}</strong>
-                      <small>
-                        {formatCount(score || artwork.likeCount)} recent likes
-                      </small>
-                    </span>
-                  </button>
-                ))}
-                {rankingItems.length === 0 ? (
-                  <p className="muted">No ranked works yet.</p>
-                ) : null}
-              </section>
-
-              <ActivityPanel
-                data={activityData}
-                onOpenArtwork={openArtwork}
-                onOpenProfile={showProfile}
-              />
-
-              <section className="side-panel creator-panel">
-                <div className="panel-title">
-                  <ShieldCheck size={18} />
-                  Recommended users
-                </div>
-                {(gallery?.creators ?? []).slice(0, 5).map((creator) => (
-                  <button
-                    className="creator-row creator-row-link"
-                    key={creator.id}
-                    type="button"
-                    onClick={() => showProfile(creator.handle)}
-                  >
-                    {creator.avatarUrl ? (
-                      <img src={creator.avatarUrl} alt="" />
-                    ) : (
-                      <DefaultAvatar className="creator-row-avatar-fallback" name={creator.displayName} />
-                    )}
-                    <div>
-                      <strong>{creator.displayName}</strong>
-                      <span>@{creator.handle}</span>
-                    </div>
-                    <span className="icon-button creator-row-icon" aria-label={`Open ${creator.displayName}`}>
-                      <UserPlus size={15} />
-                    </span>
-                  </button>
-                ))}
-              </section>
-            </aside>
-          </>
-        )}
+        ) : view === "illustrations" ? (
+          <IllustrationsPage
+            gallery={gallery}
+            activityData={activityData}
+            artworks={artworks}
+            creators={gallery?.creators ?? []}
+            prominentTags={prominentTags}
+            subscribedTagSet={subscribedTagSet}
+            rankingItems={rankingItems}
+            rankingPeriod={rankingPeriod}
+            matureFilter={illustrationMatureFilter}
+            feedTitle={feedTitle}
+            feedMeta={feedMeta}
+            filterLabel={filterLabel}
+            showSortTabs={showHomeSortTabs}
+            sort={sort}
+            galleryLoadingMore={galleryLoadingMore}
+            isBookmarksView={isBookmarksView}
+            onAuthRequired={() => openAuth("login")}
+            onPrivacySecurity={showPrivacySecurity}
+            onMatureFilterChange={setIllustrationMatureFilter}
+            onResetFilters={() => {
+              setActiveTag("");
+              setIllustrationQuery("");
+              setIllustrationMatureFilter("all");
+            }}
+            onSortChange={setSort}
+            onOpenTag={showTag}
+            onToggleTagSubscription={handleToggleTagSubscription}
+            onOpenArtwork={openArtwork}
+            onOpenArtworkPage={openArtworkPage}
+            onBookmark={handleBookmark}
+            onOpenProfile={showProfile}
+            onLoadMore={handleLoadMoreGallery}
+            onRankingPeriodChange={setRankingPeriod}
+          />
+        ) : null}
       </div>
 
       {selectedArtwork ? (
@@ -10929,8 +10973,18 @@ function MetricTile({ label, value }: MetricTileProps) {
   );
 }
 
-type NovelsPageProps = {
+type NovelHubPageProps = {
+  section: NovelSection;
   data: NovelListResponse | null;
+  featuredNovel: Novel | null;
+  novels: Novel[];
+  totalWords: number;
+  creators: Creator[];
+  followedCreators: Creator[];
+  followedNovels: Novel[];
+  rankingNovels: Novel[];
+  bookmarkedNovels: Novel[];
+  collections: Array<{ id: string; title: string; detail: string }>;
   matureFilter: MatureFilter;
   query: string;
   onMatureFilterChange: (filter: MatureFilter) => void;
@@ -10938,21 +10992,75 @@ type NovelsPageProps = {
   onOpenNovel: (novelId: string) => void;
   onOpenProfile: (username: string) => void;
   onPrivacySecurity: () => void;
+  onOpenSection: (section: NovelSection) => void;
 };
 
-function NovelsPage({
+function NovelHubPage({
+  section,
   data,
+  featuredNovel,
+  novels,
+  totalWords,
+  creators,
+  followedCreators,
+  followedNovels,
+  rankingNovels,
+  bookmarkedNovels,
+  collections,
   matureFilter,
   query,
   onMatureFilterChange,
   onAuthRequired,
   onOpenNovel,
   onOpenProfile,
-  onPrivacySecurity
-}: NovelsPageProps) {
-  const novels = data?.novels ?? [];
-  const featuredNovel = data?.featuredNovel ?? novels[0] ?? null;
-  const totalWords = novels.reduce((sum, novel) => sum + novel.wordCount, 0);
+  onPrivacySecurity,
+  onOpenSection
+}: NovelHubPageProps) {
+  const sectionTitleMap: Record<NovelSection, string> = {
+    home: "Latest creator fiction",
+    following: "Following novels",
+    creators: "Novel creators",
+    tags: "Story tags",
+    novels: "All novels",
+    rankings: "Novel rankings",
+    bookmarks: "Bookmarked novels",
+    collections: "Novel collections",
+    terms: "Novel terms",
+    privacy: "Novel privacy"
+  };
+  const sectionDescriptionMap: Record<NovelSection, string> = {
+    home: "Short stories, serial chapters, and luminous fragments from NEHub creators.",
+    following: "Stories from creators you already follow.",
+    creators: "Authors publishing fiction across NEHub.",
+    tags: "Browse the labels shaping the current fiction feed.",
+    novels: "The complete readable shelf currently loaded from NEHub.",
+    rankings: "A quick ranking view built from the current novels feed.",
+    bookmarks: "Saved fiction will appear here once novel bookmarks are supported.",
+    collections: "Grouped fiction will appear here once novel collections are supported.",
+    terms: "Read the terms without leaving the novels section.",
+    privacy: "Read the privacy policy without leaving the novels section."
+  };
+  const listTitleMap: Record<NovelSection, string> = {
+    home: query.trim() ? "Novel search results" : "Latest novels",
+    following: "Following",
+    creators: "Creators publishing novels",
+    tags: "Popular story tags",
+    novels: "All novels",
+    rankings: "Ranked novels",
+    bookmarks: "Bookmarked novels",
+    collections: "Novel collections",
+    terms: "Terms",
+    privacy: "Privacy"
+  };
+  const sectionNovels =
+    section === "following"
+      ? followedNovels
+      : section === "rankings"
+        ? rankingNovels
+        : section === "bookmarks"
+          ? bookmarkedNovels
+          : novels;
+  const heroFeaturedNovel = section === "home" || section === "novels" ? featuredNovel : sectionNovels[0] ?? null;
 
   return (
     <section className="content-main novels-page">
@@ -10960,10 +11068,8 @@ function NovelsPage({
       <div className="novels-hero">
         <div className="novels-hero-copy">
           <p className="eyebrow">NEHub novels</p>
-          <h1>Latest creator fiction</h1>
-          <p>
-            Short stories, serial chapters, and luminous fragments from NEHub creators.
-          </p>
+          <h1>{sectionTitleMap[section]}</h1>
+          <p>{sectionDescriptionMap[section]}</p>
           <div className="novels-hero-stats" aria-label="Novel stats">
             <span>
               <strong>{formatCount(data?.totalCount ?? novels.length)}</strong>
@@ -10974,23 +11080,23 @@ function NovelsPage({
               words
             </span>
             <span>
-              <strong>{formatCount(data?.tags.length ?? 0)}</strong>
-              tags
+              <strong>{formatCount(section === "creators" ? creators.length : data?.tags.length ?? 0)}</strong>
+              {section === "creators" ? "creators" : "tags"}
             </span>
           </div>
         </div>
-        {featuredNovel ? (
+        {heroFeaturedNovel ? (
           <button
             className="featured-novel"
             type="button"
-            onClick={() => onOpenNovel(featuredNovel.id)}
-            style={{ "--novel-cover": featuredNovel.coverColor } as CSSProperties}
+            onClick={() => onOpenNovel(heroFeaturedNovel.id)}
+            style={{ "--novel-cover": heroFeaturedNovel.coverColor } as CSSProperties}
           >
             <span className="novel-cover-mark">N</span>
             <span>
               <small>Featured</small>
-              <strong>{featuredNovel.title}</strong>
-              <em>{featuredNovel.excerpt}</em>
+              <strong>{heroFeaturedNovel.title}</strong>
+              <em>{heroFeaturedNovel.excerpt}</em>
             </span>
           </button>
         ) : null}
@@ -10998,56 +11104,114 @@ function NovelsPage({
 
       <div className="novels-toolbar">
         <div>
-          <h2>{query.trim() ? "Novel search results" : "Latest novels"}</h2>
+          <h2>{listTitleMap[section]}</h2>
           <p>
-            {data
-              ? `${formatCount(novels.length)} readable ${novels.length === 1 ? "story" : "stories"}`
-              : "Loading novels."}
+            {section === "following"
+              ? `${formatCount(followedCreators.length)} followed ${followedCreators.length === 1 ? "creator" : "creators"}`
+              : section === "creators"
+                ? `${formatCount(creators.length)} active ${creators.length === 1 ? "author" : "authors"}`
+                : section === "tags"
+                  ? `${formatCount(data?.tags.length ?? 0)} story tags`
+                  : section === "collections"
+                    ? `${formatCount(collections.length)} novel ${collections.length === 1 ? "collection" : "collections"}`
+                    : data
+                      ? `${formatCount(sectionNovels.length)} readable ${sectionNovels.length === 1 ? "story" : "stories"}`
+                      : "Loading novels."}
           </p>
         </div>
-        <label className="rating-filter novel-rating-filter">
-          <Shield size={15} />
-          <select
-            value={matureFilter}
-            onChange={(event) => onMatureFilterChange(event.target.value as MatureFilter)}
-          >
-            {matureFilterOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {section !== "creators" && section !== "tags" && section !== "collections" ? (
+          <label className="rating-filter novel-rating-filter">
+            <Shield size={15} />
+            <select
+              value={matureFilter}
+              onChange={(event) => onMatureFilterChange(event.target.value as MatureFilter)}
+            >
+              {matureFilterOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
       </div>
 
-      {data?.tags.length ? (
+      {section === "tags" && data?.tags.length ? (
         <div className="tag-row novel-tag-row" aria-label="Novel tags">
           {data.tags.slice(0, 10).map((tag) => (
-            <span className="tag-pill novel-tag-pill" key={tag.name}>
+            <button className="tag-pill novel-tag-pill" key={tag.name} type="button" onClick={() => onOpenSection("novels")}>
               #{tag.name}
               <span>{tag.count}</span>
-            </span>
+            </button>
           ))}
         </div>
       ) : null}
 
-      <div className="novel-grid" aria-live="polite">
-        {novels.map((novel, index) => (
-          <NovelCard
-            key={novel.id}
-            novel={novel}
-            index={index}
-            onOpenNovel={onOpenNovel}
-            onOpenProfile={onOpenProfile}
-          />
-        ))}
-      </div>
+      {section === "creators" ? (
+        <div className="novel-grid" aria-live="polite">
+          {creators.map((creator, index) => (
+            <article className="novel-card" key={creator.id} style={{ animationDelay: `${Math.min(index * 36, 260)}ms` } as CSSProperties}>
+              <button className="novel-card-main" type="button" onClick={() => onOpenProfile(creator.handle)}>
+                <span className="novel-spine" aria-hidden="true" />
+                <span className="novel-card-content">
+                  <small>@{creator.handle}</small>
+                  <strong>{creator.displayName}</strong>
+                  <em>{creator.bio || "Creator publishing fiction on NEHub."}</em>
+                </span>
+              </button>
+              <div className="novel-card-footer">
+                <span>{formatCount(creator.followerCount)} followers</span>
+                <span>{creator.following ? "Following" : "Discover"}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : section === "collections" ? (
+        <div className="novel-grid" aria-live="polite">
+          {collections.map((collection, index) => (
+            <article className="novel-card" key={collection.id} style={{ animationDelay: `${Math.min(index * 36, 260)}ms` } as CSSProperties}>
+              <div className="novel-card-main">
+                <span className="novel-spine" aria-hidden="true" />
+                <span className="novel-card-content">
+                  <small>{collection.id}</small>
+                  <strong>{collection.title}</strong>
+                  <em>{collection.detail}</em>
+                </span>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="novel-grid" aria-live="polite">
+          {sectionNovels.map((novel, index) => (
+            <NovelCard
+              key={novel.id}
+              novel={novel}
+              index={index}
+              onOpenNovel={onOpenNovel}
+              onOpenProfile={onOpenProfile}
+            />
+          ))}
+        </div>
+      )}
 
       {!data ? <p className="empty-feed">Loading novels.</p> : null}
-      {data && novels.length === 0 ? (
-        <p className="empty-feed">No novels match this view yet.</p>
+      {data && section === "creators" && creators.length === 0 ? (
+        <p className="empty-feed">No novel creators match this view yet.</p>
       ) : null}
-
+      {data && section === "tags" && (data.tags?.length ?? 0) === 0 ? (
+        <p className="empty-feed">No story tags match this view yet.</p>
+      ) : null}
+      {data && section === "collections" && collections.length === 0 ? (
+        <p className="empty-feed">Novel collections are not supported yet.</p>
+      ) : null}
+      {data && !["creators", "tags", "collections"].includes(section) && sectionNovels.length === 0 ? (
+        <p className="empty-feed">
+          {section === "bookmarks"
+            ? "Novel bookmarks are not supported yet."
+            : "No novels match this view yet."}
+        </p>
+      ) : null}
     </section>
   );
 }
@@ -11220,6 +11384,260 @@ function NovelDetailPage({
         </aside>
       </div>
     </article>
+  );
+}
+
+type IllustrationsPageProps = {
+  gallery: GalleryResponse | null;
+  activityData: ActivityResponse | null;
+  artworks: Artwork[];
+  creators: Creator[];
+  prominentTags: GalleryResponse["tags"];
+  subscribedTagSet: Set<string>;
+  rankingItems: RankingResponse["rankings"];
+  rankingPeriod: RankingPeriod;
+  matureFilter: MatureFilter;
+  feedTitle: string;
+  feedMeta: string;
+  filterLabel: string;
+  showSortTabs: boolean;
+  sort: SortMode;
+  galleryLoadingMore: boolean;
+  isBookmarksView: boolean;
+  onAuthRequired: () => void;
+  onPrivacySecurity: () => void;
+  onMatureFilterChange: (filter: MatureFilter) => void;
+  onResetFilters: () => void;
+  onSortChange: (sort: SortMode) => void;
+  onOpenTag: (tag: string) => void;
+  onToggleTagSubscription: (tag: string) => void;
+  onOpenArtwork: (artwork: Artwork) => void;
+  onOpenArtworkPage: (artwork: Artwork) => void;
+  onBookmark: (artwork: Artwork, visibility?: BookmarkVisibility) => void;
+  onOpenProfile: (username: string) => void;
+  onLoadMore: () => void;
+  onRankingPeriodChange: (period: RankingPeriod) => void;
+};
+
+function IllustrationsPage({
+  gallery,
+  activityData,
+  artworks,
+  creators,
+  prominentTags,
+  subscribedTagSet,
+  rankingItems,
+  rankingPeriod,
+  matureFilter,
+  feedTitle,
+  feedMeta,
+  filterLabel,
+  showSortTabs,
+  sort,
+  galleryLoadingMore,
+  isBookmarksView,
+  onAuthRequired,
+  onPrivacySecurity,
+  onMatureFilterChange,
+  onResetFilters,
+  onSortChange,
+  onOpenTag,
+  onToggleTagSubscription,
+  onOpenArtwork,
+  onOpenArtworkPage,
+  onBookmark,
+  onOpenProfile,
+  onLoadMore,
+  onRankingPeriodChange
+}: IllustrationsPageProps) {
+  return (
+    <>
+      <section className="feed-main">
+        <MatureAccessNotice
+          matureAccess={gallery?.matureAccess ?? null}
+          onLogin={onAuthRequired}
+          onPrivacySecurity={onPrivacySecurity}
+        />
+        <div className="section-heading">
+          <div>
+            <h1>{feedTitle}</h1>
+            <p>{feedMeta}</p>
+          </div>
+          <div className="feed-controls">
+            <label className="rating-filter">
+              <Shield size={15} />
+              <select
+                value={matureFilter}
+                onChange={(event) => onMatureFilterChange(event.target.value as MatureFilter)}
+              >
+                {matureFilterOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="filter-chip" type="button" onClick={onResetFilters}>
+              {filterLabel}
+              <ChevronDown size={15} />
+            </button>
+          </div>
+        </div>
+
+        {showSortTabs ? (
+          <div className="work-tabs" aria-label="Sort artwork">
+            {homeSortOptions.map((option) => {
+              const Icon = option.icon;
+              return (
+                <button
+                  key={option.value}
+                  className={classNames("work-tab", sort === option.value && "is-active")}
+                  type="button"
+                  onClick={() => onSortChange(option.value)}
+                >
+                  <Icon size={16} />
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        <div className="tag-row" aria-label="Popular tags">
+          {prominentTags.map((tag) => {
+            const subscribed = subscribedTagSet.has(tag.name.toLowerCase());
+            return (
+              <span className="tag-control" key={tag.name}>
+                <button className="tag-pill" type="button" onClick={() => onOpenTag(tag.name)}>
+                  #{tag.name}
+                  <span>{tag.count}</span>
+                </button>
+                <button
+                  className={classNames("tag-follow-button", subscribed && "is-active")}
+                  type="button"
+                  aria-label={`${subscribed ? "Unfollow" : "Follow"} #${tag.name}`}
+                  onClick={() => onToggleTagSubscription(tag.name)}
+                >
+                  <Bell size={13} />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+
+        <div className="art-grid" aria-live="polite">
+          {artworks.map((artwork, index) => (
+            <ArtworkCard
+              key={artwork.id}
+              artwork={artwork}
+              index={index}
+              onSelect={onOpenArtwork}
+              onOpenPage={onOpenArtworkPage}
+              onBookmark={onBookmark}
+              onOpenProfile={onOpenProfile}
+            />
+          ))}
+        </div>
+        {gallery?.nextCursor ? (
+          <div className="load-more-row">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={onLoadMore}
+              disabled={galleryLoadingMore}
+            >
+              {galleryLoadingMore ? "Loading" : "Load more"}
+              <span>
+                {formatCount(artworks.length)} / {formatCount(gallery.totalCount)}
+              </span>
+            </button>
+          </div>
+        ) : null}
+        {artworks.length === 0 ? (
+          <p className="empty-feed">
+            {isBookmarksView
+              ? "Bookmarked works will appear here after you save them."
+              : "No artwork matches this view yet."}
+          </p>
+        ) : null}
+      </section>
+
+      <aside className="right-rail" aria-label="Recommendations">
+        <section className="side-panel ranking-panel">
+          <div className="panel-title ranking-title">
+            <span>
+              <Trophy size={18} />
+              Ranking
+            </span>
+            <div className="mini-segmented" aria-label="Ranking period">
+              {(["daily", "weekly"] as RankingPeriod[]).map((period) => (
+                <button
+                  className={classNames(rankingPeriod === period && "is-active")}
+                  key={period}
+                  type="button"
+                  onClick={() => onRankingPeriodChange(period)}
+                >
+                  {period === "daily" ? "Day" : "Week"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {rankingItems.slice(0, 5).map(({ artwork, score }, index) => (
+            <button
+              className="ranking-row"
+              key={artwork.id}
+              type="button"
+              onClick={() => onOpenArtwork(artwork)}
+            >
+              <span className="rank-number">{index + 1}</span>
+              <img src={artwork.thumbnailUrl} alt="" loading="lazy" decoding="async" />
+              <span>
+                <strong>{artwork.title}</strong>
+                <small>{formatCount(score || artwork.likeCount)} recent likes</small>
+              </span>
+            </button>
+          ))}
+          {rankingItems.length === 0 ? <p className="muted">No ranked works yet.</p> : null}
+        </section>
+
+        <ActivityPanel
+          data={activityData}
+          onOpenArtwork={onOpenArtwork}
+          onOpenProfile={onOpenProfile}
+        />
+
+        <section className="side-panel creator-panel">
+          <div className="panel-title">
+            <ShieldCheck size={18} />
+            Recommended users
+          </div>
+          {creators.slice(0, 5).map((creator) => (
+            <button
+              className="creator-row creator-row-link"
+              key={creator.id}
+              type="button"
+              onClick={() => onOpenProfile(creator.handle)}
+            >
+              {creator.avatarUrl ? (
+                <img src={creator.avatarUrl} alt="" />
+              ) : (
+                <DefaultAvatar
+                  className="creator-row-avatar-fallback"
+                  name={creator.displayName}
+                />
+              )}
+              <div>
+                <strong>{creator.displayName}</strong>
+                <span>@{creator.handle}</span>
+              </div>
+              <span className="icon-button creator-row-icon" aria-label={`Open ${creator.displayName}`}>
+                <UserPlus size={15} />
+              </span>
+            </button>
+          ))}
+        </section>
+      </aside>
+    </>
   );
 }
 

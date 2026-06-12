@@ -15292,6 +15292,78 @@ app.get("/novels", async (context) => {
   return indexHtmlResponse(context, html);
 });
 
+app.get("/novels/home", async (context) => {
+  const { assetResponse, html } = await indexHtml(context);
+  if (!assetResponse.ok) {
+    return assetResponse;
+  }
+  return indexHtmlResponse(context, html);
+});
+
+app.get("/novels/following", async (context) => {
+  const { assetResponse, html } = await indexHtml(context);
+  if (!assetResponse.ok) {
+    return assetResponse;
+  }
+  return indexHtmlResponse(context, html);
+});
+
+app.get("/novels/creators", async (context) => {
+  const { assetResponse, html } = await indexHtml(context);
+  if (!assetResponse.ok) {
+    return assetResponse;
+  }
+  return indexHtmlResponse(context, html);
+});
+
+app.get("/novels/tags", async (context) => {
+  const { assetResponse, html } = await indexHtml(context);
+  if (!assetResponse.ok) {
+    return assetResponse;
+  }
+  return indexHtmlResponse(context, html);
+});
+
+app.get("/novels/rankings", async (context) => {
+  const { assetResponse, html } = await indexHtml(context);
+  if (!assetResponse.ok) {
+    return assetResponse;
+  }
+  return indexHtmlResponse(context, html);
+});
+
+app.get("/novels/bookmarks", async (context) => {
+  const { assetResponse, html } = await indexHtml(context);
+  if (!assetResponse.ok) {
+    return assetResponse;
+  }
+  return indexHtmlResponse(context, html);
+});
+
+app.get("/novels/collections", async (context) => {
+  const { assetResponse, html } = await indexHtml(context);
+  if (!assetResponse.ok) {
+    return assetResponse;
+  }
+  return indexHtmlResponse(context, html);
+});
+
+app.get("/novels/terms", async (context) => {
+  const { assetResponse, html } = await indexHtml(context);
+  if (!assetResponse.ok) {
+    return assetResponse;
+  }
+  return indexHtmlResponse(context, html);
+});
+
+app.get("/novels/privacy", async (context) => {
+  const { assetResponse, html } = await indexHtml(context);
+  if (!assetResponse.ok) {
+    return assetResponse;
+  }
+  return indexHtmlResponse(context, html);
+});
+
 app.get("/novels/:id", async (context) => {
   const { assetResponse, html: originalHtml } = await indexHtml(context);
   if (!assetResponse.ok) {
