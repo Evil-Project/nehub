@@ -1412,6 +1412,7 @@ function App() {
   const hasAccountNotice =
     view !== "emailConfirmation" &&
     Boolean(accountNotice || (currentUser && !currentUser.emailVerified));
+  const isNovelSection = view === "novels" || view === "novel";
 
   const pushRoute = (
     path: string,
@@ -3199,7 +3200,7 @@ function App() {
         </div>
       ) : null}
 
-      <div className="page-frame">
+      <div className={classNames("page-frame", isNovelSection && "is-novel-section")}>
         <aside className="left-menu" aria-label="Main sections">
           <button
             className={classNames("menu-item", view === "home" && sort === "latest" && "is-active")}
@@ -3232,6 +3233,14 @@ function App() {
           >
             <Bell size={18} />
             Tags
+          </button>
+          <button
+            className={classNames("menu-item", isNovelSection && "is-active")}
+            type="button"
+            onClick={showNovels}
+          >
+            <NotebookText size={18} />
+            Novels
           </button>
           <button
             className={classNames("menu-item", view === "rankings" && "is-active")}
@@ -10943,7 +10952,6 @@ function NovelsPage({
 }: NovelsPageProps) {
   const novels = data?.novels ?? [];
   const featuredNovel = data?.featuredNovel ?? novels[0] ?? null;
-  const sideNovels = novels.filter((novel) => novel.id !== featuredNovel?.id).slice(0, 4);
   const totalWords = novels.reduce((sum, novel) => sum + novel.wordCount, 0);
 
   return (
@@ -11040,26 +11048,6 @@ function NovelsPage({
         <p className="empty-feed">No novels match this view yet.</p>
       ) : null}
 
-      {sideNovels.length ? (
-        <aside className="novel-inline-rail" aria-label="More novels">
-          <div className="panel-title">
-            <NotebookText size={18} />
-            Continue reading
-          </div>
-          {sideNovels.map((novel) => (
-            <button
-              className="novel-mini-row"
-              key={novel.id}
-              type="button"
-              onClick={() => onOpenNovel(novel.id)}
-            >
-              <span style={{ background: novel.coverColor }} />
-              <strong>{novel.title}</strong>
-              <small>{novel.readMinutes} min</small>
-            </button>
-          ))}
-        </aside>
-      ) : null}
     </section>
   );
 }

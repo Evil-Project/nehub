@@ -3067,95 +3067,7 @@ const artworkFromRow = (row: ArtworkRow, env?: Partial<ArtworkMediaEnv>): Artwor
   }
 });
 
-const fallbackNovelCreators: Creator[] = [
-  {
-    id: "usr_default_admin",
-    handle: "admin",
-    displayName: "NEHub Editorial",
-    avatarUrl: "",
-    bio: "Curated platform writing and release notes.",
-    followerCount: 0,
-    following: false
-  },
-  {
-    id: "usr_mika",
-    handle: "mika",
-    displayName: "Mika",
-    avatarUrl: "",
-    bio: "Writes small luminous city fragments.",
-    followerCount: 128,
-    following: false
-  },
-  {
-    id: "usr_sora",
-    handle: "sora",
-    displayName: "Sora",
-    avatarUrl: "",
-    bio: "Serial fiction, soft science, and train stations.",
-    followerCount: 94,
-    following: false
-  }
-];
-
-const fallbackNovels: Novel[] = [
-  {
-    id: "nov_neon_platform",
-    title: "Neon Platform at 5:17",
-    excerpt:
-      "A night train waits under a sky full of maintenance drones, and Yui is carrying the only ticket that can wake the terminal city.",
-    body:
-      "The platform clock had stopped at 5:17, but every vending machine still hummed like morning was negotiable.\n\nYui kept the paper ticket folded inside her glove. It was warm despite the cold, inked with a destination that did not exist on any public route map. When the last train rolled in without a driver, the doors opened only wide enough for one person and a spill of blue light.\n\nShe looked back once at the sleeping terminal city. Every tower window blinked in sequence, an old signal from an old promise. Then she stepped across the threshold and heard the announcement say her name.",
-    coverColor: "#00dfee",
-    creator: fallbackNovelCreators[1],
-    tags: ["sci-fi", "train", "city"],
-    wordCount: 111,
-    readMinutes: 1,
-    likeCount: 420,
-    viewCount: 3200,
-    createdAt: "2026-05-18T09:00:00.000Z",
-    mature: false,
-    matureRating: "general",
-    visibility: "public"
-  },
-  {
-    id: "nov_glass_courtyard",
-    title: "Glass Courtyard Letters",
-    excerpt:
-      "Two artists share a studio wall, trading unsigned notes through cracks in the plaster until the building decides to answer.",
-    body:
-      "The first letter was no bigger than a paint chip. It fell from the wall on a Tuesday and landed in Ren's water cup with a sound like a tiny bell.\n\nDo you hear the courtyard breathing? it asked.\n\nRen blamed the old pipes until a second note arrived with a pressed violet and a map of shadows that matched the studio at sunset. Across the wall, someone laughed softly, not at him but with the same surprise. By winter, the wall had become a mailbox, a calendar, and eventually a door.",
-    coverColor: "#fa9ebc",
-    creator: fallbackNovelCreators[2],
-    tags: ["romance", "studio", "letters"],
-    wordCount: 101,
-    readMinutes: 1,
-    likeCount: 310,
-    viewCount: 2400,
-    createdAt: "2026-05-10T14:30:00.000Z",
-    mature: false,
-    matureRating: "general",
-    visibility: "public"
-  },
-  {
-    id: "nov_static_halo",
-    title: "Static Halo",
-    excerpt:
-      "A broadcast archivist finds a voice hidden between dead channels and follows it into a memory that should have expired.",
-    body:
-      "Every forbidden broadcast began with static, but this one began with rain.\n\nNoa isolated the frequency after midnight, working by the archive room's amber lamp. A voice counted backward from thirteen. Behind it, someone was playing a piano with three missing keys. The metadata said the file had been deleted nine years before she was born.\n\nWhen the voice reached one, the monitor reflected a hallway instead of her face. At the far end stood a child holding a recorder, waiting for Noa to press play.",
-    coverColor: "#b57edc",
-    creator: fallbackNovelCreators[0],
-    tags: ["mystery", "archive", "signal"],
-    wordCount: 100,
-    readMinutes: 1,
-    likeCount: 260,
-    viewCount: 1900,
-    createdAt: "2026-04-28T11:15:00.000Z",
-    mature: false,
-    matureRating: "general",
-    visibility: "public"
-  }
-];
+const fallbackNovels: Novel[] = [];
 
 const excerptFromBody = (body: string) => {
   const normalized = body.replace(/\s+/g, " ").trim();
@@ -13083,16 +12995,14 @@ app.get("/api/novels", async (context) => {
         rating,
         limit
       );
-      if (novels.length > 0 || search.trim() || tag.trim()) {
-        return context.json<NovelListResponse>({
-          novels,
-          featuredNovel: novels[0] ?? null,
-          tags: novelTagCounts(novels),
-          totalCount: novels.length,
-          source: "d1",
-          matureAccess
-        });
-      }
+      return context.json<NovelListResponse>({
+        novels,
+        featuredNovel: novels[0] ?? null,
+        tags: novelTagCounts(novels),
+        totalCount: novels.length,
+        source: "d1",
+        matureAccess
+      });
     } catch (error) {
       if (!isMissingTableError(error, ["novels"])) {
         console.warn("Unable to read novels from D1", error);
