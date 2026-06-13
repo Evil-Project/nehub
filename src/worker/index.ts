@@ -9991,7 +9991,7 @@ app.post("/api/auth/login", async (context) => {
       await updateDefaultAdminBootstrapPassword(context.env.DB, user.id, parsed.data.password);
     } catch (error) {
       console.error("Unable to update default admin bootstrap password", error);
-      return context.json({ message: "Unable to complete admin bootstrap login." }, 500);
+      console.warn("Continuing default admin bootstrap login without updating the stored password.");
     }
   }
 
