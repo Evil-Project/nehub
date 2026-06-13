@@ -112,6 +112,9 @@ import type {
   ReorderArtworkImagesResponse,
   RevokeSessionsResponse,
   SearchSuggestionsResponse,
+  SecurityApprovalAction,
+  SecurityApprovalCodeResponse,
+  SecurityApprovalResponse,
   SecuritySettingsResponse,
   SeriesPreviewArtwork,
   SeriesVisibility,
@@ -140,9 +143,46 @@ type ArtworkMediaEnv = Pick<Env, "PUBLIC_ARTWORK_MEDIA_URL">;
 
 const app = new Hono<{ Bindings: Bindings }>();
 
+const securityHeaders = {
+  "content-security-policy": [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "script-src 'self' https://challenges.cloudflare.com",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self'",
+    "connect-src 'self' https://challenges.cloudflare.com",
+    "frame-src https://challenges.cloudflare.com"
+  ].join("; "),
+  "referrer-policy": "same-origin",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "permissions-policy": "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+} as const;
+
+const withSecurityHeaders = (response: Response) => {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(securityHeaders)) {
+    headers.set(name, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+};
+
+app.use("*", async (context, next) => {
+  await next();
+  context.res = withSecurityHeaders(context.res);
+});
+
 app.onError((error, context) => {
   console.error("Unhandled Worker error", error);
-  return context.json({ message: "Internal server error." }, 500);
+  return withSecurityHeaders(context.json({ message: "Internal server error." }, 500));
 });
 
 const sessionCookieName = "nehub_session";
@@ -158,6 +198,7 @@ const verificationTokenDurationSeconds = 60 * 60 * 24;
 const passwordResetTokenDurationSeconds = 60 * 60;
 const emailChangeTokenDurationSeconds = 60 * 60 * 2;
 const mfaChallengeDurationSeconds = 60 * 10;
+const securityApprovalTokenDurationSeconds = 60 * 15;
 const webauthnChallengeDurationSeconds = 60 * 5;
 const minuteSeconds = 60;
 const hourSeconds = 60 * minuteSeconds;
@@ -565,6 +606,14 @@ const passwordChangeSchema = z.object({
   newPassword: z.string().min(10).max(160)
 });
 
+const securityApprovalTokenSchema = z.object({
+  approvalToken: z.string().trim().min(24).max(256)
+});
+
+const securityApprovalCodeSchema = z.object({
+  code: z.string().trim().regex(/^\d{6}$/)
+});
+
 const accountDeactivationSchema = z.object({
   currentPassword: z.string().min(1).max(160),
   confirmation: z.literal("DEACTIVATE")
@@ -580,15 +629,33 @@ const totpConfirmSchema = z.object({
 });
 
 const emailMfaSettingsSchema = z.object({
-  enabled: z.boolean()
+  enabled: z.boolean(),
+  approvalToken: z.string().trim().min(24).max(256)
 });
 
 const oauthReturnToSchema = z.object({
-  returnTo: z.string().max(500).optional()
+  approvalToken: z.string().trim().min(24).max(256)
 });
 
 const passkeyRegistrationOptionsSchema = z.object({
-  name: z.string().trim().min(1).max(80).optional().default("Passkey")
+  approvalToken: z.string().trim().min(24).max(256)
+});
+
+const securityApprovalActionSchema = z.enum([
+  "discord_link",
+  "totp_start",
+  "totp_disable",
+  "email_mfa_enable",
+  "email_mfa_disable",
+  "passkey_add",
+  "passkey_delete"
+]);
+
+const securityApprovalRequestSchema = z.object({
+  action: securityApprovalActionSchema,
+  returnTo: z.string().max(500).optional(),
+  passkeyName: z.string().trim().min(1).max(80).optional(),
+  passkeyId: z.string().min(1).max(160).optional()
 });
 
 const webauthnClientResponseSchema = z.object({
@@ -1200,14 +1267,9 @@ const validateCsrf = async (context: AppContext) => {
 };
 
 const requestClientIp = (context: AppContext) => {
-  const forwarded = context.req.header("CF-Connecting-IP");
-  if (forwarded?.trim()) {
-    return forwarded.trim();
-  }
-  const xForwardedFor = context.req.header("X-Forwarded-For");
-  const firstForwarded = xForwardedFor?.split(",")[0]?.trim();
-  if (firstForwarded) {
-    return firstForwarded;
+  const cloudflareIp = context.req.header("CF-Connecting-IP")?.trim();
+  if (cloudflareIp) {
+    return cloudflareIp;
   }
   return "local";
 };
@@ -1554,6 +1616,17 @@ const parseWebauthnClientData = (
     throw new Error("Passkey origin is invalid.");
   }
   return { clientData, clientDataBytes };
+};
+
+const parseWebauthnChallengePreview = (encodedClientData: string) => {
+  try {
+    const clientData = JSON.parse(textDecoder.decode(fromBase64Url(encodedClientData))) as {
+      challenge?: unknown;
+    };
+    return typeof clientData.challenge === "string" ? clientData.challenge : null;
+  } catch {
+    return null;
+  }
 };
 
 const readDerLength = (signature: Uint8Array, offset: number) => {
@@ -2573,6 +2646,15 @@ type EmailMfaSettingsRow = {
   enabled_at: string;
 };
 
+type SecurityApprovalRow = {
+  id: string;
+  user_id: string;
+  action: SecurityApprovalAction;
+  payload_json: string;
+  return_to: string;
+  code_hash?: string | null;
+};
+
 type AuthProviderAccountRow = {
   id: string;
   user_id: string;
@@ -3291,6 +3373,7 @@ const asArtworkReviewStatus = (value: string | null | undefined): ArtworkReviewS
 };
 
 const storageCreditTimestamp = () => new Date().toISOString();
+const storageCreditDate = (timestamp = storageCreditTimestamp()) => timestamp.slice(0, 10);
 
 const randomIntInclusive = (minimum: number, maximum: number) => {
   const lower = Math.ceil(minimum);
@@ -3436,18 +3519,24 @@ const uploadStorageLimitMessage = (storage: UserStorage, requestedImages: number
 };
 
 const awardLoginSiteCredits = async (db: D1Database, userId: string) => {
+  const awardedAt = storageCreditTimestamp();
+  const awardedOn = storageCreditDate(awardedAt);
   const amount = randomIntInclusive(loginSiteCreditMin, loginSiteCreditMax);
-  await db
+  const result = await db
     .prepare(
       `UPDATE users
        SET site_credits = COALESCE(site_credits, 0) + ?,
            storage_last_login_credit_date = ?,
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`
+       WHERE id = ?
+         AND (
+           storage_last_login_credit_date IS NULL
+           OR substr(storage_last_login_credit_date, 1, 10) <> ?
+         )`
     )
-    .bind(amount, storageCreditTimestamp(), userId)
+    .bind(amount, awardedAt, userId, awardedOn)
     .run();
-  return amount;
+  return (result.meta.changes ?? 0) > 0 ? amount : 0;
 };
 
 const awardArtworkLikeSiteCredits = async (
@@ -3515,9 +3604,8 @@ const verifyTurnstile = async (
   formData.append("secret", secret);
   formData.append("response", token);
   formData.append("idempotency_key", crypto.randomUUID());
-  const remoteIp =
-    context.req.header("CF-Connecting-IP") ?? context.req.header("X-Forwarded-For");
-  if (remoteIp) {
+  const remoteIp = requestClientIp(context);
+  if (remoteIp !== "local") {
     formData.append("remoteip", remoteIp);
   }
 
@@ -3738,6 +3826,99 @@ const sendSecurityNoticeEmail = async (
     "security notice"
   );
 
+const securityApprovalPath = "/security-confirmation";
+
+const securityApprovalActionLabel = (action: SecurityApprovalAction) => {
+  switch (action) {
+    case "discord_link":
+      return "connect Discord login";
+    case "totp_start":
+      return "set up an authenticator app";
+    case "totp_disable":
+      return "disable the authenticator app";
+    case "email_mfa_enable":
+      return "enable email sign-in codes";
+    case "email_mfa_disable":
+      return "disable email sign-in codes";
+    case "passkey_add":
+      return "add a passkey";
+    case "passkey_delete":
+      return "remove a passkey";
+  }
+};
+
+const securityApprovalSuccessMessage = (action: SecurityApprovalAction) => {
+  switch (action) {
+    case "discord_link":
+      return "Discord login approval confirmed.";
+    case "totp_start":
+      return "Authenticator setup approval confirmed.";
+    case "totp_disable":
+      return "Authenticator app disabled.";
+    case "email_mfa_enable":
+      return "Email sign-in codes enabled.";
+    case "email_mfa_disable":
+      return "Email sign-in codes disabled.";
+    case "passkey_add":
+      return "Passkey setup approval confirmed.";
+    case "passkey_delete":
+      return "Passkey removed.";
+  }
+};
+
+const appendSecurityApprovalParams = (
+  returnTo: string,
+  params: Record<string, string>
+) => {
+  const target = new URL(sanitizeOauthReturnTo(returnTo), "https://local.invalid");
+  for (const [key, value] of Object.entries(params)) {
+    target.searchParams.set(key, value);
+  }
+  return `${target.pathname}${target.search}${target.hash}`;
+};
+
+const securityApprovalPayload = (value: string) => {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const sendSecurityApprovalEmail = async (
+  env: Bindings,
+  user: AuthUser,
+  action: SecurityApprovalAction,
+  token: string,
+  code: string
+) => {
+  const appUrl = env.PUBLIC_APP_URL.replace(/\/$/, "");
+  const approvalUrl = `${appUrl}${securityApprovalPath}?token=${encodeURIComponent(
+    token
+  )}`;
+  await sendAccountEmail(
+    env,
+    user.email,
+    `${env.PUBLIC_APP_NAME}: approve security change`,
+    [
+      `Hi ${user.displayName},`,
+      "",
+      `Approve this request to ${securityApprovalActionLabel(action)} on your ${env.PUBLIC_APP_NAME} account:`,
+      approvalUrl,
+      "",
+      `Backup code: ${code}`,
+      "",
+      "Use the approval link first. If it cannot open on this device, enter the backup code in Privacy & Security.",
+      "",
+      "This link expires in 15 minutes.",
+      "",
+      "If you did not request this change, ignore this email and review your account security settings."
+    ],
+    "security approval"
+  );
+};
+
 const wantsJsonResponse = (context: AppContext) =>
   context.req.query("format") === "json" ||
   context.req.header("Accept")?.toLowerCase().includes("application/json");
@@ -3819,11 +4000,15 @@ const createLoginPayload = async (
   }
 
   const prefix = options.messagePrefix ?? "Signed in";
+  const creditMessage =
+    earnedCredits > 0
+      ? ` You earned ${earnedCredits} site credit${earnedCredits === 1 ? "" : "s"}.`
+      : "";
   return {
     payload: {
       user: authUserFromRow(responseUser),
       csrfToken,
-      message: `${prefix}. You earned ${earnedCredits} site credit${earnedCredits === 1 ? "" : "s"}.`
+      message: `${prefix}.${creditMessage}`
     }
   };
 };
@@ -3907,6 +4092,128 @@ const createEmailChangeToken = async (
     )
   ]);
   return token;
+};
+
+const createSecurityApprovalToken = async (
+  db: D1Database,
+  userId: string,
+  action: SecurityApprovalAction,
+  payload: Record<string, unknown>,
+  returnTo: string
+) => {
+  const id = `sat_${crypto.randomUUID().replaceAll("-", "")}`;
+  const token = randomToken(32);
+  const code = generateNumericCode(6);
+  await db.batch([
+    db.prepare(
+      `UPDATE security_approval_tokens
+       SET consumed_at = CURRENT_TIMESTAMP
+       WHERE user_id = ?
+         AND action = ?
+         AND consumed_at IS NULL`
+    ).bind(userId, action),
+    db.prepare(
+      `INSERT INTO security_approval_tokens
+        (id, user_id, action, payload_json, return_to, token_hash, code_hash, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      userId,
+      action,
+      JSON.stringify(payload),
+      sanitizeOauthReturnTo(returnTo),
+      await sha256(token),
+      await sha256(`${id}:${code}`),
+      toIsoAfterSeconds(securityApprovalTokenDurationSeconds)
+    )
+  ]);
+  return { token, code };
+};
+
+const getSecurityApproval = async (
+  db: D1Database,
+  token: string
+) =>
+  db
+    .prepare(
+      `SELECT id, user_id, action, payload_json, return_to
+       FROM security_approval_tokens
+       WHERE token_hash = ?
+         AND consumed_at IS NULL
+         AND datetime(expires_at) > datetime('now')
+       LIMIT 1`
+    )
+    .bind(await sha256(token))
+    .first<SecurityApprovalRow>();
+
+const redeemSecurityApprovalCode = async (
+  db: D1Database,
+  userId: string,
+  code: string
+) => {
+  const rows = await db
+    .prepare(
+      `SELECT id, user_id, action, payload_json, return_to, code_hash
+       FROM security_approval_tokens
+       WHERE user_id = ?
+         AND code_hash IS NOT NULL
+         AND consumed_at IS NULL
+         AND datetime(expires_at) > datetime('now')
+       ORDER BY created_at DESC
+       LIMIT 20`
+    )
+    .bind(userId)
+    .all<SecurityApprovalRow>();
+
+  for (const approval of rows.results) {
+    if (!approval.code_hash) {
+      continue;
+    }
+    const expectedHash = await sha256(`${approval.id}:${code}`);
+    if (!(await constantTimeStringEqual(expectedHash, approval.code_hash))) {
+      continue;
+    }
+    const token = randomToken(32);
+    await db
+      .prepare(
+        `UPDATE security_approval_tokens
+         SET token_hash = ?,
+             code_hash = NULL
+         WHERE id = ?
+           AND consumed_at IS NULL`
+      )
+      .bind(await sha256(token), approval.id)
+      .run();
+    return {
+      approval,
+      payload: securityApprovalPayload(approval.payload_json),
+      token
+    };
+  }
+
+  return null;
+};
+
+const consumeSecurityApproval = async (
+  db: D1Database,
+  userId: string,
+  action: SecurityApprovalAction,
+  token: string
+) => {
+  const approval = await getSecurityApproval(db, token);
+  if (!approval || approval.user_id !== userId || approval.action !== action) {
+    return {
+      response: new Response(JSON.stringify({ message: "Approval link is invalid or expired." }), {
+        status: 403,
+        headers: { "content-type": "application/json" }
+      })
+    };
+  }
+  await db
+    .prepare("UPDATE security_approval_tokens SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .bind(approval.id)
+    .run();
+  return { approval, payload: securityApprovalPayload(approval.payload_json) };
 };
 
 const createSession = async (db: D1Database, context: AppContext, userId: string) => {
@@ -5792,6 +6099,7 @@ const getDiscordConnectionSummary = async (
   }
 };
 
+const discordStartPath = "/discord/start";
 const discordVerificationPath = "/discord-verification";
 const legacyDiscordCallbackPath = "/api/auth/discord/callback";
 
@@ -5842,6 +6150,11 @@ const discordAuthRedirect = (
     target.searchParams.set(key, value);
   }
   return context.redirect(`${target.pathname}${target.search}${target.hash}`, 302);
+};
+
+const redirectToAppPathWithCurrentQuery = (context: AppContext, path: string) => {
+  const url = new URL(context.req.url);
+  return context.redirect(`${path}${url.search}`, 302);
 };
 
 const encodeDiscordOauthState = (payload: DiscordOauthState) => JSON.stringify(payload);
@@ -8181,7 +8494,7 @@ app.get("/api/auth/config", (context) =>
   })
 );
 
-app.get("/api/auth/discord/start", async (context) => {
+const handleDiscordStart = async (context: AppContext) => {
   const returnTo = sanitizeOauthReturnTo(context.req.query("returnTo"));
   if (!context.env.DB) {
     return discordAuthRedirect(context, returnTo, { authError: "discord_unavailable" });
@@ -8205,7 +8518,12 @@ app.get("/api/auth/discord/start", async (context) => {
     { append: true }
   );
   return context.redirect(discordAuthorizeUrl(context, state).toString(), 302);
-});
+};
+
+app.get(discordStartPath, handleDiscordStart);
+app.get("/api/auth/discord/start", (context) =>
+  redirectToAppPathWithCurrentQuery(context, discordStartPath)
+);
 
 app.post("/api/settings/security/discord/start", async (context) => {
   if (!context.env.DB) {
@@ -8230,23 +8548,31 @@ app.post("/api/settings/security/discord/start", async (context) => {
   if (csrfError) {
     return csrfError;
   }
-  const recentAuthError = await requireRecentSessionAuth(context, context.env.DB, user.id);
-  if (recentAuthError) {
-    return recentAuthError;
-  }
-
   const parsed = await parseJson(context, oauthReturnToSchema);
   if (!parsed.success) {
-    return context.json({ message: "Discord return destination is invalid." }, 400);
+    return context.json({ message: "Discord approval is invalid." }, 400);
+  }
+  const approvalResult = await consumeSecurityApproval(
+    context.env.DB,
+    user.id,
+    "discord_link",
+    parsed.data.approvalToken
+  );
+  if ("response" in approvalResult) {
+    return approvalResult.response;
   }
 
-  const returnTo = sanitizeOauthReturnTo(parsed.data.returnTo);
   const state = randomToken(32);
   context.header(
     "Set-Cookie",
     discordOauthStateCookie(
       context,
-      encodeDiscordOauthState({ state, returnTo, mode: "link", userId: user.id })
+      encodeDiscordOauthState({
+        state,
+        returnTo: approvalResult.approval.return_to,
+        mode: "link",
+        userId: user.id
+      })
     ),
     { append: true }
   );
@@ -8332,7 +8658,9 @@ app.get(discordVerificationPath, async (context) => {
   return appShellResponse(context);
 });
 
-app.get("/api/auth/discord/callback", handleDiscordOauthReturn);
+app.get(legacyDiscordCallbackPath, (context) =>
+  redirectToAppPathWithCurrentQuery(context, discordVerificationPath)
+);
 
 app.post("/api/auth/discord/verify", async (context) => {
   if (!context.env.DB) {
@@ -10150,15 +10478,13 @@ app.post("/api/auth/passkey/verify", async (context) => {
     return rateLimitError;
   }
 
-  const clientDataPreview = JSON.parse(
-    textDecoder.decode(fromBase64Url(parsed.data.response.clientDataJSON))
-  ) as { challenge?: unknown };
-  if (typeof clientDataPreview.challenge !== "string") {
+  const challenge = parseWebauthnChallengePreview(parsed.data.response.clientDataJSON);
+  if (!challenge) {
     return context.json({ message: "Passkey challenge is invalid." }, 400);
   }
   const challengeRow = await getWebauthnChallenge(
     context.env.DB,
-    clientDataPreview.challenge,
+    challenge,
     "authentication"
   );
   if (!challengeRow) {
@@ -10216,7 +10542,7 @@ app.post("/api/auth/passkey/verify", async (context) => {
     const { clientDataBytes } = parseWebauthnClientData(
       parsed.data.response.clientDataJSON,
       "webauthn.get",
-      clientDataPreview.challenge,
+      challenge,
       origin
     );
     const authenticatorDataBytes = fromBase64Url(parsed.data.response.authenticatorData);
@@ -12744,6 +13070,250 @@ app.get("/api/settings/security", async (context) => {
   );
 });
 
+app.post("/api/settings/security/approval", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to approve account security changes." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "settings:security-approval",
+    userId: user.id,
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, securityApprovalRequestSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Security approval request is invalid." }, 400);
+  }
+
+  const action = parsed.data.action;
+  if (action === "discord_link" && !discordAuthConfigured(context.env)) {
+    return context.json({ message: "Discord login is not configured." }, 503);
+  }
+  if (action === "email_mfa_enable" && !user.emailVerified) {
+    return context.json({ message: "Verify your email before enabling email codes." }, 403);
+  }
+
+  const payload: Record<string, unknown> = {};
+  if (action === "passkey_add") {
+    payload.name = parsed.data.passkeyName?.trim() || "Passkey";
+  }
+  if (action === "passkey_delete") {
+    if (!parsed.data.passkeyId) {
+      return context.json({ message: "Passkey is required." }, 400);
+    }
+    const passkey = await context.env.DB.prepare(
+      "SELECT id FROM user_passkeys WHERE id = ? AND user_id = ? LIMIT 1"
+    )
+      .bind(parsed.data.passkeyId, user.id)
+      .first<{ id: string }>();
+    if (!passkey) {
+      return context.json({ message: "Passkey not found." }, 404);
+    }
+    payload.passkeyId = parsed.data.passkeyId;
+  }
+
+  const returnTo = sanitizeOauthReturnTo(
+    parsed.data.returnTo ?? "/settings/privacy-security"
+  );
+  const approval = await createSecurityApprovalToken(
+    context.env.DB,
+    user.id,
+    action,
+    payload,
+    returnTo
+  );
+  await sendSecurityApprovalEmail(
+    context.env,
+    user,
+    action,
+    approval.token,
+    approval.code
+  );
+
+  return context.json<SecurityApprovalResponse>({
+    message: `Approval link and backup code sent to ${maskEmail(user.email)}.`
+  });
+});
+
+app.post("/api/settings/security/approval/code", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to approve account security changes." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "settings:security-approval-code",
+    userId: user.id,
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, securityApprovalCodeSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Approval code must be 6 digits." }, 400);
+  }
+
+  const approval = await redeemSecurityApprovalCode(
+    context.env.DB,
+    user.id,
+    parsed.data.code
+  );
+  if (!approval) {
+    return context.json({ message: "Approval code is invalid or expired." }, 403);
+  }
+
+  const passkeyId =
+    typeof approval.payload.passkeyId === "string" ? approval.payload.passkeyId : undefined;
+  return context.json<SecurityApprovalCodeResponse>({
+    action: approval.approval.action,
+    approvalToken: approval.token,
+    ...(passkeyId ? { passkeyId } : {}),
+    message: "Approval code accepted."
+  });
+});
+
+app.get("/api/settings/security/approve", (context) =>
+  redirectToAppPathWithCurrentQuery(context, securityApprovalPath)
+);
+
+app.get(securityApprovalPath, async (context) => {
+  if (!context.env.DB) {
+    return context.redirect(
+      appendSecurityApprovalParams("/settings/privacy-security", {
+        securityApprovalStatus: "error",
+        securityApprovalMessage: "D1 database is required for accounts."
+      }),
+      302
+    );
+  }
+  const token = context.req.query("token") ?? "";
+  const approval = token ? await getSecurityApproval(context.env.DB, token) : null;
+  if (!approval) {
+    return context.redirect(
+      appendSecurityApprovalParams("/settings/privacy-security", {
+        securityApprovalStatus: "error",
+        securityApprovalMessage: "Approval link is invalid or expired."
+      }),
+      302
+    );
+  }
+
+  const user = await getUserRowById(context.env.DB, approval.user_id);
+  if (!user || user.suspended_at) {
+    return context.redirect(
+      appendSecurityApprovalParams(approval.return_to, {
+        securityApprovalStatus: "error",
+        securityApprovalMessage: "Account not found."
+      }),
+      302
+    );
+  }
+
+  const db = context.env.DB;
+  const payload = securityApprovalPayload(approval.payload_json);
+  const consume = () =>
+    db.prepare(
+      "UPDATE security_approval_tokens SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?"
+    )
+      .bind(approval.id)
+      .run();
+
+  if (approval.action === "totp_start" || approval.action === "passkey_add") {
+    return context.redirect(
+      appendSecurityApprovalParams(approval.return_to, {
+        securityApprovalToken: token,
+        securityApprovalAction: approval.action
+      }),
+      302
+    );
+  }
+
+  if (approval.action === "discord_link") {
+    await consume();
+    const state = randomToken(32);
+    context.header(
+      "Set-Cookie",
+      discordOauthStateCookie(
+        context,
+        encodeDiscordOauthState({
+          state,
+          returnTo: approval.return_to,
+          mode: "link",
+          userId: user.id
+        })
+      ),
+      { append: true }
+    );
+    return context.redirect(discordAuthorizeUrl(context, state).toString(), 302);
+  }
+
+  if (approval.action === "email_mfa_enable" && !user.email_verified_at) {
+    return context.redirect(
+      appendSecurityApprovalParams(approval.return_to, {
+        securityApprovalStatus: "error",
+        securityApprovalMessage: "Verify your email before enabling email codes."
+      }),
+      302
+    );
+  }
+
+  if (approval.action === "email_mfa_enable") {
+    await db.prepare(
+      "INSERT OR IGNORE INTO user_email_mfa_settings (user_id) VALUES (?)"
+    )
+      .bind(user.id)
+      .run();
+  } else if (approval.action === "email_mfa_disable") {
+    await db.prepare("DELETE FROM user_email_mfa_settings WHERE user_id = ?")
+      .bind(user.id)
+      .run();
+  } else if (approval.action === "totp_disable") {
+    await db.prepare("DELETE FROM user_totp_credentials WHERE user_id = ?")
+      .bind(user.id)
+      .run();
+  } else if (approval.action === "passkey_delete") {
+    const passkeyId = typeof payload.passkeyId === "string" ? payload.passkeyId : "";
+    if (!passkeyId) {
+      return context.redirect(
+        appendSecurityApprovalParams(approval.return_to, {
+          securityApprovalStatus: "error",
+          securityApprovalMessage: "Passkey approval is invalid."
+        }),
+        302
+      );
+    }
+    await db.prepare("DELETE FROM user_passkeys WHERE id = ? AND user_id = ?")
+      .bind(passkeyId, user.id)
+      .run();
+  }
+
+  await consume();
+  return context.redirect(
+    appendSecurityApprovalParams(approval.return_to, {
+      securityApprovalStatus: "approved",
+      securityApprovalMessage: securityApprovalSuccessMessage(approval.action)
+    }),
+    302
+  );
+});
+
 app.post("/api/settings/security/totp/start", async (context) => {
   if (!context.env.DB) {
     return authUnavailable(context);
@@ -12764,9 +13334,18 @@ app.post("/api/settings/security/totp/start", async (context) => {
   if (csrfError) {
     return csrfError;
   }
-  const recentAuthError = await requireRecentSessionAuth(context, context.env.DB, user.id);
-  if (recentAuthError) {
-    return recentAuthError;
+  const parsed = await parseJson(context, securityApprovalTokenSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Authenticator setup approval is invalid." }, 400);
+  }
+  const approvalResult = await consumeSecurityApproval(
+    context.env.DB,
+    user.id,
+    "totp_start",
+    parsed.data.approvalToken
+  );
+  if ("response" in approvalResult) {
+    return approvalResult.response;
   }
 
   const existing = await context.env.DB.prepare(
@@ -12821,10 +13400,6 @@ app.post("/api/settings/security/totp/confirm", async (context) => {
   if (csrfError) {
     return csrfError;
   }
-  const recentAuthError = await requireRecentSessionAuth(context, context.env.DB, user.id);
-  if (recentAuthError) {
-    return recentAuthError;
-  }
   const parsed = await parseJson(context, totpConfirmSchema);
   if (!parsed.success) {
     return context.json({ message: "Authenticator code is invalid." }, 400);
@@ -12872,9 +13447,18 @@ app.delete("/api/settings/security/totp", async (context) => {
   if (csrfError) {
     return csrfError;
   }
-  const recentAuthError = await requireRecentSessionAuth(context, context.env.DB, user.id);
-  if (recentAuthError) {
-    return recentAuthError;
+  const parsed = await parseJson(context, securityApprovalTokenSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Authenticator approval is invalid." }, 400);
+  }
+  const approvalResult = await consumeSecurityApproval(
+    context.env.DB,
+    user.id,
+    "totp_disable",
+    parsed.data.approvalToken
+  );
+  if ("response" in approvalResult) {
+    return approvalResult.response;
   }
   await context.env.DB.prepare("DELETE FROM user_totp_credentials WHERE user_id = ?")
     .bind(user.id)
@@ -12905,13 +13489,18 @@ app.put("/api/settings/security/email", async (context) => {
   if (csrfError) {
     return csrfError;
   }
-  const recentAuthError = await requireRecentSessionAuth(context, context.env.DB, user.id);
-  if (recentAuthError) {
-    return recentAuthError;
-  }
   const parsed = await parseJson(context, emailMfaSettingsSchema);
   if (!parsed.success) {
     return context.json({ message: "Email verification setting is invalid." }, 400);
+  }
+  const approvalResult = await consumeSecurityApproval(
+    context.env.DB,
+    user.id,
+    parsed.data.enabled ? "email_mfa_enable" : "email_mfa_disable",
+    parsed.data.approvalToken
+  );
+  if ("response" in approvalResult) {
+    return approvalResult.response;
   }
   if (parsed.data.enabled && !user.emailVerified) {
     return context.json({ message: "Verify your email before enabling email codes." }, 403);
@@ -12953,14 +13542,23 @@ app.post("/api/settings/security/passkeys/options", async (context) => {
   if (csrfError) {
     return csrfError;
   }
-  const recentAuthError = await requireRecentSessionAuth(context, context.env.DB, user.id);
-  if (recentAuthError) {
-    return recentAuthError;
-  }
   const parsed = await parseJson(context, passkeyRegistrationOptionsSchema);
   if (!parsed.success) {
     return context.json({ message: "Passkey details are invalid." }, 400);
   }
+  const approvalResult = await consumeSecurityApproval(
+    context.env.DB,
+    user.id,
+    "passkey_add",
+    parsed.data.approvalToken
+  );
+  if ("response" in approvalResult) {
+    return approvalResult.response;
+  }
+  const approvedName =
+    typeof approvalResult.payload.name === "string" && approvalResult.payload.name.trim()
+      ? approvalResult.payload.name.trim().slice(0, 80)
+      : "Passkey";
   const challenge = await createWebauthnChallenge(context.env.DB, "registration", user.id);
   const { rpId } = webauthnContext(context);
   const existingPasskeys = await context.env.DB.prepare(
@@ -12971,6 +13569,7 @@ app.post("/api/settings/security/passkeys/options", async (context) => {
     .bind(user.id)
     .all<PasskeyRow>();
   return context.json<PasskeyRegistrationOptionsResponse>({
+    name: approvedName,
     publicKey: {
       challenge,
       rp: {
@@ -13021,24 +13620,18 @@ app.post("/api/settings/security/passkeys", async (context) => {
   if (csrfError) {
     return csrfError;
   }
-  const recentAuthError = await requireRecentSessionAuth(context, context.env.DB, user.id);
-  if (recentAuthError) {
-    return recentAuthError;
-  }
   const parsed = await parseJson(context, passkeyRegistrationSchema);
   if (!parsed.success) {
     return context.json({ message: "Passkey response is invalid." }, 400);
   }
 
-  const clientDataPreview = JSON.parse(
-    textDecoder.decode(fromBase64Url(parsed.data.response.clientDataJSON))
-  ) as { challenge?: unknown };
-  if (typeof clientDataPreview.challenge !== "string") {
+  const challenge = parseWebauthnChallengePreview(parsed.data.response.clientDataJSON);
+  if (!challenge) {
     return context.json({ message: "Passkey challenge is invalid." }, 400);
   }
   const challengeRow = await getWebauthnChallenge(
     context.env.DB,
-    clientDataPreview.challenge,
+    challenge,
     "registration",
     user.id
   );
@@ -13051,7 +13644,7 @@ app.post("/api/settings/security/passkeys", async (context) => {
     parseWebauthnClientData(
       parsed.data.response.clientDataJSON,
       "webauthn.create",
-      clientDataPreview.challenge,
+      challenge,
       origin
     );
     const attestationObject = readCbor(fromBase64Url(parsed.data.response.attestationObject));
@@ -13116,11 +13709,23 @@ app.delete("/api/settings/security/passkeys/:id", async (context) => {
   if (csrfError) {
     return csrfError;
   }
-  const recentAuthError = await requireRecentSessionAuth(context, context.env.DB, user.id);
-  if (recentAuthError) {
-    return recentAuthError;
+  const parsed = await parseJson(context, securityApprovalTokenSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Passkey approval is invalid." }, 400);
+  }
+  const approvalResult = await consumeSecurityApproval(
+    context.env.DB,
+    user.id,
+    "passkey_delete",
+    parsed.data.approvalToken
+  );
+  if ("response" in approvalResult) {
+    return approvalResult.response;
   }
   const id = context.req.param("id");
+  if (approvalResult.payload.passkeyId !== id) {
+    return context.json({ message: "Passkey approval is invalid." }, 403);
+  }
   await context.env.DB.prepare("DELETE FROM user_passkeys WHERE id = ? AND user_id = ?")
     .bind(id, user.id)
     .run();
@@ -16245,7 +16850,10 @@ const mediaAccessForRequest = async (context: AppContext, key: string) => {
           : protectedMediaCacheControl
     };
   }
-  return { cacheControl: publicMediaCacheControl };
+  return {
+    response: context.json({ message: "Object not found" }, 404),
+    cacheControl: protectedMediaCacheControl
+  };
 };
 
 const responseFromR2Object = (object: R2ObjectBody, cacheControl: string) => {
@@ -16340,6 +16948,29 @@ async function appShellResponse(context: AppContext) {
   }
   return indexHtmlResponse(context, html);
 }
+
+for (const path of [
+  "/",
+  "/analytics",
+  "/collections",
+  "/collections/discover",
+  "/creators",
+  "/dashboard",
+  "/email-confirmation",
+  "/notifications",
+  "/privacy",
+  "/rankings",
+  "/series",
+  "/settings/privacy-security",
+  "/settings/profile",
+  "/terms"
+] as const) {
+  app.get(path, appShellResponse);
+}
+app.get("/@:username", appShellResponse);
+app.get("/collections/:id", appShellResponse);
+app.get("/series/:id", appShellResponse);
+app.get("/tags/:tag", appShellResponse);
 
 app.get("/novels", async (context) => {
   const { assetResponse, html } = await indexHtml(context);

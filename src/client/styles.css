@@ -4778,11 +4778,16 @@ h1 {
   font-weight: 850;
 }
 
-.passkey-create-row {
+.passkey-create-row,
+.security-code-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
   gap: 10px;
+}
+
+.security-code-form {
+  margin-top: 10px;
 }
 
 .settings-message {
@@ -5827,7 +5832,8 @@ h1 {
   }
 
   .security-option,
-  .passkey-create-row {
+  .passkey-create-row,
+  .security-code-form {
     grid-template-columns: 1fr;
   }
 
@@ -5864,6 +5870,7 @@ h1 {
   .settings-heading .secondary-button,
   .security-option .secondary-button,
   .passkey-create-row .secondary-button,
+  .security-code-form .secondary-button,
   .settings-actions .primary-button,
   .settings-actions .secondary-button {
     width: 100%;

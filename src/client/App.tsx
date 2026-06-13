@@ -145,6 +145,9 @@ import type {
   ReorderArtworkImagesResponse,
   RevokeSessionsResponse,
   SearchSuggestionsResponse,
+  SecurityApprovalAction,
+  SecurityApprovalCodeResponse,
+  SecurityApprovalResponse,
   SecuritySettingsResponse,
   SeriesVisibility,
   SortMode,
@@ -3449,7 +3452,7 @@ function App() {
                 onClick={() => showNovels("home")}
               >
                 <Home size={18} />
-                Library
+                Home
               </button>
               <button
                 className={classNames("menu-item", view === "novels" && routeNovelSection === "following" && "is-active")}
@@ -3465,7 +3468,7 @@ function App() {
                 onClick={() => showNovels("creators")}
               >
                 <UserPlus size={18} />
-                Writers
+                Creators
               </button>
               <button
                 className={classNames("menu-item", view === "novels" && routeNovelSection === "tags" && "is-active")}
@@ -3473,7 +3476,7 @@ function App() {
                 onClick={() => showNovels("tags")}
               >
                 <Bell size={18} />
-                Genres
+                Tags
               </button>
               <button
                 className={classNames("menu-item", view === "novels" && routeNovelSection === "bookmarks" && "is-active")}
@@ -3481,7 +3484,7 @@ function App() {
                 onClick={() => showNovels("bookmarks")}
               >
                 <Bookmark size={18} />
-                Reading list
+                Bookmarks
               </button>
               <button
                 className={classNames("menu-item", view === "novels" && routeNovelSection === "rankings" && "is-active")}
@@ -3489,7 +3492,7 @@ function App() {
                 onClick={() => showNovels("rankings")}
               >
                 <Trophy size={18} />
-                Top novels
+                Rankings
               </button>
               <button
                 className={classNames("menu-item", view === "novels" && routeNovelSection === "collections" && "is-active")}
@@ -3497,7 +3500,7 @@ function App() {
                 onClick={() => showNovels("collections")}
               >
                 <FolderOpen size={18} />
-                Shelves
+                Collections
               </button>
             </>
           ) : (
@@ -3571,7 +3574,7 @@ function App() {
                 onClick={() => showProfile(currentUser.username)}
               >
                 <UserRound size={18} />
-                {isNovelSection ? "Reader profile" : "Profile"}
+                Profile
               </button>
               <button
                 className={classNames("menu-item", view === "notifications" && "is-active")}
@@ -3579,7 +3582,7 @@ function App() {
                 onClick={showNotifications}
               >
                 <Bell size={18} />
-                {isNovelSection ? "Novel alerts" : "Notifications"}
+                Notifications
               </button>
               <button
                 className={classNames("menu-item", view === "analytics" && "is-active")}
@@ -3587,7 +3590,7 @@ function App() {
                 onClick={showAnalytics}
               >
                 <TrendingUp size={18} />
-                {isNovelSection ? "Story stats" : "Analytics"}
+                Analytics
               </button>
               <button
                 className={classNames(
@@ -3598,7 +3601,7 @@ function App() {
                 onClick={showCollections}
               >
                 <FolderOpen size={18} />
-                {isNovelSection ? "My shelves" : "My folders"}
+                My folders
               </button>
               <button
                 className={classNames(
@@ -3609,7 +3612,7 @@ function App() {
                 onClick={showSeriesList}
               >
                 <ListOrdered size={18} />
-                {isNovelSection ? "My serials" : "My series"}
+                My series
               </button>
               <button
                 className={classNames("menu-item", view === "profileSettings" && "is-active")}
@@ -3617,7 +3620,7 @@ function App() {
                 onClick={showProfileSettings}
               >
                 <UserCog size={18} />
-                {isNovelSection ? "Story profile" : "Profile settings"}
+                Profile settings
               </button>
               <button
                 className={classNames("menu-item", view === "privacySecurity" && "is-active")}
@@ -3625,7 +3628,7 @@ function App() {
                 onClick={showPrivacySecurity}
               >
                 <KeyRound size={18} />
-                {isNovelSection ? "Reader privacy" : "Privacy"}
+                Privacy
               </button>
             </>
           ) : null}
@@ -3636,7 +3639,7 @@ function App() {
               onClick={showDashboard}
             >
               <BarChart3 size={18} />
-              {isNovelSection ? "Novel ops" : "Dashboard"}
+              Dashboard
             </button>
           ) : null}
           {isNovelSection ? (
@@ -3647,7 +3650,7 @@ function App() {
                 onClick={() => showNovels("terms")}
               >
                 <FileText size={18} />
-                Novel terms
+                Terms
               </button>
               <button
                 className={classNames("menu-item", view === "novels" && routeNovelSection === "privacy" && "is-active")}
@@ -3655,7 +3658,7 @@ function App() {
                 onClick={() => showNovels("privacy")}
               >
                 <Shield size={18} />
-                Novel policy
+                Policy
               </button>
             </>
           ) : (
@@ -4932,7 +4935,7 @@ function AuthDialog({
 
   const handleDiscordSignIn = () => {
     const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    window.location.assign(`/api/auth/discord/start?returnTo=${encodeURIComponent(returnTo)}`);
+    window.location.assign(`/discord/start?returnTo=${encodeURIComponent(returnTo)}`);
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -9821,6 +9824,8 @@ function PrivacySecurityPage({
   const [discordMessage, setDiscordMessage] = useState("");
   const [totpSetup, setTotpSetup] = useState<TotpSetupResponse | null>(null);
   const [totpCode, setTotpCode] = useState("");
+  const [securityApprovalCode, setSecurityApprovalCode] = useState("");
+  const [securityApprovalCodeMessage, setSecurityApprovalCodeMessage] = useState("");
   const [passkeyName, setPasskeyName] = useState("My passkey");
   const [loading, setLoading] = useState(true);
   const [securityLoading, setSecurityLoading] = useState(false);
@@ -9834,8 +9839,10 @@ function PrivacySecurityPage({
   const [exportingData, setExportingData] = useState(false);
   const [deactivatingAccount, setDeactivatingAccount] = useState(false);
   const [securitySaving, setSecuritySaving] = useState(false);
+  const [securityApprovalCodeSaving, setSecurityApprovalCodeSaving] = useState(false);
   const [sessionSaving, setSessionSaving] = useState<string | null>(null);
   const [unblockingUser, setUnblockingUser] = useState<string | null>(null);
+  const handledSecurityApprovalRef = useRef("");
 
   const loadSessions = useCallback(async () => {
     if (!currentUser) {
@@ -10225,62 +10232,67 @@ function PrivacySecurityPage({
     }
   };
 
-  const handleDiscordLink = async () => {
-    if (securitySaving || securitySettings?.discord.linked) {
-      return;
+  const currentSecurityReturnTo = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("securityApprovalToken");
+    url.searchParams.delete("securityApprovalAction");
+    url.searchParams.delete("securityApprovalStatus");
+    url.searchParams.delete("securityApprovalMessage");
+    return `${url.pathname}${url.search}${url.hash}`;
+  };
+
+  const requestSecurityApproval = async (
+    action: SecurityApprovalAction,
+    options: { passkeyName?: string; passkeyId?: string } = {},
+    setTargetMessage: (message: string) => void = setSecurityMessage
+  ) => {
+    if (securitySaving) {
+      return false;
     }
     setSecuritySaving(true);
-    setDiscordMessage("");
+    setTargetMessage("");
     try {
-      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-      const response = await fetch("/api/settings/security/discord/start", {
+      const response = await fetch("/api/settings/security/approval", {
         method: "POST",
         credentials: "include",
         headers: {
           "content-type": "application/json",
           [csrfHeaderName]: csrfToken
         },
-        body: JSON.stringify({ returnTo })
+        body: JSON.stringify({
+          action,
+          returnTo: currentSecurityReturnTo(),
+          ...options
+        })
       });
-      const payload = (await response.json()) as DiscordStartResponse | { message?: string };
-      if (!response.ok || !("authorizationUrl" in payload)) {
-        throw new Error(payload.message ?? "Discord login could not be connected.");
+      const payload = (await response.json()) as SecurityApprovalResponse | { message?: string };
+      if (!response.ok || !("message" in payload)) {
+        throw new Error(payload.message ?? "Approval link could not be sent.");
       }
-      window.location.assign(payload.authorizationUrl);
+      const approvalMessage = payload.message ?? "Approval link sent.";
+      setTargetMessage(approvalMessage);
+      onNotice(approvalMessage);
+      return true;
     } catch (error) {
-      setDiscordMessage(
-        error instanceof Error ? error.message : "Discord login could not be connected."
-      );
+      setTargetMessage(error instanceof Error ? error.message : "Approval link could not be sent.");
+      return false;
+    } finally {
       setSecuritySaving(false);
     }
+  };
+
+  const handleDiscordLink = async () => {
+    if (securitySaving || securitySettings?.discord.linked) {
+      return;
+    }
+    await requestSecurityApproval("discord_link", {}, setDiscordMessage);
   };
 
   const handleTotpStart = async () => {
     if (securitySaving) {
       return;
     }
-    setSecuritySaving(true);
-    setSecurityMessage("");
-    try {
-      const response = await fetch("/api/settings/security/totp/start", {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          [csrfHeaderName]: csrfToken
-        }
-      });
-      const payload = (await response.json()) as TotpSetupResponse | { message?: string };
-      if (!response.ok || !("secret" in payload)) {
-        throw new Error(payload.message ?? "Authenticator setup could not start.");
-      }
-      setTotpSetup(payload);
-      setTotpCode("");
-      setSecurityMessage(payload.message);
-    } catch (error) {
-      setSecurityMessage(error instanceof Error ? error.message : "Authenticator setup could not start.");
-    } finally {
-      setSecuritySaving(false);
-    }
+    await requestSecurityApproval("totp_start");
   };
 
   const handleTotpConfirm = async (event: FormEvent<HTMLFormElement>) => {
@@ -10320,63 +10332,85 @@ function PrivacySecurityPage({
     if (securitySaving) {
       return;
     }
-    setSecuritySaving(true);
-    setSecurityMessage("");
-    try {
-      const response = await fetch("/api/settings/security/totp", {
-        method: "DELETE",
-        credentials: "include",
-        headers: {
-          [csrfHeaderName]: csrfToken
-        }
-      });
-      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
-      if (!response.ok || !("twoStep" in payload)) {
-        throw new Error(payload.message ?? "Authenticator app could not be disabled.");
-      }
-      setTotpSetup(null);
-      applySecuritySettingsResponse(payload);
-    } catch (error) {
-      setSecurityMessage(error instanceof Error ? error.message : "Authenticator app could not be disabled.");
-    } finally {
-      setSecuritySaving(false);
-    }
+    await requestSecurityApproval("totp_disable");
   };
 
   const handleEmailMfaToggle = async (enabled: boolean) => {
     if (securitySaving) {
       return;
     }
-    setSecuritySaving(true);
-    setSecurityMessage("");
-    try {
-      const response = await fetch("/api/settings/security/email", {
-        method: "PUT",
-        credentials: "include",
-        headers: {
-          "content-type": "application/json",
-          [csrfHeaderName]: csrfToken
-        },
-        body: JSON.stringify({ enabled })
-      });
-      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
-      if (!response.ok || !("twoStep" in payload)) {
-        throw new Error(payload.message ?? "Email sign-in codes could not be updated.");
-      }
-      applySecuritySettingsResponse(payload);
-    } catch (error) {
-      setSecurityMessage(
-        error instanceof Error ? error.message : "Email sign-in codes could not be updated."
-      );
-    } finally {
-      setSecuritySaving(false);
-    }
+    await requestSecurityApproval(enabled ? "email_mfa_enable" : "email_mfa_disable");
   };
 
   const handleAddPasskey = async () => {
     if (securitySaving) {
       return;
     }
+    await requestSecurityApproval("passkey_add", { passkeyName });
+  };
+
+  const handleDeletePasskey = async (id: string) => {
+    if (securitySaving) {
+      return;
+    }
+    await requestSecurityApproval("passkey_delete", { passkeyId: id });
+  };
+
+  const completeApprovedDiscordLink = async (approvalToken: string) => {
+    setSecuritySaving(true);
+    setDiscordMessage("");
+    try {
+      const response = await fetch("/api/settings/security/discord/start", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          [csrfHeaderName]: csrfToken
+        },
+        body: JSON.stringify({ approvalToken })
+      });
+      const payload = (await response.json()) as DiscordStartResponse | { message?: string };
+      if (!response.ok || !("authorizationUrl" in payload)) {
+        throw new Error(payload.message ?? "Discord login could not be connected.");
+      }
+      window.location.assign(payload.authorizationUrl);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Discord login could not be connected.";
+      setDiscordMessage(message);
+      setSecurityMessage(message);
+    } finally {
+      setSecuritySaving(false);
+    }
+  };
+
+  const completeApprovedTotpStart = async (approvalToken: string) => {
+    setSecuritySaving(true);
+    setSecurityMessage("");
+    try {
+      const response = await fetch("/api/settings/security/totp/start", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          [csrfHeaderName]: csrfToken
+        },
+        body: JSON.stringify({ approvalToken })
+      });
+      const payload = (await response.json()) as TotpSetupResponse | { message?: string };
+      if (!response.ok || !("secret" in payload)) {
+        throw new Error(payload.message ?? "Authenticator setup could not start.");
+      }
+      setTotpSetup(payload);
+      setTotpCode("");
+      setSecurityMessage(payload.message);
+    } catch (error) {
+      setSecurityMessage(error instanceof Error ? error.message : "Authenticator setup could not start.");
+    } finally {
+      setSecuritySaving(false);
+    }
+  };
+
+  const completeApprovedPasskeyAdd = async (approvalToken: string) => {
     if (!window.PublicKeyCredential || !navigator.credentials) {
       setSecurityMessage("Passkeys are not available in this browser.");
       return;
@@ -10391,7 +10425,7 @@ function PrivacySecurityPage({
           "content-type": "application/json",
           [csrfHeaderName]: csrfToken
         },
-        body: JSON.stringify({ name: passkeyName })
+        body: JSON.stringify({ approvalToken })
       });
       const optionsPayload = (await optionsResponse.json()) as
         | PasskeyRegistrationOptionsResponse
@@ -10402,6 +10436,7 @@ function PrivacySecurityPage({
             "Passkey setup could not start."
         );
       }
+      const approvedName = optionsPayload.name ?? passkeyName;
       const credential = await navigator.credentials.create({
         publicKey: passkeyCreationOptions(optionsPayload)
       });
@@ -10415,7 +10450,7 @@ function PrivacySecurityPage({
           "content-type": "application/json",
           [csrfHeaderName]: csrfToken
         },
-        body: JSON.stringify(passkeyCreationPayload(credential, passkeyName))
+        body: JSON.stringify(passkeyCreationPayload(credential, approvedName))
       });
       const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
       if (!response.ok || !("twoStep" in payload)) {
@@ -10430,8 +10465,61 @@ function PrivacySecurityPage({
     }
   };
 
-  const handleDeletePasskey = async (id: string) => {
-    if (securitySaving) {
+  const completeApprovedTotpDisable = async (approvalToken: string) => {
+    setSecuritySaving(true);
+    setSecurityMessage("");
+    try {
+      const response = await fetch("/api/settings/security/totp", {
+        method: "DELETE",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          [csrfHeaderName]: csrfToken
+        },
+        body: JSON.stringify({ approvalToken })
+      });
+      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      if (!response.ok || !("twoStep" in payload)) {
+        throw new Error(payload.message ?? "Authenticator app could not be disabled.");
+      }
+      applySecuritySettingsResponse(payload);
+    } catch (error) {
+      setSecurityMessage(
+        error instanceof Error ? error.message : "Authenticator app could not be disabled."
+      );
+    } finally {
+      setSecuritySaving(false);
+    }
+  };
+
+  const completeApprovedEmailMfaToggle = async (enabled: boolean, approvalToken: string) => {
+    setSecuritySaving(true);
+    setSecurityMessage("");
+    try {
+      const response = await fetch("/api/settings/security/email", {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          [csrfHeaderName]: csrfToken
+        },
+        body: JSON.stringify({ enabled, approvalToken })
+      });
+      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      if (!response.ok || !("twoStep" in payload)) {
+        throw new Error(payload.message ?? "Email codes could not be updated.");
+      }
+      applySecuritySettingsResponse(payload);
+    } catch (error) {
+      setSecurityMessage(error instanceof Error ? error.message : "Email codes could not be updated.");
+    } finally {
+      setSecuritySaving(false);
+    }
+  };
+
+  const completeApprovedPasskeyDelete = async (id: string, approvalToken: string) => {
+    if (!id) {
+      setSecurityMessage("Passkey approval is invalid.");
       return;
     }
     setSecuritySaving(true);
@@ -10441,8 +10529,10 @@ function PrivacySecurityPage({
         method: "DELETE",
         credentials: "include",
         headers: {
+          "content-type": "application/json",
           [csrfHeaderName]: csrfToken
-        }
+        },
+        body: JSON.stringify({ approvalToken })
       });
       const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
       if (!response.ok || !("twoStep" in payload)) {
@@ -10455,6 +10545,107 @@ function PrivacySecurityPage({
       setSecuritySaving(false);
     }
   };
+
+  const handleSecurityApprovalCodeSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (securitySaving || securityApprovalCodeSaving) {
+      return;
+    }
+    const code = securityApprovalCode.trim();
+    if (!/^\d{6}$/.test(code)) {
+      setSecurityApprovalCodeMessage("Approval code must be 6 digits.");
+      return;
+    }
+
+    setSecurityApprovalCodeSaving(true);
+    setSecurityApprovalCodeMessage("");
+    try {
+      const response = await fetch("/api/settings/security/approval/code", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          [csrfHeaderName]: csrfToken
+        },
+        body: JSON.stringify({ code })
+      });
+      const payload = (await response.json()) as SecurityApprovalCodeResponse | { message?: string };
+      if (!response.ok || !("approvalToken" in payload) || !("action" in payload)) {
+        throw new Error(payload.message ?? "Approval code could not be verified.");
+      }
+      setSecurityApprovalCode("");
+      setSecurityApprovalCodeMessage(payload.message);
+      onNotice(payload.message);
+
+      if (payload.action === "discord_link") {
+        await completeApprovedDiscordLink(payload.approvalToken);
+      } else if (payload.action === "totp_start") {
+        await completeApprovedTotpStart(payload.approvalToken);
+      } else if (payload.action === "totp_disable") {
+        await completeApprovedTotpDisable(payload.approvalToken);
+      } else if (payload.action === "email_mfa_enable") {
+        await completeApprovedEmailMfaToggle(true, payload.approvalToken);
+      } else if (payload.action === "email_mfa_disable") {
+        await completeApprovedEmailMfaToggle(false, payload.approvalToken);
+      } else if (payload.action === "passkey_add") {
+        await completeApprovedPasskeyAdd(payload.approvalToken);
+      } else if (payload.action === "passkey_delete") {
+        await completeApprovedPasskeyDelete(payload.passkeyId ?? "", payload.approvalToken);
+      }
+    } catch (error) {
+      setSecurityApprovalCodeMessage(
+        error instanceof Error ? error.message : "Approval code could not be verified."
+      );
+    } finally {
+      setSecurityApprovalCodeSaving(false);
+    }
+  };
+
+  const clearSecurityApprovalParams = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("securityApprovalToken");
+    url.searchParams.delete("securityApprovalAction");
+    url.searchParams.delete("securityApprovalStatus");
+    url.searchParams.delete("securityApprovalMessage");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  };
+
+  useEffect(() => {
+    if (!currentUser || !csrfToken) {
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("securityApprovalStatus");
+    const message = params.get("securityApprovalMessage");
+    if (status || message) {
+      const nextMessage =
+        message ??
+        (status === "approved" ? "Security change approved." : "Security approval failed.");
+      setSecurityMessage(nextMessage);
+      onNotice(nextMessage);
+      clearSecurityApprovalParams();
+      void loadSecuritySettings();
+      return;
+    }
+
+    const approvalToken = params.get("securityApprovalToken") ?? "";
+    const action = params.get("securityApprovalAction") ?? "";
+    const approvalKey = `${approvalToken}:${action}`;
+    if (!approvalToken || handledSecurityApprovalRef.current === approvalKey) {
+      return;
+    }
+    handledSecurityApprovalRef.current = approvalKey;
+    clearSecurityApprovalParams();
+    if (action === "totp_start") {
+      void completeApprovedTotpStart(approvalToken);
+      return;
+    }
+    if (action === "passkey_add") {
+      void completeApprovedPasskeyAdd(approvalToken);
+      return;
+    }
+    setSecurityMessage("Security approval action is not supported.");
+  }, [currentUser, csrfToken]);
 
   const handleRevokeSession = async (sessionId: string | null) => {
     if (sessionSaving !== null) {
@@ -10829,7 +11020,7 @@ function PrivacySecurityPage({
                       onClick={() => void handleTotpDisable()}
                     >
                       <KeyRound size={16} />
-                      Disable
+                      Send link
                     </button>
                   ) : (
                     <button
@@ -10839,7 +11030,7 @@ function PrivacySecurityPage({
                       onClick={() => void handleTotpStart()}
                     >
                       <KeyRound size={16} />
-                      Set up
+                      Send link
                     </button>
                   )}
                 </article>
@@ -10882,10 +11073,38 @@ function PrivacySecurityPage({
                     onClick={() => void handleEmailMfaToggle(!securitySettings?.twoStep.emailEnabled)}
                   >
                     <MailCheck size={16} />
-                    {securitySettings?.twoStep.emailEnabled ? "Disable" : "Enable"}
+                    Send link
                   </button>
                 </article>
               </div>
+              <form className="security-code-form" onSubmit={handleSecurityApprovalCodeSubmit}>
+                <label>
+                  Backup approval code
+                  <input
+                    value={securityApprovalCode}
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    minLength={6}
+                    maxLength={6}
+                    autoComplete="one-time-code"
+                    onChange={(event) =>
+                      setSecurityApprovalCode(event.target.value.replace(/\D/g, "").slice(0, 6))
+                    }
+                    required
+                  />
+                </label>
+                <button
+                  className="secondary-button"
+                  type="submit"
+                  disabled={securitySaving || securityApprovalCodeSaving || securityApprovalCode.length !== 6}
+                >
+                  <ShieldCheck size={16} />
+                  {securityApprovalCodeSaving ? "Approving" : "Approve code"}
+                </button>
+              </form>
+              {securityApprovalCodeMessage ? (
+                <p className="settings-message">{securityApprovalCodeMessage}</p>
+              ) : null}
             </div>
           </section>
 
@@ -10922,7 +11141,7 @@ function PrivacySecurityPage({
                     onClick={() => void handleDiscordLink()}
                   >
                     <MessageCircle size={16} />
-                    {discordConnection?.linked ? "Connected" : "Connect"}
+                    {discordConnection?.linked ? "Connected" : "Send link"}
                   </button>
                 </article>
               </div>
@@ -10952,7 +11171,7 @@ function PrivacySecurityPage({
                   onClick={() => void handleAddPasskey()}
                 >
                   <KeyRound size={16} />
-                  Add passkey
+                  Send link
                 </button>
               </div>
               {securitySettings?.passkeys.length ? (
@@ -10969,7 +11188,7 @@ function PrivacySecurityPage({
                       <button
                         className="secondary-button icon-button"
                         type="button"
-                        title="Remove passkey"
+                        title="Send approval link to remove passkey"
                         disabled={securitySaving}
                         onClick={() => void handleDeletePasskey(passkey.id)}
                       >

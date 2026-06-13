@@ -724,6 +724,26 @@ export type SecuritySettingsResponse = {
   message?: string;
 };
 
+export type SecurityApprovalAction =
+  | "discord_link"
+  | "totp_start"
+  | "totp_disable"
+  | "email_mfa_enable"
+  | "email_mfa_disable"
+  | "passkey_add"
+  | "passkey_delete";
+
+export type SecurityApprovalResponse = {
+  message: string;
+};
+
+export type SecurityApprovalCodeResponse = {
+  action: SecurityApprovalAction;
+  approvalToken: string;
+  passkeyId?: string;
+  message: string;
+};
+
 export type DiscordStartResponse = {
   authorizationUrl: string;
   message: string;
@@ -742,6 +762,7 @@ export type PasskeyCredentialDescriptor = {
 };
 
 export type PasskeyRegistrationOptionsResponse = {
+  name?: string;
   publicKey: {
     challenge: string;
     rp: {

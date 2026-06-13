@@ -7,7 +7,7 @@ NEHub is a fan-made community platform dedicated to sharing and discussing Neuro
 ## Product Features
 
 - **Artwork publishing** supports public, unlisted, and private posts with up to 8 JPEG, PNG, WebP, or GIF images per artwork.
-- **Site credits** give new users a 10-image account storage limit, then unlock more upload slots through login rewards and likes received on artwork.
+- **Site credits** give new users a 10-image account storage limit, then unlock more upload slots through daily login rewards and likes received on artwork.
 - **Community discovery** includes latest, popular, rising, following, bookmark, subscription, tag, and daily/weekly ranking feeds.
 - **Creator profiles** include uploaded profile pictures, avatar URLs, bios, public artwork, public/private bookmark tabs, collections, ordered series, followers, and following lists.
 - **Social actions** include likes, public or private bookmarks, follows, comments, replies, reports, blocked users, muted tags, and global or followed-creator activity feeds.
@@ -35,7 +35,7 @@ The platform is built for performance and reliability as a Cloudflare-native dep
 
 ## Artwork Storage
 
-New users start with a 10-image account storage limit. Uploading a page to an artwork uses one image slot; deleting an artwork or image page frees the slot again. Each login awards a random site-credit bonus, 10 site credits unlock 1 extra upload image slot, and each first-time like received from another user on an artwork immediately awards the creator 100 site credits. Credits increase the account's total image-slot limit and are not removed when a like is later toggled off.
+New users start with a 10-image account storage limit. Uploading a page to an artwork uses one image slot; deleting an artwork or image page frees the slot again. The first login each UTC day awards a random site-credit bonus, 10 site credits unlock 1 extra upload image slot, and each first-time like received from another user on an artwork immediately awards the creator 100 site credits. Credits increase the account's total image-slot limit and are not removed when a like is later toggled off.
 
 Uploaded originals are stored in R2, while D1 keeps artwork metadata, detected dimensions, page order, tags, visibility, mature rating, review status, site-credit state, and interaction counts. Artwork originals are returned with the configured artwork media base URL, defaulting to `https://art.evilneur.org/`, while legacy `/media/artworks/...` links remain supported. Feed thumbnails are served through the thumbnail media route so public gallery views can use resized assets while artwork detail pages can load the original files from the artwork media domain.
 
@@ -205,7 +205,7 @@ The Worker reads Cloudflare's request country metadata and the `CF-IPCountry` he
 
 Uploaded artwork originals are byte-sniffed as JPEG, PNG, WebP, or GIF before storage, and detected image dimensions are written to D1/R2 metadata. Originals are stored in R2 under `artworks/...` and are exposed through the configured artwork media base URL, defaulting to `https://art.evilneur.org/`. Feed thumbnails are served through `/media-thumbnail/artworks/...`, which applies Cloudflare Image Resizing in production and falls back to the original object during local development. Worker-served public, general-audience media is cached immutably; private profiles, members-only profiles, mature content, and signed-in media requests use `private, no-store` responses. Bare `/media/artworks/:artworkId` links resolve to the current cover image, and `/media/artworks/:artworkId/:imageId` resolves to a specific artwork image without requiring the file extension.
 
-Account storage limits are enforced from D1. Existing legacy bonus slots are preserved, while future capacity comes from site credits: login rewards add random credits, 10 credits unlock 1 image slot, and first-time likes from other users award the creator 100 credits.
+Account storage limits are enforced from D1. Existing legacy bonus slots are preserved, while future capacity comes from site credits: daily login rewards add random credits, 10 credits unlock 1 image slot, and first-time likes from other users award the creator 100 credits.
 
 The schema creates a locked default administrator account:
 
@@ -276,17 +276,18 @@ Cloudflare Email Routing and the Turnstile widget still need to exist in the Clo
 - Cookie-authenticated POST routes require the `x-csrf-token` returned by auth/session responses.
 - Rate-limited routes return HTTP `429` with `Retry-After` and a JSON message when a user or IP exceeds the configured action window.
 - `POST /api/auth/register` creates an account with the 10-image base storage limit, validates Turnstile, sends a verification email, and starts a session.
-- `POST /api/auth/login` validates Turnstile, starts a session, and awards a random login site-credit bonus.
-- `GET /api/auth/discord/start` creates Discord OAuth state and redirects the browser to Discord.
+- `POST /api/auth/login` validates Turnstile, starts a session, and awards a random login site-credit bonus at most once per UTC day.
+- `GET /discord/start` creates Discord OAuth state and redirects the browser to Discord.
 - `POST /api/settings/security/discord/start` starts a CSRF-protected Discord login binding flow for the current user.
 - `GET /discord-verification` completes Discord OAuth2 exchange when Discord redirects back with `code` and `state`, then shows the verification page before creating a local session. Settings-initiated login binding also completes from this route.
-- `GET /api/auth/discord/callback` remains a backwards-compatible alias for older Discord redirect settings.
+- Legacy `/api/auth/discord/start` and `/api/auth/discord/callback` requests redirect to the browser-facing Discord routes.
 - `POST /api/auth/discord/verify` verifies the pending Discord sign-in challenge, links by verified email when needed, and starts a session.
+- `GET /security-confirmation` consumes emailed security approval links; backup codes can be redeemed from Privacy & Security.
 - `POST /api/auth/password-reset/request` validates Turnstile and sends a non-enumerating password reset email when the account exists.
 - `POST /api/auth/password-reset/confirm` validates Turnstile, consumes a reset token, updates the password, and revokes all sessions.
 - `POST /api/auth/logout` clears the current session.
 - `POST /api/auth/resend-verification` validates Turnstile and sends a new verification email.
-- `GET /api/auth/verify-email?token=` verifies an account email link.
+- `GET /email-confirmation?kind=verify&token=` opens the account email verification page.
 - `GET /api/notifications` returns the signed-in user's recent notifications and unread count.
 - `POST /api/notifications/read` marks one notification or all notifications as read.
 - `GET /api/activity?scope=global|following&limit=&cursor=` returns public or followed-creator activity with mature and block filtering.
@@ -343,7 +344,7 @@ Cloudflare Email Routing and the Turnstile widget still need to exist in the Clo
 - `POST /api/settings/account/deactivate` verifies the current password, hides the account by making the profile private, removes follow relationships, deactivates login, and revokes all sessions.
 - `PUT /api/settings/password` changes the signed-in user's password, keeps the current browser session active, and revokes other active sessions.
 - `POST /api/settings/email/request` verifies the current password and sends an email-change confirmation link to the new address.
-- `GET /api/settings/email/confirm?token=` consumes an email-change link, verifies the new address, updates the login email, and revokes other sessions.
+- `GET /email-confirmation?kind=change&token=` opens the email-change confirmation page.
 - `GET /api/settings/sessions` lists the signed-in user's active browser sessions.
 - `POST /api/settings/sessions/revoke-others` revokes every active session except the current browser.
 - `DELETE /api/settings/sessions/:id` revokes one other active session.

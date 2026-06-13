@@ -7,7 +7,35 @@
   "assets": {
     "directory": "./dist/client",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/",
+      "/analytics",
+      "/api/*",
+      "/artworks/*",
+      "/@*",
+      "/collections",
+      "/collections/*",
+      "/creators",
+      "/dashboard",
+      "/discord/start",
+      "/discord-verification",
+      "/email-confirmation",
+      "/media/*",
+      "/media-preview/*",
+      "/media-thumbnail/*",
+      "/notifications",
+      "/novels",
+      "/novels/*",
+      "/privacy",
+      "/rankings",
+      "/series",
+      "/series/*",
+      "/security-confirmation",
+      "/settings/*",
+      "/tags/*",
+      "/terms"
+    ]
   },
   "observability": {
     "enabled": true
