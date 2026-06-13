@@ -3348,7 +3348,7 @@ function App() {
                 type="button"
                 onClick={() => showNovels("home")}
               >
-                Reads
+                Novels
               </button>
             </nav>
           </div>
@@ -4510,9 +4510,9 @@ function DiscordVerificationPage({
   const [status, setStatus] = useState<
     "challenge" | "pending" | "confirmed" | "invalid" | "unavailable"
   >(initialStatus ?? (token ? "challenge" : "invalid"));
-  const [turnstileToken, setTurnstileToken] = useState("");
   const [challengeRevision, setChallengeRevision] = useState(0);
   const [returnTo, setReturnTo] = useState("/");
+  const verificationInFlightRef = useRef(false);
   const [message, setMessage] = useState(() =>
     initialStatus === "confirmed"
       ? "Discord sign-in verified."
@@ -4520,7 +4520,7 @@ function DiscordVerificationPage({
         ? "Discord verification is temporarily unavailable."
         : !token
           ? "Discord verification link is missing."
-          : "Review this Discord sign-in before NEHub creates your session."
+          : "NEHub is checking this Discord sign-in before creating your session."
   );
 
   useEffect(() => {
@@ -4534,16 +4534,17 @@ function DiscordVerificationPage({
     }
   }, [initialStatus, onSessionRefresh, token]);
 
-  const handleVerify = async () => {
+  const handleVerify = useCallback(async (turnstileToken: string) => {
+    const verifiedTurnstileToken = turnstileToken.trim();
     if (!token) {
       setStatus("invalid");
       setMessage("Discord verification link is missing.");
       return;
     }
-    if (!turnstileToken) {
-      setMessage("Complete the security check first.");
+    if (!verifiedTurnstileToken || verificationInFlightRef.current) {
       return;
     }
+    verificationInFlightRef.current = true;
     setStatus("pending");
     setMessage("Verifying Discord sign-in.");
     try {
@@ -4554,7 +4555,7 @@ function DiscordVerificationPage({
           "content-type": "application/json",
           accept: "application/json"
         },
-        body: JSON.stringify({ token, turnstileToken })
+        body: JSON.stringify({ token, turnstileToken: verifiedTurnstileToken })
       });
       const payload = (await response.json().catch(() => null)) as
         | DiscordVerificationResponse
@@ -4569,8 +4570,8 @@ function DiscordVerificationPage({
           await onSessionRefresh().catch((error: unknown) => {
             console.error("Unable to refresh Discord session", error);
           });
+          window.location.assign(payload.returnTo);
         } else {
-          setTurnstileToken("");
           setChallengeRevision((revision) => revision + 1);
         }
         return;
@@ -4578,11 +4579,12 @@ function DiscordVerificationPage({
       throw new Error(payload?.message ?? "Discord verification failed.");
     } catch (error) {
       setStatus("challenge");
-      setTurnstileToken("");
       setChallengeRevision((revision) => revision + 1);
       setMessage(error instanceof Error ? error.message : "Discord verification failed.");
+    } finally {
+      verificationInFlightRef.current = false;
     }
-  };
+  }, [onSessionRefresh, token]);
 
   const StatusIcon =
     status === "confirmed" ? ShieldCheck : status === "invalid" || status === "unavailable" ? X : MessageCircle;
@@ -4612,18 +4614,9 @@ function DiscordVerificationPage({
               key={challengeRevision}
               siteKey={siteKey}
               action="discord-confirm"
-              onToken={setTurnstileToken}
+              onToken={handleVerify}
               compact
             />
-            <button
-              className="primary-button"
-              type="button"
-              onClick={() => void handleVerify()}
-              disabled={!siteKey || !turnstileToken}
-            >
-              <ShieldCheck size={16} />
-              Verify and sign in
-            </button>
           </div>
         ) : null}
         {status !== "pending" && status !== "challenge" ? (
@@ -12068,14 +12061,23 @@ function NovelHubPage({
         : section === "bookmarks"
           ? bookmarkedNovels
           : novels;
+  const isRankingsSection = section === "rankings";
   const heroFeaturedNovel = section === "home" || section === "novels" ? featuredNovel : sectionNovels[0] ?? null;
+  const rankingTotalViews = rankingNovels.reduce((sum, novel) => sum + novel.viewCount, 0);
+  const rankingTotalLikes = rankingNovels.reduce((sum, novel) => sum + novel.likeCount, 0);
+  const rankingSignalMax = Math.max(rankingNovels.length, rankingTotalViews, rankingTotalLikes, 1);
+  const rankingSignals = [
+    { label: "Works indexed", value: formatCount(rankingNovels.length), count: rankingNovels.length },
+    { label: "Views captured", value: formatCount(rankingTotalViews), count: rankingTotalViews },
+    { label: "Reader likes", value: formatCount(rankingTotalLikes), count: rankingTotalLikes }
+  ];
 
   return (
-    <section className="content-main novels-page">
+    <section className={classNames("content-main novels-page", isRankingsSection && "novels-rankings-page")}>
       <MatureAccessNotice matureAccess={data?.matureAccess ?? null} onLogin={onAuthRequired} onPrivacySecurity={onPrivacySecurity} />
       <div className="novels-hero">
         <div className="novels-hero-copy">
-          <p className="eyebrow">NEHub reads</p>
+          <p className="eyebrow">{isRankingsSection ? "Novel ranking desk" : "NEHub reads"}</p>
           <h1>{sectionTitleMap[section]}</h1>
           <p>{sectionDescriptionMap[section]}</p>
           <div className="novels-hero-stats" aria-label="Feed stats">
@@ -12093,7 +12095,26 @@ function NovelHubPage({
             </span>
           </div>
         </div>
-        {heroFeaturedNovel ? (
+        {isRankingsSection ? (
+          <div className="ranking-signal-board" aria-label="Ranking signals">
+            <div className="ranking-signal-heading">
+              <span>Current feed</span>
+              <strong>{rankingNovels[0]?.title ?? "Awaiting ranked works"}</strong>
+            </div>
+            <div className="ranking-signal-list">
+              {rankingSignals.map((signal) => (
+                <div className="ranking-signal-row" key={signal.label}>
+                  <span>{signal.label}</span>
+                  <strong>{signal.value}</strong>
+                  <span
+                    className="ranking-signal-meter"
+                    style={{ "--ranking-fill": `${Math.max((signal.count / rankingSignalMax) * 100, signal.count > 0 ? 18 : 6)}%` } as CSSProperties}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : heroFeaturedNovel ? (
           <button
             className="featured-novel"
             type="button"
@@ -12190,12 +12211,13 @@ function NovelHubPage({
           ))}
         </div>
       ) : (
-        <div className="novel-grid" aria-live="polite">
+        <div className={classNames("novel-grid", isRankingsSection && "ranking-grid")} aria-live="polite">
           {sectionNovels.map((novel, index) => (
             <NovelCard
               key={novel.id}
               novel={novel}
               index={index}
+              rankingPosition={isRankingsSection ? index + 1 : undefined}
               onOpenNovel={onOpenNovel}
               onOpenProfile={onOpenProfile}
             />
@@ -12214,11 +12236,26 @@ function NovelHubPage({
         <p className="empty-feed">Collections are not supported yet.</p>
       ) : null}
       {data && !["creators", "tags", "collections"].includes(section) && sectionNovels.length === 0 ? (
-        <p className="empty-feed">
-          {section === "bookmarks"
-            ? "Bookmarks are not supported yet."
-            : "No works match this view yet."}
-        </p>
+        isRankingsSection ? (
+          <div className="ranking-empty-state">
+            <span className="ranking-empty-icon" aria-hidden="true">
+              <Trophy size={28} />
+            </span>
+            <div>
+              <strong>No ranked works yet</strong>
+              <p>The board is ready as soon as readable works enter this feed.</p>
+            </div>
+            <button className="secondary-button" type="button" onClick={() => onOpenSection("home")}>
+              Latest works
+            </button>
+          </div>
+        ) : (
+          <p className="empty-feed">
+            {section === "bookmarks"
+              ? "Bookmarks are not supported yet."
+              : "No works match this view yet."}
+          </p>
+        )
       ) : null}
     </section>
   );
@@ -12227,17 +12264,19 @@ function NovelHubPage({
 type NovelCardProps = {
   novel: Novel;
   index: number;
+  rankingPosition?: number;
   onOpenNovel: (novelId: string) => void;
   onOpenProfile: (username: string) => void;
 };
 
-function NovelCard({ novel, index, onOpenNovel, onOpenProfile }: NovelCardProps) {
+function NovelCard({ novel, index, rankingPosition, onOpenNovel, onOpenProfile }: NovelCardProps) {
   const novelPath = `/novels/${encodeURIComponent(novel.id)}`;
   return (
     <article
       className="novel-card"
       style={{ "--novel-cover": novel.coverColor, animationDelay: `${Math.min(index * 36, 260)}ms` } as CSSProperties}
     >
+      {rankingPosition ? <span className="novel-rank-badge">#{rankingPosition}</span> : null}
       <a
         className="novel-card-main"
         href={novelPath}

@@ -1855,6 +1855,150 @@ h1 {
   flex: 0 0 auto;
 }
 
+.novels-rankings-page {
+  gap: 22px;
+}
+
+.novels-rankings-page .novels-hero {
+  position: relative;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.72fr);
+  min-height: 248px;
+  border-color: rgba(0, 223, 238, 0.36);
+  background:
+    linear-gradient(120deg, rgba(255, 255, 255, 0.9), rgba(255, 247, 224, 0.7) 52%, rgba(235, 251, 252, 0.82)),
+    repeating-linear-gradient(90deg, rgba(58, 12, 163, 0.07) 0 1px, transparent 1px 48px),
+    rgba(255, 255, 255, 0.7);
+}
+
+.novels-rankings-page .novels-hero::before {
+  position: absolute;
+  right: 28px;
+  bottom: -34px;
+  color: rgba(0, 223, 238, 0.28);
+  font-size: 8.5rem;
+  font-weight: 950;
+  line-height: 1;
+  content: "01";
+  pointer-events: none;
+}
+
+.novels-rankings-page .novels-hero-copy {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  align-content: center;
+  min-width: 0;
+}
+
+.novels-rankings-page .novels-hero-copy h1 {
+  max-width: 560px;
+  color: #241067;
+}
+
+.novels-rankings-page .novels-hero-copy p:not(.eyebrow) {
+  max-width: 520px;
+  overflow-wrap: anywhere;
+}
+
+.novels-rankings-page .novels-hero-stats span {
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.ranking-signal-board {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 18px;
+  align-content: space-between;
+  min-width: 0;
+  min-height: 204px;
+  border: 1px solid rgba(58, 12, 163, 0.16);
+  border-left: 5px solid var(--cyan);
+  border-radius: 8px;
+  padding: 18px;
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.84), rgba(255, 247, 251, 0.72)),
+    repeating-linear-gradient(135deg, rgba(250, 158, 188, 0.12) 0 1px, transparent 1px 18px);
+  box-shadow: 8px 8px 0 rgba(58, 12, 163, 0.08);
+}
+
+.ranking-signal-heading {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ranking-signal-heading span,
+.ranking-signal-row span:first-child {
+  color: var(--blue-dark);
+  font-size: 0.72rem;
+  font-weight: 950;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.ranking-signal-heading strong {
+  color: var(--purple);
+  font-size: 1.45rem;
+  line-height: 1.08;
+  overflow-wrap: anywhere;
+}
+
+.ranking-signal-list {
+  display: grid;
+  gap: 12px;
+}
+
+.ranking-signal-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px 12px;
+  align-items: center;
+  min-width: 0;
+}
+
+.ranking-signal-row strong {
+  color: #241067;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.ranking-signal-meter {
+  position: relative;
+  grid-column: 1 / -1;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgba(58, 12, 163, 0.1);
+}
+
+.ranking-signal-meter::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--ranking-fill);
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--cyan), var(--yellow), var(--blue-dark));
+  content: "";
+}
+
+.novels-rankings-page .novels-toolbar {
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 8px 18px rgba(93, 122, 138, 0.08);
+}
+
+.novels-rankings-page .novels-toolbar h2 {
+  margin-bottom: 2px;
+  color: #241067;
+}
+
+.ranking-grid {
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+}
+
 .novel-tag-row {
   margin-top: -4px;
 }
@@ -1895,6 +2039,81 @@ h1 {
   box-shadow: 1px 1px 2px rgba(58, 12, 163, 0.08);
   transform: rotate(-7deg);
   content: "";
+}
+
+.novel-rank-badge {
+  position: absolute;
+  top: -14px;
+  right: 18px;
+  z-index: 2;
+  display: inline-grid;
+  place-items: center;
+  min-width: 46px;
+  min-height: 34px;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: linear-gradient(135deg, var(--yellow), #fff7d1);
+  color: #241067;
+  font-size: 0.86rem;
+  font-weight: 950;
+  box-shadow: 3px 3px 0 rgba(58, 12, 163, 0.12);
+}
+
+.ranking-grid .novel-card::before {
+  left: 18px;
+  background: rgba(0, 223, 238, 0.32);
+}
+
+.ranking-grid .novel-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(235, 251, 252, 0.5)),
+    rgba(255, 255, 255, 0.62);
+}
+
+.ranking-grid .novel-card-main {
+  min-height: 280px;
+}
+
+.ranking-empty-state {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  min-height: 168px;
+  border: 1px dashed rgba(0, 223, 238, 0.62);
+  border-radius: 8px;
+  padding: 22px;
+  background:
+    linear-gradient(120deg, rgba(255, 255, 255, 0.78), rgba(255, 247, 224, 0.56)),
+    repeating-linear-gradient(120deg, rgba(58, 12, 163, 0.05) 0 1px, transparent 1px 26px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.ranking-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--cyan), #ffffff);
+  color: var(--purple);
+  box-shadow: 4px 4px 0 rgba(58, 12, 163, 0.1);
+}
+
+.ranking-empty-state strong {
+  display: block;
+  color: #241067;
+  font-size: 1.15rem;
+  line-height: 1.15;
+}
+
+.ranking-empty-state p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-weight: 800;
+  line-height: 1.45;
 }
 
 .novel-card:nth-child(5n+1)::before {
@@ -5901,6 +6120,10 @@ h1 {
     grid-template-columns: 1fr;
   }
 
+  .novels-rankings-page .novels-hero {
+    grid-template-columns: 1fr;
+  }
+
   .novel-detail-side {
     position: static;
   }
@@ -6161,6 +6384,17 @@ h1 {
     overflow-x: hidden;
   }
 
+  .novels-rankings-page,
+  .novels-rankings-page .novels-hero,
+  .novels-rankings-page .novels-hero-copy,
+  .novels-rankings-page .novels-hero-stats,
+  .novels-rankings-page .ranking-signal-board,
+  .novels-rankings-page .novels-toolbar,
+  .novels-rankings-page .ranking-empty-state {
+    min-width: 0;
+    max-width: 100%;
+  }
+
   .rating-filter select {
     flex: 1;
   }
@@ -6250,6 +6484,35 @@ h1 {
     padding: 9px 10px;
   }
 
+  .novels-rankings-page .novels-hero {
+    min-height: 0;
+  }
+
+  .novels-rankings-page .novels-hero-copy p:not(.eyebrow) {
+    max-width: calc(100vw - 64px);
+  }
+
+  .novels-rankings-page .novels-hero-stats {
+    gap: 8px;
+    width: 100%;
+  }
+
+  .novels-rankings-page .novels-hero::before {
+    right: 14px;
+    bottom: -18px;
+    font-size: 5.25rem;
+  }
+
+  .ranking-signal-board {
+    min-height: 0;
+    padding: 14px;
+    box-shadow: 5px 5px 0 rgba(58, 12, 163, 0.08);
+  }
+
+  .ranking-signal-heading strong {
+    font-size: 1.16rem;
+  }
+
   .featured-novel {
     grid-template-columns: 48px minmax(0, 1fr);
     min-height: 0;
@@ -6284,6 +6547,20 @@ h1 {
   .novels-toolbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .novels-rankings-page .novels-toolbar {
+    align-items: stretch;
+  }
+
+  .ranking-empty-state {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    padding: 16px;
+  }
+
+  .ranking-empty-state .secondary-button {
+    width: 100%;
   }
 
   .novel-grid {
