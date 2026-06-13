@@ -62,7 +62,7 @@
   "vars": {
     "PUBLIC_APP_NAME": "NEHub",
     "PUBLIC_APP_URL": "https://nehub.example.com",
-    "PUBLIC_ARTWORK_MEDIA_URL": "https://art.evilneur.org/",
+    "PUBLIC_ARTWORK_MEDIA_URL": "https://art.example.com/",
     "PUBLIC_TURNSTILE_SITE_KEY": "replace-with-cloudflare-turnstile-site-key",
     "AUTH_EMAIL_FROM": "verify@example.com",
     "MATURE_RESTRICTED_REGIONS": ""

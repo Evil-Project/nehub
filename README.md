@@ -155,7 +155,7 @@ npx wrangler r2 bucket create nehub-artworks
 Create a Turnstile widget and set its public site key in `wrangler.jsonc`:
 
 ```jsonc
-"PUBLIC_ARTWORK_MEDIA_URL": "https://art.evilneur.org/",
+"PUBLIC_ARTWORK_MEDIA_URL": "https://art.example.com/",
 "PUBLIC_TURNSTILE_SITE_KEY": "your-turnstile-site-key"
 ```
 
@@ -246,7 +246,7 @@ Optional repository variable:
 Add these production repository variables before using the workflow:
 
 - `PUBLIC_APP_URL`: production HTTPS origin, for example `https://app.your-domain.com`.
-- `PUBLIC_ARTWORK_MEDIA_URL`: public artwork media origin, for example `https://art.evilneur.org/`.
+- `PUBLIC_ARTWORK_MEDIA_URL`: public artwork media origin, for example `https://art.your-domain.com/`.
 - `PUBLIC_TURNSTILE_SITE_KEY`: production Turnstile site key.
 - `AUTH_EMAIL_FROM`: allowed Cloudflare Email Routing sender.
 - `DISCORD_CLIENT_ID`: Discord OAuth2 client ID when Discord sign-in is enabled. This can also be set as a repository secret.
@@ -261,7 +261,7 @@ Optional repository variables override resource names and production settings:
 - `DISCORD_REDIRECT_URI`: explicit Discord redirect URL when it differs from `${PUBLIC_APP_URL}/discord-verification`. This can also be set as a repository secret.
 - `MATURE_RESTRICTED_REGIONS`: comma-separated ISO 3166-1 alpha-2 country codes.
 
-The workflow installs dependencies with `npm ci`, runs `npm run check`, builds with `npm run build`, runs `scripts/provision-cloudflare.mjs`, applies pending remote D1 migrations, and deploys with `npx wrangler deploy`. Production deploys fail early if required values are missing or still use local/test placeholders.
+The workflow installs dependencies with `npm ci`, runs `npm run check`, builds with `npm run build`, runs `scripts/provision-cloudflare.mjs`, applies pending remote D1 migrations, and deploys with `npx wrangler deploy`. Production deploys read `PUBLIC_ARTWORK_MEDIA_URL` from the GitHub repository variable, not the example value in `wrangler.jsonc`, and fail early if required values are missing or still use local/test placeholders.
 
 Provisioning is idempotent and automatic on the first run. The script infers the Cloudflare account ID when possible, reuses an existing D1 database or R2 bucket by name, creates missing ones, writes a temporary CI Wrangler config with the discovered D1 database ID, and deploys the Worker vars from that generated config.
 

@@ -201,7 +201,7 @@ const vars = {
   ),
   PUBLIC_ARTWORK_MEDIA_URL: getEnv(
     "PUBLIC_ARTWORK_MEDIA_URL",
-    config.vars?.PUBLIC_ARTWORK_MEDIA_URL
+    isProductionDeploy ? "" : config.vars?.PUBLIC_ARTWORK_MEDIA_URL
   ),
   PUBLIC_TURNSTILE_SITE_KEY: getEnv(
     "PUBLIC_TURNSTILE_SITE_KEY",
@@ -226,6 +226,7 @@ if (isProductionDeploy) {
   writeGithubEnv({ CLOUDFLARE_ACCOUNT_ID: accountId });
   assertProductionValue("TURNSTILE_SECRET_KEY", requireEnv("TURNSTILE_SECRET_KEY"));
   assertProductionValue("PUBLIC_APP_URL", vars.PUBLIC_APP_URL);
+  assertProductionValue("PUBLIC_ARTWORK_MEDIA_URL", vars.PUBLIC_ARTWORK_MEDIA_URL);
   assertProductionValue("PUBLIC_TURNSTILE_SITE_KEY", vars.PUBLIC_TURNSTILE_SITE_KEY);
   assertProductionValue("AUTH_EMAIL_FROM", vars.AUTH_EMAIL_FROM);
   const discordClientSecret = getEnv("DISCORD_CLIENT_SECRET");

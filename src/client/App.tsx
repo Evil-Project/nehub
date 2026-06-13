@@ -8760,7 +8760,12 @@ function ProfilePage({
   const novelContext = context === "novels";
   const tabs: Array<{ id: ProfileTab; label: string; count: number; icon: typeof Images }> = profileData
     ? [
-        { id: "works", label: "Works", count: profileData.stats.artworks, icon: Images },
+        {
+          id: "works",
+          label: novelContext ? "Novels" : "Works",
+          count: profileData.stats.artworks,
+          icon: novelContext ? NotebookText : Images
+        },
         {
           id: "public",
           label: novelContext ? "Public reads" : "Public bookmarks",
@@ -9199,7 +9204,7 @@ function ProfilePage({
               <DefaultAvatar className="profile-avatar profile-avatar-fallback" name={profile.displayName} />
             )}
             <div className="profile-copy">
-              <p className="eyebrow">{novelContext ? "Profile" : "Creator profile"}</p>
+              <p className="eyebrow">{novelContext ? "Novel profile" : "Creator profile"}</p>
               <h1>{profile.displayName}</h1>
               <button
                 className={classNames("profile-handle", copiedUsername && "is-copied")}
@@ -9254,7 +9259,7 @@ function ProfilePage({
                   {formatCount(profileData.stats.following)} following
                 </button>
                 <span>{formatCount(profileData.stats.totalLikes)} likes</span>
-                <span>{formatCount(profileData.stats.totalViews)} views</span>
+                <span>{formatCount(profileData.stats.totalViews)} {novelContext ? "reads" : "views"}</span>
                 {ownProfile && currentUser ? (
                   <>
                     <span>{formatCount(currentUser.storage.siteCredits)} credits</span>
@@ -9503,7 +9508,7 @@ function ProfilePage({
                   <span>
                     <strong>{collection.name}</strong>
                     <small>
-                      {formatCount(collection.itemCount)} works · Updated{" "}
+                      {formatCount(collection.itemCount)} {novelContext ? "reads" : "works"} · Updated{" "}
                       {dateFormat.format(new Date(collection.updatedAt))}
                     </small>
                   </span>
@@ -9526,7 +9531,7 @@ function ProfilePage({
                   <span>
                     <strong>{series.title}</strong>
                     <small>
-                      {formatCount(series.itemCount)} works · Updated{" "}
+                      {formatCount(series.itemCount)} {novelContext ? "entries" : "works"} · Updated{" "}
                       {dateFormat.format(new Date(series.updatedAt))}
                     </small>
                   </span>
@@ -9558,10 +9563,16 @@ function ProfilePage({
               : visibleArtworks.length === 0) ? (
             <p className="empty-feed">
               {activeTab === "collections"
-                ? "No public collections yet."
+                ? novelContext
+                  ? "No public shelves yet."
+                  : "No public collections yet."
                 : activeTab === "series"
-                  ? "No public series yet."
-                : "No works in this section."}
+                  ? novelContext
+                    ? "No public serials yet."
+                    : "No public series yet."
+                : novelContext
+                  ? "No readable works in this section."
+                  : "No works in this section."}
             </p>
           ) : null}
           {!profile.blocked && activeNextCursor ? (
@@ -12055,12 +12066,7 @@ function NovelHubPage({
   };
   const sectionTabs: { section: NovelSection; label: string; icon: typeof Home }[] = [
     { section: "home", label: "Home", icon: Home },
-    { section: "following", label: "Following", icon: Grid3X3 },
-    { section: "creators", label: "Creators", icon: UserPlus },
-    { section: "tags", label: "Tags", icon: Bell },
-    { section: "bookmarks", label: "Bookmarks", icon: Bookmark },
-    { section: "rankings", label: "Rankings", icon: Trophy },
-    { section: "collections", label: "Collections", icon: FolderOpen }
+    { section: "following", label: "Following", icon: Grid3X3 }
   ];
   const sectionNovels =
     section === "following"
@@ -12071,9 +12077,18 @@ function NovelHubPage({
           ? bookmarkedNovels
           : novels;
   const isRankingsSection = section === "rankings";
+  const isDedicatedNovelSection =
+    section === "creators" ||
+    section === "tags" ||
+    section === "bookmarks" ||
+    section === "rankings" ||
+    section === "collections";
+  const showNovelHomeTabs = section === "home" || section === "following";
   const showMatureFilter = section !== "creators" && section !== "tags" && section !== "collections";
-  const activeSectionLabel = sectionTabs.find((item) => item.section === section)?.label ?? "All works";
+  const activeSectionLabel = sectionTabs.find((item) => item.section === section)?.label ?? sectionTitleMap[section];
   const prominentNovelTags = data?.tags.slice(0, 12) ?? [];
+  const sectionLikeCount = sectionNovels.reduce((sum, novel) => sum + novel.likeCount, 0);
+  const sectionViewCount = sectionNovels.reduce((sum, novel) => sum + novel.viewCount, 0);
   const visibleCount =
     section === "creators"
       ? creators.length
@@ -12126,9 +12141,46 @@ function NovelHubPage({
             : section === "creators"
               ? "Authors publishing readable works will appear here."
               : "Try the latest feed or adjust the current filters.";
+  const summaryItems =
+    section === "creators"
+      ? [
+          { value: visibleCount, label: visibleUnitLabel },
+          { value: followedCreators.length, label: "followed authors" },
+          { value: novels.length, label: "readable works" }
+        ]
+      : section === "tags"
+        ? [
+            { value: visibleCount, label: visibleUnitLabel },
+            { value: novels.length, label: "tagged works" },
+            { value: totalWords, label: "words indexed" }
+          ]
+        : section === "rankings"
+          ? [
+              { value: visibleCount, label: visibleUnitLabel },
+              { value: sectionLikeCount, label: "likes in ranking" },
+              { value: sectionViewCount, label: "reads in ranking" }
+            ]
+          : section === "collections"
+            ? [
+                { value: visibleCount, label: visibleUnitLabel },
+                { value: novels.length, label: "readable works" },
+                { value: data?.tags.length ?? 0, label: "tags" }
+              ]
+            : [
+                { value: visibleCount, label: data ? visibleUnitLabel : "loading works" },
+                { value: totalWords, label: "words in current feed" },
+                { value: data?.tags.length ?? 0, label: "tags" }
+              ];
 
   return (
-    <section className={classNames("content-main novels-page novel-feed-page", isRankingsSection && "novels-rankings-page")}>
+    <section
+      className={classNames(
+        "content-main novels-page novel-feed-page",
+        `novel-section-${section}`,
+        isDedicatedNovelSection && "novel-section-page",
+        isRankingsSection && "novels-rankings-page"
+      )}
+    >
       <MatureAccessNotice matureAccess={data?.matureAccess ?? null} onLogin={onAuthRequired} onPrivacySecurity={onPrivacySecurity} />
       <div className="section-heading novel-feed-heading">
         <div>
@@ -12152,43 +12204,41 @@ function NovelHubPage({
               </select>
             </label>
           ) : null}
-          <button className="filter-chip" type="button" onClick={() => onOpenSection("home")}>
-            {activeSectionLabel}
-            <ChevronDown size={15} />
-          </button>
+          {showNovelHomeTabs ? (
+            <button className="filter-chip" type="button" onClick={() => onOpenSection("home")}>
+              {activeSectionLabel}
+              <ChevronDown size={15} />
+            </button>
+          ) : null}
         </div>
       </div>
 
-      <div className="work-tabs novel-work-tabs" aria-label="Novel sections">
-        {sectionTabs.map((item) => {
-          const Icon = item.icon;
-          return (
-            <button
-              key={item.section}
-              className={classNames("work-tab", section === item.section && "is-active")}
-              type="button"
-              onClick={() => onOpenSection(item.section)}
-            >
-              <Icon size={16} />
-              {item.label}
-            </button>
-          );
-        })}
-      </div>
+      {showNovelHomeTabs ? (
+        <div className="work-tabs novel-work-tabs" aria-label="Novel sections">
+          {sectionTabs.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.section}
+                className={classNames("work-tab", section === item.section && "is-active")}
+                type="button"
+                onClick={() => onOpenSection(item.section)}
+              >
+                <Icon size={16} />
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
 
       <div className="novel-feed-summary" aria-label="Novel feed summary">
-        <span>
-          <strong>{formatCount(visibleCount)}</strong>
-          {data ? visibleUnitLabel : "loading works"}
-        </span>
-        <span>
-          <strong>{formatCount(totalWords)}</strong>
-          words in current feed
-        </span>
-        <span>
-          <strong>{formatCount(section === "creators" ? followedCreators.length : data?.tags.length ?? 0)}</strong>
-          {section === "creators" ? "followed authors" : "tags"}
-        </span>
+        {summaryItems.map((item) => (
+          <span key={item.label}>
+            <strong>{formatCount(item.value)}</strong>
+            {item.label}
+          </span>
+        ))}
       </div>
 
       {featuredNovel && (section === "home" || section === "novels") ? (
@@ -12210,7 +12260,7 @@ function NovelHubPage({
         </button>
       ) : null}
 
-      {prominentNovelTags.length && section !== "tags" ? (
+      {prominentNovelTags.length && (section === "home" || section === "following" || section === "novels") ? (
         <div className="tag-row novel-tag-row" aria-label="Popular novel tags">
           {prominentNovelTags.map((tag) => (
             <button className="tag-pill novel-tag-pill" key={tag.name} type="button" onClick={() => onOpenSection("novels")}>
