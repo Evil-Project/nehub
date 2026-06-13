@@ -525,6 +525,57 @@ img {
   box-shadow: var(--sticker-shadow);
 }
 
+.page-frame.is-novel-section {
+  --novel-ink: #25384d;
+  --novel-wine: #5f326c;
+  --novel-gold: #b9822e;
+  --novel-teal: #2f7280;
+  --novel-paper: #fffdf6;
+}
+
+.page-frame.is-novel-section .left-menu {
+  border-color: rgba(95, 50, 108, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255, 253, 246, 0.86), rgba(246, 250, 248, 0.72)),
+    repeating-linear-gradient(0deg, rgba(47, 114, 128, 0.06) 0 1px, transparent 1px 26px);
+  box-shadow: 0 18px 38px rgba(37, 56, 77, 0.12);
+}
+
+.page-frame.is-novel-section .menu-item {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(95, 50, 108, 0.08);
+  background:
+    linear-gradient(135deg, rgba(255, 253, 246, 0.94), rgba(234, 243, 241, 0.82)),
+    linear-gradient(90deg, rgba(185, 130, 46, 0.14), transparent 34%);
+  color: var(--novel-wine);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.page-frame.is-novel-section .menu-item::after {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 3px;
+  border-radius: 999px;
+  background: rgba(185, 130, 46, 0.48);
+  content: "";
+}
+
+.page-frame.is-novel-section .menu-item.is-active {
+  border-color: rgba(185, 130, 46, 0.36);
+  background:
+    linear-gradient(135deg, rgba(255, 253, 246, 0.98), rgba(221, 239, 237, 0.9)),
+    linear-gradient(90deg, rgba(185, 130, 46, 0.24), transparent 42%);
+  color: var(--novel-ink);
+  box-shadow: 3px 3px 0 rgba(47, 114, 128, 0.13);
+}
+
+.page-frame.is-novel-section .menu-item.is-active::after {
+  background: var(--novel-teal);
+}
+
 .side-panel {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -2014,6 +2065,117 @@ h1 {
 
 .novel-detail-tags {
   gap: 8px;
+}
+
+.novel-dedicated-page {
+  position: relative;
+  --novel-ink: #25384d;
+  --novel-wine: #5f326c;
+  --novel-gold: #b9822e;
+  --novel-teal: #2f7280;
+  --novel-paper: #fffdf6;
+}
+
+.novel-dashboard-main {
+  position: relative;
+  --novel-ink: #25384d;
+  --novel-wine: #5f326c;
+  --novel-gold: #b9822e;
+  --novel-teal: #2f7280;
+  --novel-paper: #fffdf6;
+}
+
+.novel-dedicated-page::before,
+.novel-dashboard-main::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--novel-teal), var(--novel-gold));
+  content: "";
+}
+
+.novel-dedicated-page > *,
+.novel-dashboard-main > * {
+  margin-left: 18px;
+}
+
+.novel-dedicated-page h1,
+.novel-dashboard-main h1 {
+  color: var(--novel-ink);
+  text-shadow: 2px 2px 0 rgba(255, 253, 246, 0.9);
+}
+
+.novel-dedicated-page .eyebrow,
+.novel-dashboard-main .eyebrow {
+  color: var(--novel-teal);
+  letter-spacing: 0;
+}
+
+.novel-dedicated-page .primary-button,
+.novel-dashboard-main .primary-button {
+  border-color: rgba(255, 253, 246, 0.96);
+  background: linear-gradient(135deg, var(--novel-teal), var(--novel-wine));
+  box-shadow: 3px 3px 0 rgba(37, 56, 77, 0.13);
+}
+
+.novel-dedicated-page .secondary-button,
+.novel-dashboard-main .secondary-button {
+  border-color: rgba(95, 50, 108, 0.16);
+  background: linear-gradient(135deg, rgba(255, 253, 246, 0.96), rgba(234, 243, 241, 0.88));
+  color: var(--novel-wine);
+}
+
+.novel-dedicated-page .settings-panel,
+.novel-dedicated-page .policy-section,
+.novel-dedicated-page .collection-folder-card,
+.novel-dedicated-page .notification-page-row,
+.novel-dedicated-page .profile-hero,
+.novel-dedicated-page .profile-follow-panel,
+.novel-dashboard-main .dashboard-panel,
+.novel-dashboard-main .metric-tile,
+.novel-dashboard-main .status-card {
+  border-color: rgba(95, 50, 108, 0.12);
+  background:
+    linear-gradient(135deg, rgba(255, 253, 246, 0.88), rgba(246, 250, 248, 0.7)),
+    repeating-linear-gradient(0deg, transparent 0 31px, rgba(47, 114, 128, 0.09) 31px 32px);
+  box-shadow: 0 12px 28px rgba(37, 56, 77, 0.1);
+}
+
+.novel-dedicated-page .collection-folder-card,
+.novel-dedicated-page .notification-page-row {
+  position: relative;
+  overflow: hidden;
+}
+
+.novel-dedicated-page .collection-folder-card::before,
+.novel-dedicated-page .notification-page-row::before {
+  position: absolute;
+  inset: 12px auto 12px 0;
+  width: 4px;
+  border-radius: 999px;
+  background: var(--novel-gold);
+  content: "";
+}
+
+.novel-dedicated-page .collection-folder-icon,
+.novel-dedicated-page .notification-icon,
+.novel-dedicated-page .profile-avatar-fallback,
+.novel-dedicated-page .profile-follow-avatar-fallback {
+  background: linear-gradient(135deg, rgba(255, 253, 246, 0.95), rgba(208, 229, 225, 0.94));
+  color: var(--novel-wine);
+}
+
+.novel-dedicated-page .profile-tabs,
+.novel-dedicated-page .segmented-control {
+  border-color: rgba(95, 50, 108, 0.14);
+  background: rgba(255, 253, 246, 0.78);
+}
+
+.novel-dedicated-page .profile-tabs button.is-active,
+.novel-dedicated-page .segmented-control button.is-active {
+  background: linear-gradient(135deg, rgba(255, 253, 246, 0.98), rgba(221, 239, 237, 0.9));
+  color: var(--novel-ink);
 }
 
 .recent-row {
@@ -5528,6 +5690,16 @@ h1 {
 
   .novel-detail-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .novel-dedicated-page::before,
+  .novel-dashboard-main::before {
+    display: none;
+  }
+
+  .novel-dedicated-page > *,
+  .novel-dashboard-main > * {
+    margin-left: 0;
   }
 
   .novel-body p {

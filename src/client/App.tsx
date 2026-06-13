@@ -529,7 +529,7 @@ type SeriesSettingsInput = {
 
 type RouteState = {
   view: ViewMode;
-  routeContext: "illustrations" | "novels";
+  routeContext: RouteContext;
   username: string;
   artworkId: string;
   novelId: string;
@@ -538,6 +538,7 @@ type RouteState = {
   seriesId: string;
   tag: string;
 };
+type RouteContext = "illustrations" | "novels";
 
 const routeState = (
   view: ViewMode,
@@ -1034,6 +1035,16 @@ function App() {
       cancelled = true;
     };
   }, [refreshAuthSession]);
+
+  useEffect(() => {
+    if (!authReady || !currentUser || !authOpen || passwordResetToken) {
+      return;
+    }
+    setAuthOpen(false);
+    setPostAuthSort(null);
+    setPostAuthNovelSection(null);
+    setAuthNotice((notice) => (notice.startsWith("Sign in ") ? "" : notice));
+  }, [authOpen, authReady, currentUser, passwordResetToken]);
 
   const loadNotifications = useCallback(async () => {
     if (!currentUser) {
@@ -1667,7 +1678,7 @@ function App() {
   const showNotifications = () => {
     if (!currentUser) {
       openAuth("login");
-      setAuthNotice("Sign in to view notifications.");
+      setAuthNotice(isNovelSection ? "Sign in to view novel alerts." : "Sign in to view notifications.");
       return;
     }
     setNotificationsOpen(false);
@@ -1677,7 +1688,7 @@ function App() {
   const showCollections = () => {
     if (!currentUser) {
       openAuth("login");
-      setAuthNotice("Sign in to manage collections.");
+      setAuthNotice(isNovelSection ? "Sign in to manage reading shelves." : "Sign in to manage collections.");
       return;
     }
     pushRoute(isNovelSection ? "/novels/my-folders" : "/collections", "collections");
@@ -1706,7 +1717,7 @@ function App() {
   const showSeriesList = () => {
     if (!currentUser) {
       openAuth("login");
-      setAuthNotice("Sign in to manage series.");
+      setAuthNotice(isNovelSection ? "Sign in to manage story serials." : "Sign in to manage series.");
       return;
     }
     pushRoute(isNovelSection ? "/novels/my-series" : "/series", "seriesList");
@@ -1732,7 +1743,7 @@ function App() {
   const showAnalytics = () => {
     if (!currentUser) {
       openAuth("login");
-      setAuthNotice("Sign in to view creator analytics.");
+      setAuthNotice(isNovelSection ? "Sign in to view story stats." : "Sign in to view creator analytics.");
       return;
     }
     pushRoute(isNovelSection ? "/novels/analytics" : "/analytics", "analytics");
@@ -3422,7 +3433,7 @@ function App() {
                 onClick={() => showNovels("home")}
               >
                 <Home size={18} />
-                Home
+                Library
               </button>
               <button
                 className={classNames("menu-item", view === "novels" && routeNovelSection === "following" && "is-active")}
@@ -3438,7 +3449,7 @@ function App() {
                 onClick={() => showNovels("creators")}
               >
                 <UserPlus size={18} />
-                Creators
+                Writers
               </button>
               <button
                 className={classNames("menu-item", view === "novels" && routeNovelSection === "tags" && "is-active")}
@@ -3446,7 +3457,7 @@ function App() {
                 onClick={() => showNovels("tags")}
               >
                 <Bell size={18} />
-                Tags
+                Genres
               </button>
               <button
                 className={classNames("menu-item", view === "novels" && routeNovelSection === "bookmarks" && "is-active")}
@@ -3454,7 +3465,7 @@ function App() {
                 onClick={() => showNovels("bookmarks")}
               >
                 <Bookmark size={18} />
-                Bookmarks
+                Reading list
               </button>
               <button
                 className={classNames("menu-item", view === "novels" && routeNovelSection === "rankings" && "is-active")}
@@ -3462,7 +3473,7 @@ function App() {
                 onClick={() => showNovels("rankings")}
               >
                 <Trophy size={18} />
-                Rankings
+                Top novels
               </button>
               <button
                 className={classNames("menu-item", view === "novels" && routeNovelSection === "collections" && "is-active")}
@@ -3470,23 +3481,7 @@ function App() {
                 onClick={() => showNovels("collections")}
               >
                 <FolderOpen size={18} />
-                Collections
-              </button>
-              <button
-                className={classNames("menu-item", view === "novels" && routeNovelSection === "terms" && "is-active")}
-                type="button"
-                onClick={() => showNovels("terms")}
-              >
-                <FileText size={18} />
-                Terms
-              </button>
-              <button
-                className={classNames("menu-item", view === "novels" && routeNovelSection === "privacy" && "is-active")}
-                type="button"
-                onClick={() => showNovels("privacy")}
-              >
-                <Shield size={18} />
-                Policy
+                Shelves
               </button>
             </>
           ) : (
@@ -3560,7 +3555,7 @@ function App() {
                 onClick={() => showProfile(currentUser.username)}
               >
                 <UserRound size={18} />
-                Profile
+                {isNovelSection ? "Reader profile" : "Profile"}
               </button>
               <button
                 className={classNames("menu-item", view === "notifications" && "is-active")}
@@ -3568,7 +3563,7 @@ function App() {
                 onClick={showNotifications}
               >
                 <Bell size={18} />
-                Notifications
+                {isNovelSection ? "Novel alerts" : "Notifications"}
               </button>
               <button
                 className={classNames("menu-item", view === "analytics" && "is-active")}
@@ -3576,7 +3571,7 @@ function App() {
                 onClick={showAnalytics}
               >
                 <TrendingUp size={18} />
-                Analytics
+                {isNovelSection ? "Story stats" : "Analytics"}
               </button>
               <button
                 className={classNames(
@@ -3587,7 +3582,7 @@ function App() {
                 onClick={showCollections}
               >
                 <FolderOpen size={18} />
-                My folders
+                {isNovelSection ? "My shelves" : "My folders"}
               </button>
               <button
                 className={classNames(
@@ -3598,7 +3593,7 @@ function App() {
                 onClick={showSeriesList}
               >
                 <ListOrdered size={18} />
-                My series
+                {isNovelSection ? "My serials" : "My series"}
               </button>
               <button
                 className={classNames("menu-item", view === "profileSettings" && "is-active")}
@@ -3606,7 +3601,7 @@ function App() {
                 onClick={showProfileSettings}
               >
                 <UserCog size={18} />
-                Profile settings
+                {isNovelSection ? "Story profile" : "Profile settings"}
               </button>
               <button
                 className={classNames("menu-item", view === "privacySecurity" && "is-active")}
@@ -3614,7 +3609,7 @@ function App() {
                 onClick={showPrivacySecurity}
               >
                 <KeyRound size={18} />
-                Privacy
+                {isNovelSection ? "Reader privacy" : "Privacy"}
               </button>
             </>
           ) : null}
@@ -3625,10 +3620,29 @@ function App() {
               onClick={showDashboard}
             >
               <BarChart3 size={18} />
-              Dashboard
+              {isNovelSection ? "Novel ops" : "Dashboard"}
             </button>
           ) : null}
-          {!isNovelSection ? (
+          {isNovelSection ? (
+            <>
+              <button
+                className={classNames("menu-item", view === "novels" && routeNovelSection === "terms" && "is-active")}
+                type="button"
+                onClick={() => showNovels("terms")}
+              >
+                <FileText size={18} />
+                Novel terms
+              </button>
+              <button
+                className={classNames("menu-item", view === "novels" && routeNovelSection === "privacy" && "is-active")}
+                type="button"
+                onClick={() => showNovels("privacy")}
+              >
+                <Shield size={18} />
+                Novel policy
+              </button>
+            </>
+          ) : (
             <>
               <button
                 className={classNames("menu-item", view === "terms" && "is-active")}
@@ -3647,11 +3661,12 @@ function App() {
                 Policy
               </button>
             </>
-          ) : null}
+          )}
         </aside>
 
         {view === "dashboard" ? (
           <Dashboard
+            context={routeContext}
             artworks={artworks}
             health={health}
             adminStats={adminStats}
@@ -3697,9 +3712,9 @@ function App() {
           />
         ) : view === "novels" ? (
           routeNovelSection === "terms" ? (
-            <PolicyPage kind="terms" onOpenPrivacy={() => showNovels("privacy")} />
+            <PolicyPage kind="terms" context="novels" onOpenPrivacy={() => showNovels("privacy")} />
           ) : routeNovelSection === "privacy" ? (
-            <PolicyPage kind="privacy" onOpenTerms={() => showNovels("terms")} />
+            <PolicyPage kind="privacy" context="novels" onOpenTerms={() => showNovels("terms")} />
           ) : (
             <NovelHubPage
               section={routeNovelSection}
@@ -3735,6 +3750,7 @@ function App() {
           />
         ) : view === "profile" ? (
           <ProfilePage
+            context={routeContext}
             username={profileUsername}
             csrfToken={csrfToken}
             siteKey={authConfig?.turnstileSiteKey ?? ""}
@@ -3781,6 +3797,7 @@ function App() {
           />
         ) : view === "notifications" ? (
           <NotificationsPage
+            context={routeContext}
             data={notifications}
             currentUser={currentUser}
             onAuthRequired={() => openAuth("login")}
@@ -3790,6 +3807,7 @@ function App() {
           />
         ) : view === "analytics" ? (
           <CreatorAnalyticsPage
+            context={routeContext}
             currentUser={currentUser}
             onAuthRequired={() => openAuth("login")}
             onOpenArtwork={openArtwork}
@@ -3804,6 +3822,7 @@ function App() {
           />
         ) : view === "collections" ? (
           <CollectionsPage
+            context={routeContext}
             collections={collections?.collections ?? []}
             currentUser={currentUser}
             onAuthRequired={() => openAuth("login")}
@@ -3812,6 +3831,7 @@ function App() {
           />
         ) : view === "collection" ? (
           <CollectionPage
+            context={routeContext}
             collectionId={routeCollectionId}
             currentUser={currentUser}
             onAuthRequired={() => openAuth("login")}
@@ -3826,6 +3846,7 @@ function App() {
           />
         ) : view === "seriesList" ? (
           <SeriesListPage
+            context={routeContext}
             seriesList={seriesList?.series ?? []}
             currentUser={currentUser}
             onAuthRequired={() => openAuth("login")}
@@ -3834,6 +3855,7 @@ function App() {
           />
         ) : view === "series" ? (
           <SeriesPage
+            context={routeContext}
             seriesId={routeSeriesId}
             currentUser={currentUser}
             onAuthRequired={() => openAuth("login")}
@@ -3848,6 +3870,7 @@ function App() {
           />
         ) : view === "profileSettings" ? (
           <ProfileSettingsPage
+            context={routeContext}
             csrfToken={csrfToken}
             currentUser={currentUser}
             onAuthRequired={() => openAuth("login")}
@@ -3857,6 +3880,7 @@ function App() {
           />
         ) : view === "privacySecurity" ? (
           <PrivacySecurityPage
+            context={routeContext}
             csrfToken={csrfToken}
             currentUser={currentUser}
             onAuthRequired={() => openAuth("login")}
@@ -5095,6 +5119,7 @@ function NotificationMenu({ data, onMarkRead }: NotificationMenuProps) {
 }
 
 type NotificationsPageProps = {
+  context: RouteContext;
   data: NotificationsResponse | null;
   currentUser: AuthUser | null;
   onAuthRequired: () => void;
@@ -5104,6 +5129,7 @@ type NotificationsPageProps = {
 };
 
 function NotificationsPage({
+  context,
   data,
   currentUser,
   onAuthRequired,
@@ -5116,6 +5142,7 @@ function NotificationsPage({
   const notifications = data?.notifications ?? [];
   const showLoadingState = loading && !data;
   const showEmptyState = Boolean(data && !loading && !message && notifications.length === 0);
+  const novelContext = context === "novels";
 
   useEffect(() => {
     if (!currentUser) {
@@ -5142,8 +5169,8 @@ function NotificationsPage({
 
   if (!currentUser) {
     return (
-      <section className="content-main notification-page">
-        <p className="empty-feed">Sign in to view notifications.</p>
+      <section className={classNames("content-main notification-page", novelContext && "novel-dedicated-page novel-notification-page")}>
+        <p className="empty-feed">{novelContext ? "Sign in to view novel alerts." : "Sign in to view notifications."}</p>
         <button className="primary-button" type="button" onClick={onAuthRequired}>
           <LogIn size={17} />
           Sign in
@@ -5153,15 +5180,17 @@ function NotificationsPage({
   }
 
   return (
-    <section className="content-main notification-page">
+    <section className={classNames("content-main notification-page", novelContext && "novel-dedicated-page novel-notification-page")}>
       <div className="settings-heading notification-page-heading">
         <div>
-          <p className="eyebrow">Notifications</p>
-          <h1>Notification center</h1>
+          <p className="eyebrow">{novelContext ? "Novel alerts" : "Notifications"}</p>
+          <h1>{novelContext ? "Reading notifications" : "Notification center"}</h1>
           <p>
             {data
               ? `${formatCount(data.unreadCount)} unread updates from likes, comments, follows, and moderation.`
-              : "Loading community updates."}
+              : novelContext
+                ? "Loading reader and writer updates."
+                : "Loading community updates."}
           </p>
         </div>
         <button
@@ -5182,7 +5211,9 @@ function NotificationsPage({
         {notifications.map((notification) => {
           const Icon = notificationIconFor(notification);
           const targetLabel = notification.artworkId
-            ? "Open artwork"
+            ? novelContext
+              ? "Open work"
+              : "Open artwork"
             : notification.actor
               ? "Open profile"
               : "Mark read";
@@ -5220,12 +5251,14 @@ function NotificationsPage({
 }
 
 type CreatorAnalyticsPageProps = {
+  context: RouteContext;
   currentUser: AuthUser | null;
   onAuthRequired: () => void;
   onOpenArtwork: (artwork: Artwork) => void;
 };
 
 function CreatorAnalyticsPage({
+  context,
   currentUser,
   onAuthRequired,
   onOpenArtwork
@@ -5233,6 +5266,7 @@ function CreatorAnalyticsPage({
   const [data, setData] = useState<CreatorAnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const novelContext = context === "novels";
 
   useEffect(() => {
     if (!currentUser) {
@@ -5275,8 +5309,8 @@ function CreatorAnalyticsPage({
 
   if (!currentUser) {
     return (
-      <section className="content-main analytics-page">
-        <p className="empty-feed">Sign in to view creator analytics.</p>
+      <section className={classNames("content-main analytics-page", novelContext && "novel-dedicated-page novel-analytics-page")}>
+        <p className="empty-feed">{novelContext ? "Sign in to view story stats." : "Sign in to view creator analytics."}</p>
         <button className="primary-button" type="button" onClick={onAuthRequired}>
           <LogIn size={17} />
           Sign in
@@ -5295,15 +5329,17 @@ function CreatorAnalyticsPage({
     Math.round((totalInteractions / Math.max(1, summary?.totalViews ?? 0)) * 1000) / 10;
 
   return (
-    <section className="content-main analytics-page">
+    <section className={classNames("content-main analytics-page", novelContext && "novel-dedicated-page novel-analytics-page")}>
       <div className="settings-heading analytics-heading">
         <div>
-          <p className="eyebrow">Creator studio</p>
-          <h1>Artwork analytics</h1>
+          <p className="eyebrow">{novelContext ? "Story studio" : "Creator studio"}</p>
+          <h1>{novelContext ? "Story performance" : "Artwork analytics"}</h1>
           <p>
             {data
               ? `${formatCount(summary?.views30d ?? 0)} views in the last 30 days.`
-              : "Loading performance signals for your artworks."}
+              : novelContext
+                ? "Loading performance signals for your story works."
+                : "Loading performance signals for your artworks."}
           </p>
         </div>
         <button className="secondary-button" type="button" onClick={() => window.location.reload()}>
@@ -5322,8 +5358,8 @@ function CreatorAnalyticsPage({
             <MetricTile label="7-day views" value={formatCount(summary?.views7d ?? 0)} />
             <MetricTile label="Followers" value={formatCount(summary?.followers ?? 0)} />
             <MetricTile label="Engagement" value={`${overallEngagement}%`} />
-            <MetricTile label="Artworks" value={formatCount(summary?.artworks ?? 0)} />
-            <MetricTile label="Mature works" value={formatCount(summary?.matureArtworks ?? 0)} />
+            <MetricTile label={novelContext ? "Published works" : "Artworks"} value={formatCount(summary?.artworks ?? 0)} />
+            <MetricTile label={novelContext ? "Mature entries" : "Mature works"} value={formatCount(summary?.matureArtworks ?? 0)} />
           </div>
 
           <div className="analytics-grid">
@@ -5370,20 +5406,20 @@ function CreatorAnalyticsPage({
             <section className="dashboard-panel analytics-list-panel">
               <div className="panel-title">
                 <TrendingUp size={18} />
-                Top works
+                {novelContext ? "Top story works" : "Top works"}
               </div>
               {(data?.topArtworks ?? []).map((item) => (
                 <AnalyticsArtworkRow item={item} key={item.artwork.id} onOpen={onOpenArtwork} />
               ))}
               {data && data.topArtworks.length === 0 ? (
-                <p className="muted">Post artwork to start collecting analytics.</p>
+                <p className="muted">{novelContext ? "Post work to start collecting story analytics." : "Post artwork to start collecting analytics."}</p>
               ) : null}
             </section>
 
             <section className="dashboard-panel analytics-list-panel">
               <div className="panel-title">
                 <Calendar size={18} />
-                Recent works
+                {novelContext ? "Recent story works" : "Recent works"}
               </div>
               {(data?.recentArtworks ?? []).map((item) => (
                 <AnalyticsArtworkRow item={item} key={item.artwork.id} onOpen={onOpenArtwork} />
@@ -5399,7 +5435,7 @@ function CreatorAnalyticsPage({
       {data ? (
         <p className="analytics-footnote">
           Updated {fullDateFormat.format(new Date(data.generatedAt))}. Views count one unique viewer per
-          artwork per day.
+          {novelContext ? " work" : " artwork"} per day.
         </p>
       ) : null}
     </section>
@@ -5531,6 +5567,7 @@ function ActivityRow({ item, onOpenArtwork, onOpenProfile }: ActivityRowProps) {
 }
 
 type DashboardProps = {
+  context: RouteContext;
   artworks: Artwork[];
   health: HealthResponse | null;
   adminStats: AdminStatsResponse | null;
@@ -5579,6 +5616,7 @@ type DashboardProps = {
 };
 
 function Dashboard({
+  context,
   artworks,
   health,
   adminStats,
@@ -5639,23 +5677,28 @@ function Dashboard({
     adminUserStatusFilterOptions.find((option) => option.value === userStatus)?.label ??
     "All accounts";
   const [userSearchDraft, setUserSearchDraft] = useState(userQuery);
+  const novelContext = context === "novels";
 
   useEffect(() => {
     setUserSearchDraft(userQuery);
   }, [userQuery]);
 
   return (
-    <section className="dashboard-main" aria-label="Operations dashboard">
+    <section className={classNames("dashboard-main", novelContext && "novel-dedicated-page novel-dashboard-main")} aria-label="Operations dashboard">
       <div className="dashboard-heading">
         <div>
-          <p className="eyebrow">Operations</p>
-          <h1>Cloudflare dashboard</h1>
-          <p>Worker, D1, R2, and content pipeline status for NEHub.</p>
+          <p className="eyebrow">{novelContext ? "Novel operations" : "Operations"}</p>
+          <h1>{novelContext ? "Novels dashboard" : "Cloudflare dashboard"}</h1>
+          <p>
+            {novelContext
+              ? "Site-wide operations with reader routes, review queues, and novels safety in focus."
+              : "Worker, D1, R2, and content pipeline status for NEHub."}
+          </p>
           {message ? <p className="dashboard-message">{message}</p> : null}
         </div>
         <button className="primary-button" type="button" onClick={onUpload}>
           <ImageUp size={17} />
-          Post artwork
+          {novelContext ? "Post work" : "Post artwork"}
         </button>
       </div>
 
@@ -5679,7 +5722,7 @@ function Dashboard({
           label="R2 originals"
           value={health?.storage.r2 ? "Bound" : "Demo assets"}
           active={Boolean(health?.storage.r2)}
-          detail="Artwork file storage"
+          detail={novelContext ? "Media file storage" : "Artwork file storage"}
         />
         <StatusCard
           icon={<Cloud size={22} />}
@@ -6343,6 +6386,7 @@ function TagGovernancePanel({
 }
 
 type ProfilePageProps = {
+  context: RouteContext;
   username: string;
   csrfToken: string;
   siteKey: string;
@@ -6632,6 +6676,7 @@ function TagPage({
 }
 
 type CollectionsPageProps = {
+  context: RouteContext;
   collections: UserCollection[];
   currentUser: AuthUser | null;
   onAuthRequired: () => void;
@@ -7333,6 +7378,7 @@ function CollectionDiscoverPage({
 }
 
 function CollectionsPage({
+  context,
   collections,
   currentUser,
   onAuthRequired,
@@ -7342,6 +7388,7 @@ function CollectionsPage({
   const [name, setName] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const novelContext = context === "novels";
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -7363,8 +7410,8 @@ function CollectionsPage({
 
   if (!currentUser) {
     return (
-      <section className="content-main collection-page">
-        <p className="empty-feed">Sign in to manage collection folders.</p>
+      <section className={classNames("content-main collection-page", novelContext && "novel-dedicated-page novel-shelves-page")}>
+        <p className="empty-feed">{novelContext ? "Sign in to manage reading shelves." : "Sign in to manage collection folders."}</p>
         <button className="primary-button" type="button" onClick={onAuthRequired}>
           <LogIn size={17} />
           Sign in
@@ -7374,12 +7421,16 @@ function CollectionsPage({
   }
 
   return (
-    <section className="content-main collection-page">
+    <section className={classNames("content-main collection-page", novelContext && "novel-dedicated-page novel-shelves-page")}>
       <div className="settings-heading collection-heading">
         <div>
-          <p className="eyebrow">Collections</p>
-          <h1>Artwork folders</h1>
-          <p>Group saved works into private folders, then publish selected folders when they are ready.</p>
+          <p className="eyebrow">{novelContext ? "Novel shelves" : "Collections"}</p>
+          <h1>{novelContext ? "Reading shelves" : "Artwork folders"}</h1>
+          <p>
+            {novelContext
+              ? "Group saved story works into private shelves, then publish selected shelves when they are ready."
+              : "Group saved works into private folders, then publish selected folders when they are ready."}
+          </p>
         </div>
       </div>
 
@@ -7389,7 +7440,7 @@ function CollectionsPage({
           minLength={2}
           maxLength={60}
           onChange={(event) => setName(event.target.value)}
-          placeholder="New folder name"
+          placeholder={novelContext ? "New shelf name" : "New folder name"}
           required
         />
         <button className="primary-button" type="submit" disabled={submitting}>
@@ -7411,7 +7462,7 @@ function CollectionsPage({
             <span>
               <strong>{collection.name}</strong>
               <small>
-                {formatCount(collection.itemCount)} works · {collection.visibility}
+                {formatCount(collection.itemCount)} {novelContext ? "entries" : "works"} · {collection.visibility}
               </small>
             </span>
             {collection.visibility === "public" ? <Eye size={16} /> : <Lock size={16} />}
@@ -7419,13 +7470,18 @@ function CollectionsPage({
         ))}
       </div>
       {collections.length === 0 ? (
-        <p className="empty-feed">No folders yet. Create one, then add works from an artwork page.</p>
+        <p className="empty-feed">
+          {novelContext
+            ? "No shelves yet. Create one, then add saved works as the novel section grows."
+            : "No folders yet. Create one, then add works from an artwork page."}
+        </p>
       ) : null}
     </section>
   );
 }
 
 type CollectionPageProps = {
+  context: RouteContext;
   collectionId: string;
   currentUser: AuthUser | null;
   onAuthRequired: () => void;
@@ -7443,6 +7499,7 @@ type CollectionPageProps = {
 };
 
 function CollectionPage({
+  context,
   collectionId,
   currentUser,
   onAuthRequired,
@@ -7598,10 +7655,11 @@ function CollectionPage({
 
   const collection = detail?.collection;
   const owner = detail?.owner;
+  const novelContext = context === "novels";
 
   return (
-    <section className="content-main collection-page">
-      {loading ? <p className="empty-feed">Loading collection.</p> : null}
+    <section className={classNames("content-main collection-page", novelContext && "novel-dedicated-page novel-shelves-page")}>
+      {loading ? <p className="empty-feed">{novelContext ? "Loading shelf." : "Loading collection."}</p> : null}
       {message ? <p className="empty-feed">{message}</p> : null}
       {!loading && !detail && !currentUser ? (
         <button className="primary-button" type="button" onClick={onAuthRequired}>
@@ -7614,17 +7672,17 @@ function CollectionPage({
           <div className="collection-detail-hero">
             <button className="secondary-button" type="button" onClick={onBack}>
               <ChevronDown size={17} />
-              Folders
+              {novelContext ? "Shelves" : "Folders"}
             </button>
             <div>
-              <p className="eyebrow">Collection folder</p>
+              <p className="eyebrow">{novelContext ? "Novel shelf" : "Collection folder"}</p>
               <h1>{collection.name}</h1>
               <p>{collection.description || "No description."}</p>
               <div className="profile-meta">
                 <button className="text-button" type="button" onClick={() => onOpenProfile(owner.handle)}>
                   @{owner.handle}
                 </button>
-                <span>{formatCount(detail.totalCount)} visible works</span>
+                <span>{formatCount(detail.totalCount)} visible {novelContext ? "entries" : "works"}</span>
                 <span>{collection.visibility}</span>
                 <span>Updated {fullDateFormat.format(new Date(collection.updatedAt))}</span>
               </div>
@@ -7691,7 +7749,7 @@ function CollectionPage({
               </label>
               <div className="collection-cover-field">
                 <div className="field-heading">
-                  <strong>Cover artwork</strong>
+                  <strong>{novelContext ? "Cover work" : "Cover artwork"}</strong>
                   <button
                     className="text-button"
                     type="button"
@@ -7766,7 +7824,7 @@ function CollectionPage({
             </div>
           ) : null}
           {detail.artworks.length === 0 ? (
-            <p className="empty-feed">No visible works in this folder.</p>
+            <p className="empty-feed">{novelContext ? "No visible entries in this shelf." : "No visible works in this folder."}</p>
           ) : null}
         </>
       ) : null}
@@ -7799,6 +7857,7 @@ function SeriesFolderPreview({ series }: { series: ArtworkSeries }) {
 }
 
 type SeriesListPageProps = {
+  context: RouteContext;
   seriesList: ArtworkSeries[];
   currentUser: AuthUser | null;
   onAuthRequired: () => void;
@@ -7807,6 +7866,7 @@ type SeriesListPageProps = {
 };
 
 function SeriesListPage({
+  context,
   seriesList,
   currentUser,
   onAuthRequired,
@@ -7816,6 +7876,7 @@ function SeriesListPage({
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const novelContext = context === "novels";
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -7837,8 +7898,8 @@ function SeriesListPage({
 
   if (!currentUser) {
     return (
-      <section className="content-main collection-page series-page">
-        <p className="empty-feed">Sign in to manage artwork series.</p>
+      <section className={classNames("content-main collection-page series-page", novelContext && "novel-dedicated-page novel-serials-page")}>
+        <p className="empty-feed">{novelContext ? "Sign in to manage story serials." : "Sign in to manage artwork series."}</p>
         <button className="primary-button" type="button" onClick={onAuthRequired}>
           <LogIn size={17} />
           Sign in
@@ -7848,12 +7909,16 @@ function SeriesListPage({
   }
 
   return (
-    <section className="content-main collection-page series-page">
+    <section className={classNames("content-main collection-page series-page", novelContext && "novel-dedicated-page novel-serials-page")}>
       <div className="settings-heading collection-heading">
         <div>
-          <p className="eyebrow">Series</p>
-          <h1>Artwork series</h1>
-          <p>Order your own works into public or private multi-part galleries.</p>
+          <p className="eyebrow">{novelContext ? "Story serials" : "Series"}</p>
+          <h1>{novelContext ? "Novel serials" : "Artwork series"}</h1>
+          <p>
+            {novelContext
+              ? "Order your own works into public or private reading sequences."
+              : "Order your own works into public or private multi-part galleries."}
+          </p>
         </div>
       </div>
 
@@ -7863,7 +7928,7 @@ function SeriesListPage({
           minLength={2}
           maxLength={80}
           onChange={(event) => setTitle(event.target.value)}
-          placeholder="New series title"
+          placeholder={novelContext ? "New serial title" : "New series title"}
           required
         />
         <button className="primary-button" type="submit" disabled={submitting}>
@@ -7885,7 +7950,7 @@ function SeriesListPage({
             <span>
               <strong>{series.title}</strong>
               <small>
-                {formatCount(series.itemCount)} works · {series.visibility}
+                {formatCount(series.itemCount)} {novelContext ? "entries" : "works"} · {series.visibility}
               </small>
             </span>
             {series.visibility === "public" ? <Eye size={16} /> : <Lock size={16} />}
@@ -7893,13 +7958,18 @@ function SeriesListPage({
         ))}
       </div>
       {seriesList.length === 0 ? (
-        <p className="empty-feed">No series yet. Create one, then add your works from an artwork page.</p>
+        <p className="empty-feed">
+          {novelContext
+            ? "No serials yet. Create one, then collect related works as the novel section grows."
+            : "No series yet. Create one, then add your works from an artwork page."}
+        </p>
       ) : null}
     </section>
   );
 }
 
 type SeriesPageProps = {
+  context: RouteContext;
   seriesId: string;
   currentUser: AuthUser | null;
   onAuthRequired: () => void;
@@ -7914,6 +7984,7 @@ type SeriesPageProps = {
 };
 
 function SeriesPage({
+  context,
   seriesId,
   currentUser,
   onAuthRequired,
@@ -8069,10 +8140,11 @@ function SeriesPage({
 
   const series = detail?.series;
   const owner = detail?.owner;
+  const novelContext = context === "novels";
 
   return (
-    <section className="content-main collection-page series-page">
-      {loading ? <p className="empty-feed">Loading series.</p> : null}
+    <section className={classNames("content-main collection-page series-page", novelContext && "novel-dedicated-page novel-serials-page")}>
+      {loading ? <p className="empty-feed">{novelContext ? "Loading serial." : "Loading series."}</p> : null}
       {message ? <p className="empty-feed">{message}</p> : null}
       {!loading && !detail && !currentUser ? (
         <button className="primary-button" type="button" onClick={onAuthRequired}>
@@ -8085,17 +8157,17 @@ function SeriesPage({
           <div className="collection-detail-hero series-detail-hero">
             <button className="secondary-button" type="button" onClick={onBack}>
               <ChevronDown size={17} />
-              Series
+              {novelContext ? "Serials" : "Series"}
             </button>
             <div>
-              <p className="eyebrow">Artwork series</p>
+              <p className="eyebrow">{novelContext ? "Novel serial" : "Artwork series"}</p>
               <h1>{series.title}</h1>
               <p>{series.description || "No description."}</p>
               <div className="profile-meta">
                 <button className="text-button" type="button" onClick={() => onOpenProfile(owner.handle)}>
                   @{owner.handle}
                 </button>
-                <span>{formatCount(detail.totalCount)} visible works</span>
+                <span>{formatCount(detail.totalCount)} visible {novelContext ? "entries" : "works"}</span>
                 <span>{series.visibility}</span>
                 <span>Updated {fullDateFormat.format(new Date(series.updatedAt))}</span>
               </div>
@@ -8162,7 +8234,7 @@ function SeriesPage({
               </label>
               <div className="collection-cover-field">
                 <div className="field-heading">
-                  <strong>Cover artwork</strong>
+                  <strong>{novelContext ? "Cover work" : "Cover artwork"}</strong>
                   <button
                     className="text-button"
                     type="button"
@@ -8200,7 +8272,7 @@ function SeriesPage({
               <div className="settings-actions">
                 <button className="primary-button" type="submit" disabled={saving}>
                   <Pencil size={17} />
-                  {saving ? "Saving" : "Save series"}
+                  {saving ? "Saving" : novelContext ? "Save serial" : "Save series"}
                 </button>
                 <button className="secondary-button" type="button" onClick={() => setEditing(false)}>
                   Cancel
@@ -8237,7 +8309,7 @@ function SeriesPage({
             </div>
           ) : null}
           {detail.artworks.length === 0 ? (
-            <p className="empty-feed">No visible works in this series.</p>
+            <p className="empty-feed">{novelContext ? "No visible entries in this serial." : "No visible works in this series."}</p>
           ) : null}
         </>
       ) : null}
@@ -8248,6 +8320,7 @@ function SeriesPage({
 type ProfileTab = "works" | "public" | "private" | "collections" | "series";
 
 function ProfilePage({
+  context,
   username,
   csrfToken,
   siteKey,
@@ -8390,24 +8463,25 @@ function ProfilePage({
         : { label: "Public", icon: Eye, tone: "public" }
     : null;
   const ProfileVisibilityIcon = profileVisibilityMeta?.icon;
+  const novelContext = context === "novels";
   const tabs: Array<{ id: ProfileTab; label: string; count: number; icon: typeof Images }> = profileData
     ? [
-        { id: "works", label: "Works", count: profileData.stats.artworks, icon: Images },
+        { id: "works", label: novelContext ? "Stories" : "Works", count: profileData.stats.artworks, icon: Images },
         {
           id: "public",
-          label: "Public bookmarks",
+          label: novelContext ? "Public reads" : "Public bookmarks",
           count: profileData.stats.publicBookmarks,
           icon: Bookmark
         },
         {
           id: "collections",
-          label: "Collections",
+          label: novelContext ? "Shelves" : "Collections",
           count: profileData.stats.publicCollections,
           icon: FolderOpen
         },
         {
           id: "series",
-          label: "Series",
+          label: novelContext ? "Serials" : "Series",
           count: profileData.stats.publicSeries,
           icon: ListOrdered
         },
@@ -8415,7 +8489,7 @@ function ProfilePage({
           ? [
               {
                 id: "private" as const,
-                label: "Private bookmarks",
+                label: novelContext ? "Private reads" : "Private bookmarks",
                 count: profileData.stats.privateBookmarks,
                 icon: Lock
               }
@@ -8788,7 +8862,7 @@ function ProfilePage({
   };
 
   return (
-    <section className="content-main profile-page">
+    <section className={classNames("content-main profile-page", novelContext && "novel-dedicated-page novel-profile-page")}>
       {loading ? <p className="empty-feed">Loading profile.</p> : null}
       {message ? <p className="empty-feed">{message}</p> : null}
       {profile && profileData ? (
@@ -8800,7 +8874,7 @@ function ProfilePage({
               <DefaultAvatar className="profile-avatar profile-avatar-fallback" name={profile.displayName} />
             )}
             <div className="profile-copy">
-              <p className="eyebrow">Creator profile</p>
+              <p className="eyebrow">{novelContext ? "Novel profile" : "Creator profile"}</p>
               <h1>{profile.displayName}</h1>
               <div className="profile-handle">
                 <AtSign size={15} />
@@ -8848,7 +8922,7 @@ function ProfilePage({
                 {ownProfile && currentUser ? (
                   <>
                     <span>{formatCount(currentUser.storage.siteCredits)} credits</span>
-                    <span>{formatCount(currentUser.storage.remainingImages)} image slots</span>
+                    <span>{formatCount(currentUser.storage.remainingImages)} {novelContext ? "media slots" : "image slots"}</span>
                   </>
                 ) : null}
                 <span>Joined {fullDateFormat.format(new Date(profile.joinedAt))}</span>
@@ -8862,7 +8936,7 @@ function ProfilePage({
                 </button>
                 <button className="secondary-button" type="button" onClick={onOpenPrivacySecurity}>
                   <KeyRound size={16} />
-                  Privacy
+                  {novelContext ? "Reading privacy" : "Privacy"}
                 </button>
               </div>
             ) : currentUser ? (
@@ -9173,6 +9247,7 @@ function ProfilePage({
 }
 
 type ProfileSettingsPageProps = {
+  context: RouteContext;
   csrfToken: string;
   currentUser: AuthUser | null;
   onAuthRequired: () => void;
@@ -9182,6 +9257,7 @@ type ProfileSettingsPageProps = {
 };
 
 function ProfileSettingsPage({
+  context,
   csrfToken,
   currentUser,
   onAuthRequired,
@@ -9321,17 +9397,18 @@ function ProfileSettingsPage({
   const profileInitial = (formState.displayName || formState.username || currentUser?.displayName || "U")
     .slice(0, 1)
     .toUpperCase();
+  const novelContext = context === "novels";
 
   return (
-    <section className="content-main settings-page">
+    <section className={classNames("content-main settings-page", novelContext && "novel-dedicated-page novel-settings-page")}>
       <div className="settings-heading">
         <div>
-          <p className="eyebrow">Account</p>
-          <h1>Profile settings</h1>
+          <p className="eyebrow">{novelContext ? "Novel identity" : "Account"}</p>
+          <h1>{novelContext ? "Story profile settings" : "Profile settings"}</h1>
         </div>
         <button className="secondary-button" type="button" onClick={onOpenPrivacySecurity}>
           <KeyRound size={16} />
-          Privacy
+          {novelContext ? "Reading privacy" : "Privacy"}
         </button>
       </div>
       {loading ? <p className="empty-feed">Loading settings.</p> : null}
@@ -9432,6 +9509,7 @@ function ProfileSettingsPage({
 }
 
 type PrivacySecurityPageProps = {
+  context: RouteContext;
   csrfToken: string;
   currentUser: AuthUser | null;
   onAuthRequired: () => void;
@@ -9444,6 +9522,7 @@ type PrivacySecurityPageProps = {
 };
 
 function PrivacySecurityPage({
+  context,
   csrfToken,
   currentUser,
   onAuthRequired,
@@ -10243,17 +10322,18 @@ function PrivacySecurityPage({
   const sessions = sessionsData?.sessions ?? [];
   const otherSessionCount = sessions.filter((session) => !session.current).length;
   const blockedUsers = blockedUsersData?.users ?? [];
+  const novelContext = context === "novels";
 
   return (
-    <section className="content-main settings-page">
+    <section className={classNames("content-main settings-page", novelContext && "novel-dedicated-page novel-settings-page")}>
       <div className="settings-heading">
         <div>
-          <p className="eyebrow">Account</p>
-          <h1>Privacy & security</h1>
+          <p className="eyebrow">{novelContext ? "Novel safety" : "Account"}</p>
+          <h1>{novelContext ? "Reading privacy & security" : "Privacy & security"}</h1>
         </div>
         <button className="secondary-button" type="button" onClick={onOpenProfileSettings}>
           <UserCog size={16} />
-          Profile
+          {novelContext ? "Story profile" : "Profile"}
         </button>
       </div>
       {loading ? <p className="empty-feed">Loading settings.</p> : null}
@@ -10954,11 +11034,12 @@ function StatusPill({ active, label }: StatusPillProps) {
 }
 
 type PolicyPageProps =
-  | { kind: "terms"; onOpenPrivacy: () => void; onOpenTerms?: never }
-  | { kind: "privacy"; onOpenTerms: () => void; onOpenPrivacy?: never };
+  | { kind: "terms"; context?: RouteContext; onOpenPrivacy: () => void; onOpenTerms?: never }
+  | { kind: "privacy"; context?: RouteContext; onOpenTerms: () => void; onOpenPrivacy?: never };
 
 function PolicyPage(props: PolicyPageProps) {
   const isTerms = props.kind === "terms";
+  const novelContext = props.context === "novels";
   const sections = isTerms
     ? [
         {
@@ -11016,10 +11097,18 @@ function PolicyPage(props: PolicyPageProps) {
       ];
 
   return (
-    <section className="content-main policy-page">
+    <section className={classNames("content-main policy-page", novelContext && "novel-dedicated-page novel-policy-page")}>
       <div className="policy-heading">
-        <p className="eyebrow">NEHub</p>
-        <h1>{isTerms ? "Terms of Use" : "Privacy Policy"}</h1>
+        <p className="eyebrow">{novelContext ? "NEHub novels" : "NEHub"}</p>
+        <h1>
+          {novelContext
+            ? isTerms
+              ? "Novel Terms of Use"
+              : "Novel Privacy Policy"
+            : isTerms
+              ? "Terms of Use"
+              : "Privacy Policy"}
+        </h1>
         <p>Last updated {policyUpdatedDate}</p>
       </div>
       <div className="policy-grid">
