@@ -503,7 +503,16 @@ const novelSectionSlugSet = new Set<string>(novelSectionSlugs);
 const authRequiredNovelSections = new Set<NovelSection>(["tags", "bookmarks"]);
 const novelSectionRequiresAuth = (section: NovelSection) => authRequiredNovelSections.has(section);
 const novelSectionAuthNotice = (section: NovelSection) =>
-  section === "bookmarks" ? "Sign in to view your novel bookmarks." : "Sign in to view novel tags.";
+  section === "bookmarks" ? "Sign in to view your bookmarks." : "Sign in to view tags.";
+const securityApprovalActionLabels: Record<SecurityApprovalAction, string> = {
+  discord_link: "connect Discord",
+  totp_start: "set up authenticator",
+  totp_disable: "disable authenticator",
+  email_mfa_enable: "enable email codes",
+  email_mfa_disable: "disable email codes",
+  passkey_add: "add a passkey",
+  passkey_delete: "remove a passkey"
+};
 type AuthMode = "login" | "register";
 type AuthFlow = "auth" | "resetRequest" | "resetConfirm" | "mfa";
 type TurnstileAction =
@@ -891,7 +900,7 @@ function App() {
         const payload = (await response.json()) as NovelListResponse | { message?: string };
         if (!response.ok || !("novels" in payload)) {
           throw new Error(
-            ("message" in payload ? payload.message : undefined) ?? "Novels could not be loaded."
+            ("message" in payload ? payload.message : undefined) ?? "Works could not be loaded."
           );
         }
         return payload;
@@ -1467,7 +1476,7 @@ function App() {
         const payload = (await response.json()) as NovelResponse | { message?: string };
         if (!response.ok || !("novel" in payload)) {
           throw new Error(
-            ("message" in payload ? payload.message : undefined) ?? "Novel could not be loaded."
+            ("message" in payload ? payload.message : undefined) ?? "Work could not be loaded."
           );
         }
         return payload;
@@ -1479,7 +1488,7 @@ function App() {
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setAuthNotice(error instanceof Error ? error.message : "Novel could not be loaded.");
+          setAuthNotice(error instanceof Error ? error.message : "Work could not be loaded.");
           setNovelDetail(null);
         }
       })
@@ -1555,28 +1564,28 @@ function App() {
   const bookmarkedNovels: Novel[] = [];
   const novelCollections: Array<{ id: string; title: string; detail: string }> = [];
   const novelSectionTitleMap: Record<NovelSection, string> = {
-    home: "Latest creator fiction",
-    following: "Following novels",
-    creators: "Novel creators",
-    tags: "Story tags",
-    novels: "All novels",
-    rankings: "Novel rankings",
-    bookmarks: "Bookmarked novels",
-    collections: "Novel collections",
-    terms: "Novel terms",
-    privacy: "Novel privacy"
+    home: "Latest creator works",
+    following: "Following",
+    creators: "Creators",
+    tags: "Tags",
+    novels: "All works",
+    rankings: "Rankings",
+    bookmarks: "Bookmarks",
+    collections: "Collections",
+    terms: "Terms",
+    privacy: "Privacy"
   };
   const novelSectionDescriptionMap: Record<NovelSection, string> = {
-    home: "Short stories, serial chapters, and luminous fragments from NEHub creators.",
-    following: "Stories from creators you already follow.",
-    creators: "Authors publishing fiction across NEHub.",
+    home: "Fresh chapters, essays, and luminous fragments from NEHub creators.",
+    following: "Works from creators you already follow.",
+    creators: "Authors publishing across NEHub.",
     tags: "Browse the labels shaping the current fiction feed.",
     novels: "The complete readable shelf currently loaded from NEHub.",
-    rankings: "A quick ranking view built from the current novels feed.",
-    bookmarks: "A dedicated home for saved fiction once novel bookmarks are supported.",
-    collections: "A dedicated home for grouped fiction once novel collections are supported.",
-    terms: "Read the terms without leaving the novels section.",
-    privacy: "Read the privacy policy without leaving the novels section."
+    rankings: "A quick ranking view built from the current feed.",
+    bookmarks: "A dedicated home for saved fiction once bookmarks are supported.",
+    collections: "A dedicated home for grouped fiction once collections are supported.",
+    terms: "Read the terms without leaving this section.",
+    privacy: "Read the privacy policy without leaving this section."
   };
   const isBookmarksView = sort === "bookmarks";
   const isSubscriptionsView = sort === "subscriptions";
@@ -1697,7 +1706,7 @@ function App() {
   const showNotifications = () => {
     if (!currentUser) {
       openAuth("login");
-      setAuthNotice(isNovelSection ? "Sign in to view novel alerts." : "Sign in to view notifications.");
+      setAuthNotice(isNovelSection ? "Sign in to view alerts." : "Sign in to view notifications.");
       return;
     }
     setNotificationsOpen(false);
@@ -1736,7 +1745,7 @@ function App() {
   const showSeriesList = () => {
     if (!currentUser) {
       openAuth("login");
-      setAuthNotice(isNovelSection ? "Sign in to manage story serials." : "Sign in to manage series.");
+      setAuthNotice(isNovelSection ? "Sign in to manage serials." : "Sign in to manage series.");
       return;
     }
     pushRoute(isNovelSection ? "/novels/my-series" : "/series", "seriesList");
@@ -1762,7 +1771,7 @@ function App() {
   const showAnalytics = () => {
     if (!currentUser) {
       openAuth("login");
-      setAuthNotice(isNovelSection ? "Sign in to view story stats." : "Sign in to view creator analytics.");
+      setAuthNotice(isNovelSection ? "Sign in to view stats." : "Sign in to view creator analytics.");
       return;
     }
     pushRoute(isNovelSection ? "/novels/analytics" : "/analytics", "analytics");
@@ -3262,7 +3271,7 @@ function App() {
             <div className="brand-mark">N</div>
             <div className="brand-wordmark" aria-label="NEHub">
               <strong>NEHub</strong>
-              <span>{isNovelSection ? "novel diary" : "art diary"}</span>
+              <span>{isNovelSection ? "reading diary" : "art diary"}</span>
             </div>
             <nav className="main-nav" aria-label="Content types">
               <button
@@ -3278,7 +3287,7 @@ function App() {
                 type="button"
                 onClick={() => showNovels("home")}
               >
-                Novels
+                Reads
               </button>
             </nav>
           </div>
@@ -3305,7 +3314,7 @@ function App() {
                   setSearchSuggestionsOpen(false);
                 }
               }}
-              placeholder={isNovelSection ? "Search novels, authors, tags" : "Search works, creators, tags"}
+              placeholder={isNovelSection ? "Search works, authors, tags" : "Search works, creators, tags"}
               type="search"
             />
             {isIllustrationsSection && searchSuggestionsOpen && illustrationQuery.trim().length >= 2 ? (
@@ -5368,7 +5377,7 @@ function NotificationsPage({
   if (!currentUser) {
     return (
       <section className={classNames("content-main notification-page", novelContext && "novel-dedicated-page novel-notification-page")}>
-        <p className="empty-feed">{novelContext ? "Sign in to view novel alerts." : "Sign in to view notifications."}</p>
+        <p className="empty-feed">{novelContext ? "Sign in to view alerts." : "Sign in to view notifications."}</p>
         <button className="primary-button" type="button" onClick={onAuthRequired}>
           <LogIn size={17} />
           Sign in
@@ -5381,7 +5390,7 @@ function NotificationsPage({
     <section className={classNames("content-main notification-page", novelContext && "novel-dedicated-page novel-notification-page")}>
       <div className="settings-heading notification-page-heading">
         <div>
-          <p className="eyebrow">{novelContext ? "Novel alerts" : "Notifications"}</p>
+          <p className="eyebrow">{novelContext ? "Alerts" : "Notifications"}</p>
           <h1>{novelContext ? "Reading notifications" : "Notification center"}</h1>
           <p>
             {data
@@ -5508,7 +5517,7 @@ function CreatorAnalyticsPage({
   if (!currentUser) {
     return (
       <section className={classNames("content-main analytics-page", novelContext && "novel-dedicated-page novel-analytics-page")}>
-        <p className="empty-feed">{novelContext ? "Sign in to view story stats." : "Sign in to view creator analytics."}</p>
+        <p className="empty-feed">{novelContext ? "Sign in to view stats." : "Sign in to view creator analytics."}</p>
         <button className="primary-button" type="button" onClick={onAuthRequired}>
           <LogIn size={17} />
           Sign in
@@ -5530,13 +5539,13 @@ function CreatorAnalyticsPage({
     <section className={classNames("content-main analytics-page", novelContext && "novel-dedicated-page novel-analytics-page")}>
       <div className="settings-heading analytics-heading">
         <div>
-          <p className="eyebrow">{novelContext ? "Story studio" : "Creator studio"}</p>
-          <h1>{novelContext ? "Story performance" : "Artwork analytics"}</h1>
+          <p className="eyebrow">{novelContext ? "Studio" : "Creator studio"}</p>
+          <h1>{novelContext ? "Performance" : "Artwork analytics"}</h1>
           <p>
             {data
               ? `${formatCount(summary?.views30d ?? 0)} views in the last 30 days.`
               : novelContext
-                ? "Loading performance signals for your story works."
+                ? "Loading performance signals for your works."
                 : "Loading performance signals for your artworks."}
           </p>
         </div>
@@ -5604,20 +5613,20 @@ function CreatorAnalyticsPage({
             <section className="dashboard-panel analytics-list-panel">
               <div className="panel-title">
                 <TrendingUp size={18} />
-                {novelContext ? "Top story works" : "Top works"}
+                Top works
               </div>
               {(data?.topArtworks ?? []).map((item) => (
                 <AnalyticsArtworkRow item={item} key={item.artwork.id} onOpen={onOpenArtwork} />
               ))}
               {data && data.topArtworks.length === 0 ? (
-                <p className="muted">{novelContext ? "Post work to start collecting story analytics." : "Post artwork to start collecting analytics."}</p>
+                <p className="muted">{novelContext ? "Post work to start collecting analytics." : "Post artwork to start collecting analytics."}</p>
               ) : null}
             </section>
 
             <section className="dashboard-panel analytics-list-panel">
               <div className="panel-title">
                 <Calendar size={18} />
-                {novelContext ? "Recent story works" : "Recent works"}
+                Recent works
               </div>
               {(data?.recentArtworks ?? []).map((item) => (
                 <AnalyticsArtworkRow item={item} key={item.artwork.id} onOpen={onOpenArtwork} />
@@ -5885,11 +5894,11 @@ function Dashboard({
     <section className={classNames("dashboard-main", novelContext && "novel-dedicated-page novel-dashboard-main")} aria-label="Operations dashboard">
       <div className="dashboard-heading">
         <div>
-          <p className="eyebrow">{novelContext ? "Novel operations" : "Operations"}</p>
-          <h1>{novelContext ? "Novels dashboard" : "Cloudflare dashboard"}</h1>
+          <p className="eyebrow">Operations</p>
+          <h1>{novelContext ? "Dashboard" : "Cloudflare dashboard"}</h1>
           <p>
             {novelContext
-              ? "Site-wide operations with reader routes, review queues, and novels safety in focus."
+              ? "Site-wide operations with reader routes, review queues, and safety in focus."
               : "Worker, D1, R2, and content pipeline status for NEHub."}
           </p>
           {message ? <p className="dashboard-message">{message}</p> : null}
@@ -7622,11 +7631,11 @@ function CollectionsPage({
     <section className={classNames("content-main collection-page", novelContext && "novel-dedicated-page novel-shelves-page")}>
       <div className="settings-heading collection-heading">
         <div>
-          <p className="eyebrow">{novelContext ? "Novel shelves" : "Collections"}</p>
+          <p className="eyebrow">{novelContext ? "Shelves" : "Collections"}</p>
           <h1>{novelContext ? "Reading shelves" : "Artwork folders"}</h1>
           <p>
             {novelContext
-              ? "Group saved story works into private shelves, then publish selected shelves when they are ready."
+              ? "Group saved works into private shelves, then publish selected shelves when they are ready."
               : "Group saved works into private folders, then publish selected folders when they are ready."}
           </p>
         </div>
@@ -7670,7 +7679,7 @@ function CollectionsPage({
       {collections.length === 0 ? (
         <p className="empty-feed">
           {novelContext
-            ? "No shelves yet. Create one, then add saved works as the novel section grows."
+            ? "No shelves yet. Create one, then add saved works as this section grows."
             : "No folders yet. Create one, then add works from an artwork page."}
         </p>
       ) : null}
@@ -7873,7 +7882,7 @@ function CollectionPage({
               {novelContext ? "Shelves" : "Folders"}
             </button>
             <div>
-              <p className="eyebrow">{novelContext ? "Novel shelf" : "Collection folder"}</p>
+              <p className="eyebrow">{novelContext ? "Shelf" : "Collection folder"}</p>
               <h1>{collection.name}</h1>
               <p>{collection.description || "No description."}</p>
               <div className="profile-meta">
@@ -8097,7 +8106,7 @@ function SeriesListPage({
   if (!currentUser) {
     return (
       <section className={classNames("content-main collection-page series-page", novelContext && "novel-dedicated-page novel-serials-page")}>
-        <p className="empty-feed">{novelContext ? "Sign in to manage story serials." : "Sign in to manage artwork series."}</p>
+        <p className="empty-feed">{novelContext ? "Sign in to manage serials." : "Sign in to manage artwork series."}</p>
         <button className="primary-button" type="button" onClick={onAuthRequired}>
           <LogIn size={17} />
           Sign in
@@ -8110,8 +8119,8 @@ function SeriesListPage({
     <section className={classNames("content-main collection-page series-page", novelContext && "novel-dedicated-page novel-serials-page")}>
       <div className="settings-heading collection-heading">
         <div>
-          <p className="eyebrow">{novelContext ? "Story serials" : "Series"}</p>
-          <h1>{novelContext ? "Novel serials" : "Artwork series"}</h1>
+          <p className="eyebrow">{novelContext ? "Serials" : "Series"}</p>
+          <h1>{novelContext ? "Serials" : "Artwork series"}</h1>
           <p>
             {novelContext
               ? "Order your own works into public or private reading sequences."
@@ -8158,7 +8167,7 @@ function SeriesListPage({
       {seriesList.length === 0 ? (
         <p className="empty-feed">
           {novelContext
-            ? "No serials yet. Create one, then collect related works as the novel section grows."
+            ? "No serials yet. Create one, then collect related works as this section grows."
             : "No series yet. Create one, then add your works from an artwork page."}
         </p>
       ) : null}
@@ -8358,7 +8367,7 @@ function SeriesPage({
               {novelContext ? "Serials" : "Series"}
             </button>
             <div>
-              <p className="eyebrow">{novelContext ? "Novel serial" : "Artwork series"}</p>
+              <p className="eyebrow">{novelContext ? "Serial" : "Artwork series"}</p>
               <h1>{series.title}</h1>
               <p>{series.description || "No description."}</p>
               <div className="profile-meta">
@@ -8680,7 +8689,7 @@ function ProfilePage({
   const novelContext = context === "novels";
   const tabs: Array<{ id: ProfileTab; label: string; count: number; icon: typeof Images }> = profileData
     ? [
-        { id: "works", label: novelContext ? "Stories" : "Works", count: profileData.stats.artworks, icon: Images },
+        { id: "works", label: "Works", count: profileData.stats.artworks, icon: Images },
         {
           id: "public",
           label: novelContext ? "Public reads" : "Public bookmarks",
@@ -9119,7 +9128,7 @@ function ProfilePage({
               <DefaultAvatar className="profile-avatar profile-avatar-fallback" name={profile.displayName} />
             )}
             <div className="profile-copy">
-              <p className="eyebrow">{novelContext ? "Novel profile" : "Creator profile"}</p>
+              <p className="eyebrow">{novelContext ? "Profile" : "Creator profile"}</p>
               <h1>{profile.displayName}</h1>
               <button
                 className={classNames("profile-handle", copiedUsername && "is-copied")}
@@ -9192,7 +9201,7 @@ function ProfilePage({
                 </button>
                 <button className="secondary-button" type="button" onClick={onOpenPrivacySecurity}>
                   <KeyRound size={16} />
-                  {novelContext ? "Reading privacy" : "Privacy"}
+                  Privacy
                 </button>
               </div>
             ) : currentUser ? (
@@ -9659,12 +9668,12 @@ function ProfileSettingsPage({
     <section className={classNames("content-main settings-page", novelContext && "novel-dedicated-page novel-settings-page")}>
       <div className="settings-heading">
         <div>
-          <p className="eyebrow">{novelContext ? "Novel identity" : "Account"}</p>
-          <h1>{novelContext ? "Story profile settings" : "Profile settings"}</h1>
+          <p className="eyebrow">{novelContext ? "Identity" : "Account"}</p>
+          <h1>Profile settings</h1>
         </div>
         <button className="secondary-button" type="button" onClick={onOpenPrivacySecurity}>
           <KeyRound size={16} />
-          {novelContext ? "Reading privacy" : "Privacy"}
+          Privacy
         </button>
       </div>
       {loading ? <p className="empty-feed">Loading settings.</p> : null}
@@ -9826,6 +9835,11 @@ function PrivacySecurityPage({
   const [totpCode, setTotpCode] = useState("");
   const [securityApprovalCode, setSecurityApprovalCode] = useState("");
   const [securityApprovalCodeMessage, setSecurityApprovalCodeMessage] = useState("");
+  const [securityApprovalCodeOpen, setSecurityApprovalCodeOpen] = useState(false);
+  const [securityApprovalPrompt, setSecurityApprovalPrompt] = useState<{
+    action: SecurityApprovalAction;
+    message: string;
+  } | null>(null);
   const [passkeyName, setPasskeyName] = useState("My passkey");
   const [loading, setLoading] = useState(true);
   const [securityLoading, setSecurityLoading] = useState(false);
@@ -10267,14 +10281,13 @@ function PrivacySecurityPage({
       });
       const payload = (await response.json()) as SecurityApprovalResponse | { message?: string };
       if (!response.ok || !("message" in payload)) {
-        throw new Error(payload.message ?? "Approval link could not be sent.");
+        throw new Error(payload.message ?? "Approval request could not be sent.");
       }
-      const approvalMessage = payload.message ?? "Approval link sent.";
-      setTargetMessage(approvalMessage);
-      onNotice(approvalMessage);
+      const approvalMessage = payload.message ?? "Approval request sent.";
+      setSecurityApprovalPrompt({ action, message: approvalMessage });
       return true;
     } catch (error) {
-      setTargetMessage(error instanceof Error ? error.message : "Approval link could not be sent.");
+      setTargetMessage(error instanceof Error ? error.message : "Approval request could not be sent.");
       return false;
     } finally {
       setSecuritySaving(false);
@@ -10546,6 +10559,22 @@ function PrivacySecurityPage({
     }
   };
 
+  const openSecurityApprovalCodeDialog = () => {
+    setSecurityApprovalCode("");
+    setSecurityApprovalCodeMessage("");
+    setSecurityApprovalPrompt(null);
+    setSecurityApprovalCodeOpen(true);
+  };
+
+  const closeSecurityApprovalCodeDialog = () => {
+    if (securityApprovalCodeSaving) {
+      return;
+    }
+    setSecurityApprovalCode("");
+    setSecurityApprovalCodeMessage("");
+    setSecurityApprovalCodeOpen(false);
+  };
+
   const handleSecurityApprovalCodeSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (securitySaving || securityApprovalCodeSaving) {
@@ -10575,6 +10604,7 @@ function PrivacySecurityPage({
       }
       setSecurityApprovalCode("");
       setSecurityApprovalCodeMessage(payload.message);
+      setSecurityApprovalCodeOpen(false);
       onNotice(payload.message);
 
       if (payload.action === "discord_link") {
@@ -10799,18 +10829,37 @@ function PrivacySecurityPage({
   const otherSessionCount = sessions.filter((session) => !session.current).length;
   const blockedUsers = blockedUsersData?.users ?? [];
   const discordConnection = securitySettings?.discord ?? null;
+  const totpEnabled = securitySettings?.twoStep.totpEnabled ?? false;
+  const emailCodesEnabled = securitySettings?.twoStep.emailEnabled ?? false;
+  const hasPasskeys = (securitySettings?.passkeys.length ?? 0) > 0;
+  const securityMethodCount = [totpEnabled, emailCodesEnabled, hasPasskeys].filter(Boolean).length;
+  const securitySummary = securityLoading
+    ? "Loading"
+    : securityMethodCount > 0
+      ? `${securityMethodCount} method${securityMethodCount === 1 ? "" : "s"} ready`
+      : "No extra method";
+  const discordConnectionLabel = !discordConnection?.configured
+    ? "Not configured"
+    : discordConnection.linked
+      ? discordConnection.username
+        ? `Connected as ${discordConnection.username}`
+        : "Connected"
+      : "Not connected";
+  const securityApprovalPromptLabel = securityApprovalPrompt
+    ? securityApprovalActionLabels[securityApprovalPrompt.action]
+    : "this security change";
   const novelContext = context === "novels";
 
   return (
     <section className={classNames("content-main settings-page", novelContext && "novel-dedicated-page novel-settings-page")}>
       <div className="settings-heading">
         <div>
-          <p className="eyebrow">{novelContext ? "Novel safety" : "Account"}</p>
+          <p className="eyebrow">{novelContext ? "Safety" : "Account"}</p>
           <h1>{novelContext ? "Reading privacy & security" : "Privacy & security"}</h1>
         </div>
         <button className="secondary-button" type="button" onClick={onOpenProfileSettings}>
           <UserCog size={16} />
-          {novelContext ? "Story profile" : "Profile"}
+          Profile
         </button>
       </div>
       {loading ? <p className="empty-feed">Loading settings.</p> : null}
@@ -11001,18 +11050,32 @@ function PrivacySecurityPage({
 
           <section className="settings-form security-form">
             <div className="settings-panel">
-              <div className="panel-title">
-                <ShieldCheck size={18} />
-                Two-step verification
+              <div className="security-panel-heading">
+                <div className="panel-title">
+                  <ShieldCheck size={18} />
+                  Two-step verification
+                </div>
+                <span className={classNames("security-summary-badge", securityMethodCount > 0 && "is-enabled")}>
+                  <Lock size={14} />
+                  {securitySummary}
+                </span>
               </div>
               {securityLoading ? <p className="muted">Loading account security.</p> : null}
               <div className="security-option-list">
-                <article className="security-option">
-                  <div>
-                    <strong>Authenticator app</strong>
-                    <span>{securitySettings?.twoStep.totpEnabled ? "Enabled" : "Off"}</span>
+                <article className={classNames("security-option security-method-card", totpEnabled && "is-enabled")}>
+                  <span className="security-method-icon" aria-hidden="true">
+                    <KeyRound size={18} />
+                  </span>
+                  <div className="security-method-copy">
+                    <span className="security-method-title-row">
+                      <strong>Authenticator app</strong>
+                      <span className={classNames("security-status-pill", totpEnabled && "is-enabled")}>
+                        {totpEnabled ? "Enabled" : "Off"}
+                      </span>
+                    </span>
+                    <span className="security-option-detail">Authenticator codes for sensitive sign-ins.</span>
                   </div>
-                  {securitySettings?.twoStep.totpEnabled ? (
+                  {totpEnabled ? (
                     <button
                       className="secondary-button"
                       type="button"
@@ -11020,7 +11083,7 @@ function PrivacySecurityPage({
                       onClick={() => void handleTotpDisable()}
                     >
                       <KeyRound size={16} />
-                      Send link
+                      Disable
                     </button>
                   ) : (
                     <button
@@ -11030,7 +11093,7 @@ function PrivacySecurityPage({
                       onClick={() => void handleTotpStart()}
                     >
                       <KeyRound size={16} />
-                      Send link
+                      Set up
                     </button>
                   )}
                 </article>
@@ -11061,50 +11124,48 @@ function PrivacySecurityPage({
                     </div>
                   </form>
                 ) : null}
-                <article className="security-option">
-                  <div>
-                    <strong>Email codes</strong>
-                    <span>{securitySettings?.twoStep.emailEnabled ? "Enabled" : "Off"}</span>
+                <article className={classNames("security-option security-method-card", emailCodesEnabled && "is-enabled")}>
+                  <span className="security-method-icon" aria-hidden="true">
+                    <MailCheck size={18} />
+                  </span>
+                  <div className="security-method-copy">
+                    <span className="security-method-title-row">
+                      <strong>Email codes</strong>
+                      <span className={classNames("security-status-pill", emailCodesEnabled && "is-enabled")}>
+                        {emailCodesEnabled ? "Enabled" : "Off"}
+                      </span>
+                    </span>
+                    <span className="security-option-detail">One-time codes delivered to your account email.</span>
                   </div>
                   <button
                     className="secondary-button"
                     type="button"
                     disabled={securitySaving}
-                    onClick={() => void handleEmailMfaToggle(!securitySettings?.twoStep.emailEnabled)}
+                    onClick={() => void handleEmailMfaToggle(!emailCodesEnabled)}
                   >
                     <MailCheck size={16} />
-                    Send link
+                    {emailCodesEnabled ? "Disable" : "Enable"}
                   </button>
                 </article>
               </div>
-              <form className="security-code-form" onSubmit={handleSecurityApprovalCodeSubmit}>
-                <label>
-                  Backup approval code
-                  <input
-                    value={securityApprovalCode}
-                    inputMode="numeric"
-                    pattern="[0-9]{6}"
-                    minLength={6}
-                    maxLength={6}
-                    autoComplete="one-time-code"
-                    onChange={(event) =>
-                      setSecurityApprovalCode(event.target.value.replace(/\D/g, "").slice(0, 6))
-                    }
-                    required
-                  />
-                </label>
+              <div className="security-approval-strip">
+                <span className="security-method-icon is-approval" aria-hidden="true">
+                  <ShieldCheck size={18} />
+                </span>
+                <div>
+                  <strong>Backup approval code</strong>
+                  <span>Use the 6-digit code from the latest approval email.</span>
+                </div>
                 <button
                   className="secondary-button"
-                  type="submit"
-                  disabled={securitySaving || securityApprovalCodeSaving || securityApprovalCode.length !== 6}
+                  type="button"
+                  disabled={securitySaving}
+                  onClick={openSecurityApprovalCodeDialog}
                 >
                   <ShieldCheck size={16} />
-                  {securityApprovalCodeSaving ? "Approving" : "Approve code"}
+                  Use backup code
                 </button>
-              </form>
-              {securityApprovalCodeMessage ? (
-                <p className="settings-message">{securityApprovalCodeMessage}</p>
-              ) : null}
+              </div>
             </div>
           </section>
 
@@ -11116,18 +11177,18 @@ function PrivacySecurityPage({
               </div>
               {securityLoading ? <p className="muted">Loading connected logins.</p> : null}
               <div className="security-option-list">
-                <article className="security-option">
-                  <div>
-                    <strong>Discord</strong>
-                    <span>
-                      {!discordConnection?.configured
-                        ? "Not configured"
-                        : discordConnection.linked
-                          ? discordConnection.username
-                            ? `Connected as ${discordConnection.username}`
-                            : "Connected"
-                          : "Not connected"}
+                <article className={classNames("security-option security-method-card", discordConnection?.linked && "is-enabled")}>
+                  <span className="security-method-icon" aria-hidden="true">
+                    <MessageCircle size={18} />
+                  </span>
+                  <div className="security-method-copy">
+                    <span className="security-method-title-row">
+                      <strong>Discord</strong>
+                      <span className={classNames("security-status-pill", discordConnection?.linked && "is-enabled")}>
+                        {discordConnection?.linked ? "Connected" : "Off"}
+                      </span>
                     </span>
+                    <span className="security-option-detail">{discordConnectionLabel}</span>
                   </div>
                   <button
                     className="secondary-button"
@@ -11141,7 +11202,7 @@ function PrivacySecurityPage({
                     onClick={() => void handleDiscordLink()}
                   >
                     <MessageCircle size={16} />
-                    {discordConnection?.linked ? "Connected" : "Send link"}
+                    {discordConnection?.linked ? "Connected" : "Connect"}
                   </button>
                 </article>
               </div>
@@ -11155,7 +11216,7 @@ function PrivacySecurityPage({
                 <KeyRound size={18} />
                 Passkeys
               </div>
-              <div className="passkey-create-row">
+              <div className="passkey-create-row security-passkey-create">
                 <label>
                   Passkey name
                   <input
@@ -11171,7 +11232,7 @@ function PrivacySecurityPage({
                   onClick={() => void handleAddPasskey()}
                 >
                   <KeyRound size={16} />
-                  Send link
+                  Add passkey
                 </button>
               </div>
               {securitySettings?.passkeys.length ? (
@@ -11188,7 +11249,7 @@ function PrivacySecurityPage({
                       <button
                         className="secondary-button icon-button"
                         type="button"
-                        title="Send approval link to remove passkey"
+                        title="Remove passkey"
                         disabled={securitySaving}
                         onClick={() => void handleDeletePasskey(passkey.id)}
                       >
@@ -11198,11 +11259,160 @@ function PrivacySecurityPage({
                   ))}
                 </div>
               ) : (
-                <p className="muted">No passkeys.</p>
+                <div className="security-empty-state">
+                  <span className="security-method-icon" aria-hidden="true">
+                    <KeyRound size={18} />
+                  </span>
+                  <p>No passkeys yet.</p>
+                </div>
               )}
               {securityMessage ? <p className="settings-message">{securityMessage}</p> : null}
             </div>
           </section>
+
+          {securityApprovalPrompt ? (
+            <div
+              className="modal-backdrop security-code-backdrop"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="security-approval-title"
+              onClick={(event) => {
+                if (event.currentTarget === event.target) {
+                  setSecurityApprovalPrompt(null);
+                }
+              }}
+            >
+              <div className="security-code-dialog security-approval-dialog">
+                <button
+                  className="icon-button security-code-close"
+                  type="button"
+                  title="Close"
+                  onClick={() => setSecurityApprovalPrompt(null)}
+                >
+                  <X size={16} />
+                </button>
+                <span className="security-code-icon">
+                  <MailCheck size={24} />
+                </span>
+                <p className="eyebrow">Approval email</p>
+                <h2 id="security-approval-title">Check your email</h2>
+                <p className="security-code-copy">
+                  {securityApprovalPrompt.message} It includes the approval action and a 6-digit
+                  backup code for this browser.
+                </p>
+                <div className="security-approval-steps" aria-label="Approval options">
+                  <div>
+                    <span>1</span>
+                    <p>
+                      <strong>Approve from email</strong>
+                      <small>Complete the request to {securityApprovalPromptLabel}.</small>
+                    </p>
+                  </div>
+                  <div>
+                    <span>2</span>
+                    <p>
+                      <strong>Use backup code</strong>
+                      <small>Enter the 6-digit code here if email approval cannot open.</small>
+                    </p>
+                  </div>
+                </div>
+                <div className="settings-actions">
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={openSecurityApprovalCodeDialog}
+                  >
+                    <ShieldCheck size={16} />
+                    Enter backup code
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => setSecurityApprovalPrompt(null)}
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {securityApprovalCodeOpen ? (
+            <div
+              className="modal-backdrop security-code-backdrop"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="security-code-title"
+              onClick={(event) => {
+                if (event.currentTarget === event.target) {
+                  closeSecurityApprovalCodeDialog();
+                }
+              }}
+            >
+              <form className="security-code-dialog" onSubmit={handleSecurityApprovalCodeSubmit}>
+                <button
+                  className="icon-button security-code-close"
+                  type="button"
+                  title="Close"
+                  disabled={securityApprovalCodeSaving}
+                  onClick={closeSecurityApprovalCodeDialog}
+                >
+                  <X size={16} />
+                </button>
+                <span className="security-code-icon">
+                  <ShieldCheck size={24} />
+                </span>
+                <p className="eyebrow">Approval</p>
+                <h2 id="security-code-title">Backup code</h2>
+                <p className="security-code-copy">
+                  Enter the 6-digit backup code from your most recent approval email.
+                </p>
+                <label>
+                  6-digit code
+                  <input
+                    className="security-code-input"
+                    value={securityApprovalCode}
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    minLength={6}
+                    maxLength={6}
+                    autoComplete="one-time-code"
+                    autoFocus
+                    placeholder="000000"
+                    onChange={(event) =>
+                      setSecurityApprovalCode(event.target.value.replace(/\D/g, "").slice(0, 6))
+                    }
+                    required
+                  />
+                </label>
+                <div className="settings-actions">
+                  <button
+                    className="primary-button"
+                    type="submit"
+                    disabled={
+                      securitySaving ||
+                      securityApprovalCodeSaving ||
+                      securityApprovalCode.length !== 6
+                    }
+                  >
+                    <ShieldCheck size={16} />
+                    {securityApprovalCodeSaving ? "Approving" : "Approve code"}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={securityApprovalCodeSaving}
+                    onClick={closeSecurityApprovalCodeDialog}
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {securityApprovalCodeMessage ? (
+                  <p className="settings-message">{securityApprovalCodeMessage}</p>
+                ) : null}
+              </form>
+            </div>
+          ) : null}
 
           <form
             className="settings-form notification-preferences-form"
@@ -11645,15 +11855,9 @@ function PolicyPage(props: PolicyPageProps) {
   return (
     <section className={classNames("content-main policy-page", novelContext && "novel-dedicated-page novel-policy-page")}>
       <div className="policy-heading">
-        <p className="eyebrow">{novelContext ? "NEHub novels" : "NEHub"}</p>
+        <p className="eyebrow">NEHub</p>
         <h1>
-          {novelContext
-            ? isTerms
-              ? "Novel Terms of Use"
-              : "Novel Privacy Policy"
-            : isTerms
-              ? "Terms of Use"
-              : "Privacy Policy"}
+          {isTerms ? "Terms of Use" : "Privacy Policy"}
         </h1>
         <p>Last updated {policyUpdatedDate}</p>
       </div>
@@ -11761,38 +11965,38 @@ function NovelHubPage({
   onOpenSection
 }: NovelHubPageProps) {
   const sectionTitleMap: Record<NovelSection, string> = {
-    home: "Latest creator fiction",
-    following: "Following novels",
-    creators: "Novel creators",
-    tags: "Story tags",
-    novels: "All novels",
-    rankings: "Novel rankings",
-    bookmarks: "Bookmarked novels",
-    collections: "Novel collections",
-    terms: "Novel terms",
-    privacy: "Novel privacy"
+    home: "Latest creator works",
+    following: "Following",
+    creators: "Creators",
+    tags: "Tags",
+    novels: "All works",
+    rankings: "Rankings",
+    bookmarks: "Bookmarks",
+    collections: "Collections",
+    terms: "Terms",
+    privacy: "Privacy"
   };
   const sectionDescriptionMap: Record<NovelSection, string> = {
-    home: "Short stories, serial chapters, and luminous fragments from NEHub creators.",
-    following: "Stories from creators you already follow.",
-    creators: "Authors publishing fiction across NEHub.",
+    home: "Fresh chapters, essays, and luminous fragments from NEHub creators.",
+    following: "Works from creators you already follow.",
+    creators: "Authors publishing across NEHub.",
     tags: "Browse the labels shaping the current fiction feed.",
     novels: "The complete readable shelf currently loaded from NEHub.",
-    rankings: "A quick ranking view built from the current novels feed.",
-    bookmarks: "Saved fiction will appear here once novel bookmarks are supported.",
-    collections: "Grouped fiction will appear here once novel collections are supported.",
-    terms: "Read the terms without leaving the novels section.",
-    privacy: "Read the privacy policy without leaving the novels section."
+    rankings: "A quick ranking view built from the current feed.",
+    bookmarks: "Saved fiction will appear here once bookmarks are supported.",
+    collections: "Grouped fiction will appear here once collections are supported.",
+    terms: "Read the terms without leaving this section.",
+    privacy: "Read the privacy policy without leaving this section."
   };
   const listTitleMap: Record<NovelSection, string> = {
-    home: query.trim() ? "Novel search results" : "Latest novels",
+    home: query.trim() ? "Search results" : "Latest works",
     following: "Following",
-    creators: "Creators publishing novels",
-    tags: "Popular story tags",
-    novels: "All novels",
-    rankings: "Ranked novels",
-    bookmarks: "Bookmarked novels",
-    collections: "Novel collections",
+    creators: "Publishing creators",
+    tags: "Popular tags",
+    novels: "All works",
+    rankings: "Ranked works",
+    bookmarks: "Bookmarks",
+    collections: "Collections",
     terms: "Terms",
     privacy: "Privacy"
   };
@@ -11811,13 +12015,13 @@ function NovelHubPage({
       <MatureAccessNotice matureAccess={data?.matureAccess ?? null} onLogin={onAuthRequired} onPrivacySecurity={onPrivacySecurity} />
       <div className="novels-hero">
         <div className="novels-hero-copy">
-          <p className="eyebrow">NEHub novels</p>
+          <p className="eyebrow">NEHub reads</p>
           <h1>{sectionTitleMap[section]}</h1>
           <p>{sectionDescriptionMap[section]}</p>
-          <div className="novels-hero-stats" aria-label="Novel stats">
+          <div className="novels-hero-stats" aria-label="Feed stats">
             <span>
               <strong>{formatCount(data?.totalCount ?? novels.length)}</strong>
-              novels
+              works
             </span>
             <span>
               <strong>{formatCount(totalWords)}</strong>
@@ -11855,12 +12059,12 @@ function NovelHubPage({
               : section === "creators"
                 ? `${formatCount(creators.length)} active ${creators.length === 1 ? "author" : "authors"}`
                 : section === "tags"
-                  ? `${formatCount(data?.tags.length ?? 0)} story tags`
+                  ? `${formatCount(data?.tags.length ?? 0)} tags`
                   : section === "collections"
-                    ? `${formatCount(collections.length)} novel ${collections.length === 1 ? "collection" : "collections"}`
+                    ? `${formatCount(collections.length)} ${collections.length === 1 ? "collection" : "collections"}`
                     : data
-                      ? `${formatCount(sectionNovels.length)} readable ${sectionNovels.length === 1 ? "story" : "stories"}`
-                      : "Loading novels."}
+                      ? `${formatCount(sectionNovels.length)} readable ${sectionNovels.length === 1 ? "work" : "works"}`
+                      : "Loading works."}
           </p>
         </div>
         {section !== "creators" && section !== "tags" && section !== "collections" ? (
@@ -11881,7 +12085,7 @@ function NovelHubPage({
       </div>
 
       {section === "tags" && data?.tags.length ? (
-        <div className="tag-row novel-tag-row" aria-label="Novel tags">
+        <div className="tag-row novel-tag-row" aria-label="Tags">
           {data.tags.slice(0, 10).map((tag) => (
             <button className="tag-pill novel-tag-pill" key={tag.name} type="button" onClick={() => onOpenSection("novels")}>
               #{tag.name}
@@ -11900,7 +12104,7 @@ function NovelHubPage({
                 <span className="novel-card-content">
                   <small>@{creator.handle}</small>
                   <strong>{creator.displayName}</strong>
-                  <em>{creator.bio || "Creator publishing fiction on NEHub."}</em>
+                  <em>{creator.bio || "Creator publishing on NEHub."}</em>
                 </span>
               </button>
               <div className="novel-card-footer">
@@ -11939,21 +12143,21 @@ function NovelHubPage({
         </div>
       )}
 
-      {!data ? <p className="empty-feed">Loading novels.</p> : null}
+      {!data ? <p className="empty-feed">Loading works.</p> : null}
       {data && section === "creators" && creators.length === 0 ? (
-        <p className="empty-feed">No novel creators match this view yet.</p>
+        <p className="empty-feed">No creators match this view yet.</p>
       ) : null}
       {data && section === "tags" && (data.tags?.length ?? 0) === 0 ? (
-        <p className="empty-feed">No story tags match this view yet.</p>
+        <p className="empty-feed">No tags match this view yet.</p>
       ) : null}
       {data && section === "collections" && collections.length === 0 ? (
-        <p className="empty-feed">Novel collections are not supported yet.</p>
+        <p className="empty-feed">Collections are not supported yet.</p>
       ) : null}
       {data && !["creators", "tags", "collections"].includes(section) && sectionNovels.length === 0 ? (
         <p className="empty-feed">
           {section === "bookmarks"
-            ? "Novel bookmarks are not supported yet."
-            : "No novels match this view yet."}
+            ? "Bookmarks are not supported yet."
+            : "No works match this view yet."}
         </p>
       ) : null}
     </section>
@@ -12040,7 +12244,7 @@ function NovelDetailPage({
   if (!detail) {
     return (
       <section className="content-main novel-detail-page">
-        <p className="empty-feed">{loading ? "Loading novel." : "Novel could not be loaded."}</p>
+        <p className="empty-feed">{loading ? "Loading work." : "Work could not be loaded."}</p>
       </section>
     );
   }
@@ -12054,7 +12258,7 @@ function NovelDetailPage({
       <header className="novel-detail-hero" style={{ "--novel-cover": novel.coverColor } as CSSProperties}>
         <button className="secondary-button novel-back-button" type="button" onClick={onBack}>
           <ChevronUp size={16} />
-          Novels
+          Back
         </button>
         <div className="novel-detail-title">
           <p className="eyebrow">{novel.id}</p>
@@ -12069,7 +12273,7 @@ function NovelDetailPage({
             <span>{novel.creator.displayName}</span>
           </button>
         </div>
-        <div className="novel-detail-metrics" aria-label="Novel metrics">
+        <div className="novel-detail-metrics" aria-label="Metrics">
           <span>
             <strong>{formatCount(novel.wordCount)}</strong>
             words

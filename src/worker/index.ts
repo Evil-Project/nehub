@@ -13141,7 +13141,7 @@ app.post("/api/settings/security/approval", async (context) => {
   );
 
   return context.json<SecurityApprovalResponse>({
-    message: `Approval link and backup code sent to ${maskEmail(user.email)}.`
+    message: `Approval request sent to ${maskEmail(user.email)}.`
   });
 });
 
@@ -14709,7 +14709,7 @@ app.get("/api/novels/:id", async (context) => {
 
   const novel = fallbackNovels.find((item) => item.id === id);
   if (!novel || (novel.mature && !matureAccess.allowed)) {
-    return context.json({ message: "Novel not found" }, 404);
+    return context.json({ message: "Work not found" }, 404);
   }
   const relatedNovels = filterNovels(
     fallbackNovels.filter((item) => item.id !== novel.id),
@@ -17145,7 +17145,7 @@ app.get("/novels/:id", async (context) => {
       ? `${matureRatingLabelForMeta(metaNovel.matureRating)} novel on ${context.env.PUBLIC_APP_NAME}`
       : `${metaNovel.title} by ${metaNovel.creator.displayName}`;
     const description = metaNovel.mature
-      ? "Open NEHub to read this novel with your mature-content settings."
+      ? "Open NEHub to read this work with your mature-content settings."
       : metaNovel.excerpt || `Novel by ${metaNovel.creator.displayName} on ${context.env.PUBLIC_APP_NAME}.`;
     const url = new URL(context.req.path, context.env.PUBLIC_APP_URL).toString();
     const meta = `<title>${escapeHtml(title)} · ${escapeHtml(context.env.PUBLIC_APP_NAME)}</title>
