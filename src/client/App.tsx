@@ -3342,6 +3342,7 @@ function App() {
               >
                 Illustrations
               </button>
+              <button type="button">Manga</button>
               <button
                 className={classNames(isNovelSection && "is-active")}
                 type="button"
@@ -12611,7 +12612,6 @@ function IllustrationsPage({
         />
         <div className="section-heading">
           <div>
-            <p className="eyebrow">Latest transmissions</p>
             <h1>{feedTitle}</h1>
             <p>{feedMeta}</p>
           </div>
@@ -12634,21 +12634,6 @@ function IllustrationsPage({
               <ChevronDown size={15} />
             </button>
           </div>
-        </div>
-
-        <div className="feed-summary-strip" aria-label="Feed summary">
-          <span>
-            <strong>{formatCount(artworks.length)}</strong>
-            visible works
-          </span>
-          <span>
-            <strong>{formatCount(gallery?.totalCount ?? artworks.length)}</strong>
-            total matches
-          </span>
-          <span>
-            <strong>{prominentTags.length}</strong>
-            live tags
-          </span>
         </div>
 
         {showSortTabs ? (
@@ -12690,9 +12675,6 @@ function IllustrationsPage({
               </span>
             );
           })}
-          {prominentTags.length === 0 ? (
-            <span className="tag-pill tag-pill-empty">Tags will appear as artwork is published.</span>
-          ) : null}
         </div>
 
         <div className="art-grid" aria-live="polite">
@@ -12767,9 +12749,7 @@ function IllustrationsPage({
               </span>
             </button>
           ))}
-          {rankingItems.length === 0 ? (
-            <p className="rail-empty-note">No ranked works yet. Likes will light this up.</p>
-          ) : null}
+          {rankingItems.length === 0 ? <p className="muted">No ranked works yet.</p> : null}
         </section>
 
         <ActivityPanel
@@ -12807,9 +12787,6 @@ function IllustrationsPage({
               </span>
             </button>
           ))}
-          {creators.length === 0 ? (
-            <p className="rail-empty-note">Creators appear here after public uploads.</p>
-          ) : null}
         </section>
       </aside>
     </>
@@ -12875,29 +12852,26 @@ function ArtworkCard({
         ) : null}
       </button>
       <div className="art-card-body">
-        <div className="art-card-title-row">
-          <a
-            className="art-title-button"
-            href={artworkPath}
-            onClick={(event) => {
-              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
-                return;
-              }
-              event.preventDefault();
-              if (onOpenPage) {
-                onOpenPage(artwork);
-                return;
-              }
-              if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== artworkPath) {
-                window.history.pushState(null, "", artworkPath);
-              }
-              window.dispatchEvent(new Event("popstate"));
-            }}
-          >
-            {artwork.title}
-          </a>
-          {artwork.tags[0] ? <span className="art-card-tag">#{artwork.tags[0]}</span> : null}
-        </div>
+        <a
+          className="art-title-button"
+          href={artworkPath}
+          onClick={(event) => {
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+              return;
+            }
+            event.preventDefault();
+            if (onOpenPage) {
+              onOpenPage(artwork);
+              return;
+            }
+            if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== artworkPath) {
+              window.history.pushState(null, "", artworkPath);
+            }
+            window.dispatchEvent(new Event("popstate"));
+          }}
+        >
+          {artwork.title}
+        </a>
         <button className="creator-mini creator-mini-link" type="button" onClick={() => onOpenProfile(artwork.creator.handle)}>
           {artwork.creator.avatarUrl ? (
             <img src={artwork.creator.avatarUrl} alt="" />
