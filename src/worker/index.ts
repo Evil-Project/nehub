@@ -5792,9 +5792,30 @@ const getDiscordConnectionSummary = async (
   }
 };
 
-const discordRedirectUri = (context: AppContext) =>
-  context.env.DISCORD_REDIRECT_URI?.trim() ||
-  `${new URL(context.req.url).origin}/api/auth/discord/callback`;
+const discordVerificationPath = "/discord-verification";
+const legacyDiscordCallbackPath = "/api/auth/discord/callback";
+
+const normalizeDiscordRedirectUri = (value: string) => {
+  try {
+    const url = new URL(value);
+    if (url.pathname === legacyDiscordCallbackPath) {
+      url.pathname = discordVerificationPath;
+      url.search = "";
+      url.hash = "";
+      return url.toString();
+    }
+  } catch {
+    return value;
+  }
+  return value;
+};
+
+const discordRedirectUri = (context: AppContext) => {
+  const configuredRedirectUri = context.env.DISCORD_REDIRECT_URI?.trim();
+  return configuredRedirectUri
+    ? normalizeDiscordRedirectUri(configuredRedirectUri)
+    : `${new URL(context.req.url).origin}${discordVerificationPath}`;
+};
 
 const sanitizeOauthReturnTo = (value: string | null | undefined) => {
   if (!value || value.length > 500 || !value.startsWith("/") || value.startsWith("//")) {
@@ -5965,7 +5986,7 @@ const redirectToDiscordVerification = async (
     expiresAt: Date.now() + discordVerificationDurationSeconds * 1000
   });
   context.header("Set-Cookie", discordVerificationCookie(context, state), { append: true });
-  return context.redirect(`/discord-verification?token=${encodeURIComponent(token)}`, 302);
+  return context.redirect(`${discordVerificationPath}?token=${encodeURIComponent(token)}`, 302);
 };
 
 const discordAuthorizeUrl = (context: AppContext, state: string) => {
@@ -8235,7 +8256,7 @@ app.post("/api/settings/security/discord/start", async (context) => {
   });
 });
 
-app.get("/api/auth/discord/callback", async (context) => {
+async function handleDiscordOauthReturn(context: AppContext) {
   const storedState = parseDiscordOauthState(context);
   const returnTo = storedState?.returnTo ?? "/";
   context.header("Set-Cookie", clearDiscordOauthStateCookie(context), { append: true });
@@ -8302,7 +8323,16 @@ app.get("/api/auth/discord/callback", async (context) => {
       authError: storedState?.mode === "link" ? "discord_link_failed" : "discord_failed"
     });
   }
+}
+
+app.get(discordVerificationPath, async (context) => {
+  if (context.req.query("code") || context.req.query("state") || context.req.query("error")) {
+    return handleDiscordOauthReturn(context);
+  }
+  return appShellResponse(context);
 });
+
+app.get("/api/auth/discord/callback", handleDiscordOauthReturn);
 
 app.post("/api/auth/discord/verify", async (context) => {
   if (!context.env.DB) {
@@ -16310,8 +16340,6 @@ async function appShellResponse(context: AppContext) {
   }
   return indexHtmlResponse(context, html);
 }
-
-app.get("/discord-verification", appShellResponse);
 
 app.get("/novels", async (context) => {
   const { assetResponse, html } = await indexHtml(context);

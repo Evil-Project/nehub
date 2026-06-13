@@ -181,16 +181,16 @@ npx wrangler dev --port 8787 \
 ```
 
 To enable Discord sign-in, create a Discord OAuth2 application and add
-`https://your-origin.example.com/api/auth/discord/callback` as a redirect URI. Set
+`https://your-origin.example.com/discord-verification` as a redirect URI. Set
 `DISCORD_CLIENT_ID` as a Worker var and keep `DISCORD_CLIENT_SECRET` server-side as a
-Wrangler secret. The same callback is used when signed-in users connect Discord login
+Wrangler secret. The same redirect route is used when signed-in users connect Discord login
 from Privacy & security settings. For local testing, add a localhost redirect URI in
 Discord and put these values in `.dev.vars`:
 
 ```bash
 DISCORD_CLIENT_ID=your-discord-client-id
 DISCORD_CLIENT_SECRET=your-discord-client-secret
-DISCORD_REDIRECT_URI=http://localhost:8787/api/auth/discord/callback
+DISCORD_REDIRECT_URI=http://localhost:8787/discord-verification
 ```
 
 Configure Email Routing for Workers and set `AUTH_EMAIL_FROM` to an allowed sender address for your zone. The Worker uses the `EMAIL` `send_email` binding from `wrangler.jsonc` to send verification links, password reset links, email-change confirmations, and account security notices.
@@ -237,7 +237,7 @@ Add these repository secrets before using the workflow:
 - `ADMIN_BOOTSTRAP_PASSWORD`: first-run password for the default admin account. Use a strong unique value, then remove or rotate it after the first successful admin login.
 - `DISCORD_CLIENT_SECRET`: Discord OAuth2 client secret when Discord sign-in is enabled.
 - `DISCORD_CLIENT_ID`: optional secret fallback for the Discord OAuth2 client ID when you prefer to keep all Discord settings in repository secrets.
-- `DISCORD_REDIRECT_URI`: optional secret fallback for the explicit Discord callback URL.
+- `DISCORD_REDIRECT_URI`: optional secret fallback for the explicit Discord redirect URL.
 
 Optional repository variable:
 
@@ -258,7 +258,7 @@ Optional repository variables override resource names and production settings:
 - `R2_BUCKET_NAME`: defaults to `nehub-artworks`.
 - `R2_LOCATION`: optional R2 location hint, such as `wnam`, `enam`, `weur`, or `apac`.
 - `PUBLIC_APP_NAME`: defaults to `NEHub`.
-- `DISCORD_REDIRECT_URI`: explicit Discord callback URL when it differs from `${PUBLIC_APP_URL}/api/auth/discord/callback`. This can also be set as a repository secret.
+- `DISCORD_REDIRECT_URI`: explicit Discord redirect URL when it differs from `${PUBLIC_APP_URL}/discord-verification`. This can also be set as a repository secret.
 - `MATURE_RESTRICTED_REGIONS`: comma-separated ISO 3166-1 alpha-2 country codes.
 
 The workflow installs dependencies with `npm ci`, runs `npm run check`, builds with `npm run build`, runs `scripts/provision-cloudflare.mjs`, applies pending remote D1 migrations, and deploys with `npx wrangler deploy`. Production deploys fail early if required values are missing or still use local/test placeholders.
@@ -279,7 +279,8 @@ Cloudflare Email Routing and the Turnstile widget still need to exist in the Clo
 - `POST /api/auth/login` validates Turnstile, starts a session, and awards a random login site-credit bonus.
 - `GET /api/auth/discord/start` creates Discord OAuth state and redirects the browser to Discord.
 - `POST /api/settings/security/discord/start` starts a CSRF-protected Discord login binding flow for the current user.
-- `GET /api/auth/discord/callback` completes Discord OAuth2 exchange, then redirects sign-in attempts to `/discord-verification` before creating a local session. Settings-initiated login binding completes from the callback.
+- `GET /discord-verification` completes Discord OAuth2 exchange when Discord redirects back with `code` and `state`, then shows the verification page before creating a local session. Settings-initiated login binding also completes from this route.
+- `GET /api/auth/discord/callback` remains a backwards-compatible alias for older Discord redirect settings.
 - `POST /api/auth/discord/verify` verifies the pending Discord sign-in challenge, links by verified email when needed, and starts a session.
 - `POST /api/auth/password-reset/request` validates Turnstile and sends a non-enumerating password reset email when the account exists.
 - `POST /api/auth/password-reset/confirm` validates Turnstile, consumes a reset token, updates the password, and revokes all sessions.
