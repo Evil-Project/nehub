@@ -404,7 +404,7 @@ const passkeyCreationPayload = (credential: PublicKeyCredential, name: string) =
   };
 };
 
-const passkeyAssertionPayload = (credential: PublicKeyCredential) => {
+const passkeyAssertionPayload = (credential: PublicKeyCredential, rememberMe = false) => {
   const response = credential.response as AuthenticatorAssertionResponse;
   return {
     id: credential.id,
@@ -415,7 +415,8 @@ const passkeyAssertionPayload = (credential: PublicKeyCredential) => {
       authenticatorData: arrayBufferToBase64Url(response.authenticatorData),
       signature: arrayBufferToBase64Url(response.signature),
       userHandle: response.userHandle ? arrayBufferToBase64Url(response.userHandle) : null
-    }
+    },
+    rememberMe
   };
 };
 
@@ -775,6 +776,7 @@ function App() {
   const [postAuthNovelSection, setPostAuthNovelSection] = useState<NovelSection | null>(null);
   const [galleryLoadingMore, setGalleryLoadingMore] = useState(false);
   const [contentAccessRevision, setContentAccessRevision] = useState(0);
+  const authOpeningRef = useRef(false);
   const isNovelSection = routeContext === "novels";
   const isIllustrationsSection = view === "illustrations" || view === "artwork";
 
@@ -1409,9 +1411,9 @@ function App() {
     }
     setPostAuthSort(null);
     setPostAuthNovelSection(routeNovelSection);
-    setAuthMode("login");
-    setAuthNotice(novelSectionAuthNotice(routeNovelSection));
-    setAuthOpen(true);
+    openAuth("login", novelSectionAuthNotice(routeNovelSection), {
+      onAuthenticated: () => openNovelSection(routeNovelSection)
+    });
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setNovelDetail(null);
@@ -1652,9 +1654,9 @@ function App() {
     if (novelSectionRequiresAuth(section) && !currentUser) {
       setPostAuthSort(null);
       setPostAuthNovelSection(section);
-      setAuthMode("login");
-      setAuthNotice(novelSectionAuthNotice(section));
-      setAuthOpen(true);
+      openAuth("login", novelSectionAuthNotice(section), {
+        onAuthenticated: () => openNovelSection(section)
+      });
       return;
     }
     openNovelSection(section);
@@ -1664,9 +1666,9 @@ function App() {
     if (!currentUser) {
       setPostAuthSort("bookmarks");
       setPostAuthNovelSection(null);
-      setAuthMode("login");
-      setAuthNotice("Sign in to view your bookmarks.");
-      setAuthOpen(true);
+      openAuth("login", "Sign in to view your bookmarks.", {
+        onAuthenticated: () => showIllustrations("bookmarks")
+      });
       return;
     }
     showIllustrations("bookmarks");
@@ -1676,9 +1678,9 @@ function App() {
     if (!currentUser) {
       setPostAuthSort("subscriptions");
       setPostAuthNovelSection(null);
-      setAuthMode("login");
-      setAuthNotice("Sign in to follow tags.");
-      setAuthOpen(true);
+      openAuth("login", "Sign in to follow tags.", {
+        onAuthenticated: () => showIllustrations("subscriptions")
+      });
       return;
     }
     showIllustrations("subscriptions");
@@ -1705,8 +1707,12 @@ function App() {
 
   const showNotifications = () => {
     if (!currentUser) {
-      openAuth("login");
-      setAuthNotice(isNovelSection ? "Sign in to view alerts." : "Sign in to view notifications.");
+      openAuth("login", isNovelSection ? "Sign in to view alerts." : "Sign in to view notifications.", {
+        onAuthenticated: () => {
+          setNotificationsOpen(false);
+          pushRoute(isNovelSection ? "/novels/notifications" : "/notifications", "notifications");
+        }
+      });
       return;
     }
     setNotificationsOpen(false);
@@ -1715,8 +1721,9 @@ function App() {
 
   const showCollections = () => {
     if (!currentUser) {
-      openAuth("login");
-      setAuthNotice(isNovelSection ? "Sign in to manage reading shelves." : "Sign in to manage collections.");
+      openAuth("login", isNovelSection ? "Sign in to manage reading shelves." : "Sign in to manage collections.", {
+        onAuthenticated: () => pushRoute(isNovelSection ? "/novels/my-folders" : "/collections", "collections")
+      });
       return;
     }
     pushRoute(isNovelSection ? "/novels/my-folders" : "/collections", "collections");
@@ -1744,8 +1751,9 @@ function App() {
 
   const showSeriesList = () => {
     if (!currentUser) {
-      openAuth("login");
-      setAuthNotice(isNovelSection ? "Sign in to manage serials." : "Sign in to manage series.");
+      openAuth("login", isNovelSection ? "Sign in to manage serials." : "Sign in to manage series.", {
+        onAuthenticated: () => pushRoute(isNovelSection ? "/novels/my-series" : "/series", "seriesList")
+      });
       return;
     }
     pushRoute(isNovelSection ? "/novels/my-series" : "/series", "seriesList");
@@ -1770,20 +1778,35 @@ function App() {
 
   const showAnalytics = () => {
     if (!currentUser) {
-      openAuth("login");
-      setAuthNotice(isNovelSection ? "Sign in to view stats." : "Sign in to view creator analytics.");
+      openAuth("login", isNovelSection ? "Sign in to view stats." : "Sign in to view creator analytics.", {
+        onAuthenticated: () => pushRoute(isNovelSection ? "/novels/analytics" : "/analytics", "analytics")
+      });
       return;
     }
     pushRoute(isNovelSection ? "/novels/analytics" : "/analytics", "analytics");
   };
 
   const showDashboard = () => {
-    if (!canModerate) {
-      setDashboardMessage("Moderator access is required.");
-      openAuth("login");
+    const openDashboard = () => {
+      pushRoute(isNovelSection ? "/novels/dashboard" : "/#dashboard", "dashboard");
+    };
+    if (!currentUser) {
+      openAuth("login", "", {
+        onAuthenticated: (user) => {
+          if (user.role === "admin" || user.role === "moderator") {
+            openDashboard();
+            return;
+          }
+          setDashboardMessage("Moderator access is required.");
+        }
+      });
       return;
     }
-    pushRoute(isNovelSection ? "/novels/dashboard" : "/#dashboard", "dashboard");
+    if (!canModerate) {
+      setDashboardMessage("Moderator access is required.");
+      return;
+    }
+    openDashboard();
   };
 
   const showProfile = (username: string) => {
@@ -1796,7 +1819,9 @@ function App() {
 
   const showProfileSettings = () => {
     if (!currentUser) {
-      openAuth("login");
+      openAuth("login", "", {
+        onAuthenticated: () => pushRoute(isNovelSection ? "/novels/settings/profile" : "/settings/profile", "profileSettings")
+      });
       return;
     }
     pushRoute(isNovelSection ? "/novels/settings/profile" : "/settings/profile", "profileSettings");
@@ -1804,7 +1829,10 @@ function App() {
 
   const showPrivacySecurity = () => {
     if (!currentUser) {
-      openAuth("login");
+      openAuth("login", "", {
+        onAuthenticated: () =>
+          pushRoute(isNovelSection ? "/novels/settings/privacy-security" : "/settings/privacy-security", "privacySecurity")
+      });
       return;
     }
     pushRoute(isNovelSection ? "/novels/settings/privacy-security" : "/settings/privacy-security", "privacySecurity");
@@ -1906,10 +1934,43 @@ function App() {
     }
   };
 
-  const openAuth = (mode: AuthMode) => {
+  const openAuth = (
+    mode: AuthMode,
+    notice = "",
+    options: { onAuthenticated?: (user: AuthUser) => void } = {}
+  ) => {
+    if (currentUser) {
+      options.onAuthenticated?.(currentUser);
+      setAuthNotice((current) => (current.startsWith("Sign in ") ? "" : current));
+      return true;
+    }
+    if (authOpeningRef.current) {
+      setAuthMode(mode);
+      setAuthNotice(notice);
+      return false;
+    }
+    authOpeningRef.current = true;
     setAuthMode(mode);
-    setAuthNotice("");
-    setAuthOpen(true);
+    setAuthNotice(notice);
+    void refreshAuthSession()
+      .then((session) => {
+        if (session.user) {
+          setAuthOpen(false);
+          options.onAuthenticated?.(session.user);
+          setAuthNotice((current) => (current.startsWith("Sign in ") ? "" : current));
+          return;
+        }
+        setAuthOpen(true);
+      })
+      .catch((error: unknown) => {
+        console.error("Unable to check auth session", error);
+        setAuthOpen(true);
+      })
+      .finally(() => {
+        authOpeningRef.current = false;
+        setAuthReady(true);
+      });
+    return false;
   };
 
   const openUpload = () => {
@@ -4728,6 +4789,7 @@ function AuthDialog({
   const [turnstileToken, setTurnstileToken] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
   const isRegister = mode === "register";
 
   const clearMfaState = () => {
@@ -4876,7 +4938,8 @@ function AuthDialog({
         body: JSON.stringify({
           mfaToken,
           method: mfaMethod,
-          code: String(formData.get("code") ?? "")
+          code: String(formData.get("code") ?? ""),
+          rememberMe
         })
       });
       const payload = (await response.json()) as AuthResponse | { message?: string };
@@ -4928,7 +4991,7 @@ function AuthDialog({
         headers: {
           "content-type": "application/json"
         },
-        body: JSON.stringify(passkeyAssertionPayload(credential))
+        body: JSON.stringify(passkeyAssertionPayload(credential, rememberMe))
       });
       const payload = (await verifyResponse.json()) as AuthResponse | { message?: string };
       if (!verifyResponse.ok || !("user" in payload)) {
@@ -4972,7 +5035,8 @@ function AuthDialog({
       : {
           identifier: String(formData.get("identifier") ?? ""),
           password: String(formData.get("password") ?? ""),
-          turnstileToken
+          turnstileToken,
+          rememberMe
         };
 
     setSubmitting(true);
@@ -5116,6 +5180,20 @@ function AuthDialog({
                     required
                   />
                 </label>
+
+                {!isRegister ? (
+                  <label className="auth-remember-row">
+                    <input
+                      checked={rememberMe}
+                      type="checkbox"
+                      onChange={(event) => setRememberMe(event.target.checked)}
+                    />
+                    <span>
+                      <strong>Remember me</strong>
+                      <small>Keep this browser signed in.</small>
+                    </span>
+                  </label>
+                ) : null}
 
                 <TurnstileWidget
                   key={mode}
@@ -11147,24 +11225,6 @@ function PrivacySecurityPage({
                     {emailCodesEnabled ? "Disable" : "Enable"}
                   </button>
                 </article>
-              </div>
-              <div className="security-approval-strip">
-                <span className="security-method-icon is-approval" aria-hidden="true">
-                  <ShieldCheck size={18} />
-                </span>
-                <div>
-                  <strong>Backup approval code</strong>
-                  <span>Use the 6-digit code from the latest approval email.</span>
-                </div>
-                <button
-                  className="secondary-button"
-                  type="button"
-                  disabled={securitySaving}
-                  onClick={openSecurityApprovalCodeDialog}
-                >
-                  <ShieldCheck size={16} />
-                  Use backup code
-                </button>
               </div>
             </div>
           </section>

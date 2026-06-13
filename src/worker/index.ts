@@ -191,6 +191,7 @@ const discordOauthStateCookieName = "nehub_discord_oauth_state";
 const discordVerificationCookieName = "nehub_discord_verification";
 const csrfHeaderName = "x-csrf-token";
 const sessionDurationSeconds = 60 * 60 * 24 * 30;
+const sessionOnlyDurationSeconds = 60 * 60 * 12;
 const oauthStateDurationSeconds = 60 * 10;
 const discordVerificationDurationSeconds = 60 * 10;
 const recentAuthenticationDurationSeconds = 15 * 60;
@@ -529,13 +530,15 @@ const registerSchema = z.object({
 const loginSchema = z.object({
   identifier: z.string().trim().min(3).max(254),
   password: z.string().min(1).max(160),
-  turnstileToken: z.string().min(1).max(4096)
+  turnstileToken: z.string().min(1).max(4096),
+  rememberMe: z.boolean().optional().default(false)
 });
 
 const mfaVerifySchema = z.object({
   mfaToken: z.string().trim().min(24).max(256),
   method: z.enum(["totp", "email"]),
-  code: z.string().trim().regex(/^\d{6}$/)
+  code: z.string().trim().regex(/^\d{6}$/),
+  rememberMe: z.boolean().optional().default(false)
 });
 
 const resendVerificationSchema = z.object({
@@ -681,7 +684,8 @@ const passkeyAuthenticationSchema = z.object({
     authenticatorData: z.string().min(1).max(65536),
     signature: z.string().min(1).max(65536),
     userHandle: z.string().max(4096).nullable().optional()
-  })
+  }),
+  rememberMe: z.boolean().optional().default(false)
 });
 
 const bookmarkSchema = z.object({
@@ -1189,15 +1193,18 @@ const secureCookieSuffix = (context: AppContext) => {
   return "";
 };
 
-const sessionCookie = (context: AppContext, token: string, maxAge = sessionDurationSeconds) =>
+const cookieMaxAgeAttribute = (maxAge: number | null) =>
+  maxAge === null ? "" : `Max-Age=${maxAge}; `;
+
+const sessionCookie = (context: AppContext, token: string, maxAge: number | null = sessionDurationSeconds) =>
   `${sessionCookieName}=${encodeURIComponent(
     token
-  )}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Lax${secureCookieSuffix(context)}`;
+  )}; ${cookieMaxAgeAttribute(maxAge)}Path=/; HttpOnly; SameSite=Lax${secureCookieSuffix(context)}`;
 
-const csrfCookie = (context: AppContext, nonce: string, maxAge = sessionDurationSeconds) =>
+const csrfCookie = (context: AppContext, nonce: string, maxAge: number | null = sessionDurationSeconds) =>
   `${csrfCookieName}=${encodeURIComponent(
     nonce
-  )}; Max-Age=${maxAge}; Path=/; SameSite=Lax${secureCookieSuffix(context)}`;
+  )}; ${cookieMaxAgeAttribute(maxAge)}Path=/; SameSite=Lax${secureCookieSuffix(context)}`;
 
 const discordOauthStateCookie = (
   context: AppContext,
@@ -1234,14 +1241,18 @@ const createCsrfToken = async (sessionToken: string, nonce = randomToken(24)) =>
   token: `${nonce}.${await hmacSha256(sessionToken, nonce)}`
 });
 
-const issueCsrfToken = async (context: AppContext, sessionToken: string) => {
+const issueCsrfToken = async (
+  context: AppContext,
+  sessionToken: string,
+  cookieMaxAge: number | null = sessionDurationSeconds
+) => {
   const existingNonce = getCookie(context.req.raw, csrfCookieName);
   const nonce =
     existingNonce && /^[A-Za-z0-9_-]{24,96}$/.test(existingNonce)
       ? existingNonce
       : undefined;
   const csrf = await createCsrfToken(sessionToken, nonce);
-  context.header("Set-Cookie", csrfCookie(context, csrf.nonce), { append: true });
+  context.header("Set-Cookie", csrfCookie(context, csrf.nonce, cookieMaxAge), { append: true });
   return csrf.token;
 };
 
@@ -3961,9 +3972,11 @@ type LoginAuthMethod = "password" | "passkey" | "discord";
 const createLoginPayload = async (
   context: AppContext,
   user: UserRow,
-  options: { authMethod: LoginAuthMethod; messagePrefix?: string }
+  options: { authMethod: LoginAuthMethod; messagePrefix?: string; rememberMe?: boolean }
 ): Promise<{ payload: AuthResponse } | { response: Response }> => {
   const db = requireD1(context.env.DB);
+  const sessionMaxAge = options.rememberMe ? sessionDurationSeconds : sessionOnlyDurationSeconds;
+  const cookieMaxAge = options.rememberMe ? sessionDurationSeconds : null;
   const notifyNewLocation =
     options.authMethod !== "passkey" &&
     (await shouldSendNewLocationNotice(db, context, user.id));
@@ -3979,9 +3992,9 @@ const createLoginPayload = async (
   let sessionToken: string;
   let csrfToken: string;
   try {
-    sessionToken = await createSession(db, context, user.id);
-    context.header("Set-Cookie", sessionCookie(context, sessionToken), { append: true });
-    csrfToken = await issueCsrfToken(context, sessionToken);
+    sessionToken = await createSession(db, context, user.id, sessionMaxAge);
+    context.header("Set-Cookie", sessionCookie(context, sessionToken, cookieMaxAge), { append: true });
+    csrfToken = await issueCsrfToken(context, sessionToken, cookieMaxAge);
   } catch (error) {
     console.error("Unable to create login session", error);
     context.header("Set-Cookie", clearSessionCookie(context), { append: true });
@@ -4016,7 +4029,7 @@ const createLoginPayload = async (
 const completeLogin = async (
   context: AppContext,
   user: UserRow,
-  options: { authMethod: LoginAuthMethod; messagePrefix?: string }
+  options: { authMethod: LoginAuthMethod; messagePrefix?: string; rememberMe?: boolean }
 ) => {
   const result = await createLoginPayload(context, user, options);
   if ("response" in result) {
@@ -4216,11 +4229,16 @@ const consumeSecurityApproval = async (
   return { approval, payload: securityApprovalPayload(approval.payload_json) };
 };
 
-const createSession = async (db: D1Database, context: AppContext, userId: string) => {
+const createSession = async (
+  db: D1Database,
+  context: AppContext,
+  userId: string,
+  maxAge = sessionDurationSeconds
+) => {
   const token = randomToken(32);
   const sessionId = `ses_${crypto.randomUUID().replaceAll("-", "")}`;
   const sessionHash = await sha256(token);
-  const expiresAt = toIsoAfterSeconds(sessionDurationSeconds);
+  const expiresAt = toIsoAfterSeconds(maxAge);
   try {
     await db
       .prepare(
@@ -8731,7 +8749,8 @@ app.post("/api/auth/discord/verify", async (context) => {
 
   const login = await createLoginPayload(context, result.user, {
     authMethod: "discord",
-    messagePrefix: "Signed in with Discord"
+    messagePrefix: "Signed in with Discord",
+    rememberMe: true
   });
   context.header("Set-Cookie", clearDiscordVerificationCookie(context), { append: true });
   if ("response" in login) {
@@ -10367,7 +10386,10 @@ app.post("/api/auth/login", async (context) => {
     );
   }
 
-  return completeLogin(context, user, { authMethod: "password" });
+  return completeLogin(context, user, {
+    authMethod: "password",
+    rememberMe: parsed.data.rememberMe
+  });
 });
 
 app.post("/api/auth/mfa/verify", async (context) => {
@@ -10436,7 +10458,10 @@ app.post("/api/auth/mfa/verify", async (context) => {
     .bind(challenge.id)
     .run();
 
-  return completeLogin(context, user, { authMethod: "password" });
+  return completeLogin(context, user, {
+    authMethod: "password",
+    rememberMe: parsed.data.rememberMe
+  });
 });
 
 app.post("/api/auth/passkey/options", async (context) => {
@@ -10580,7 +10605,8 @@ app.post("/api/auth/passkey/verify", async (context) => {
 
   return completeLogin(context, row, {
     authMethod: "passkey",
-    messagePrefix: "Signed in with passkey"
+    messagePrefix: "Signed in with passkey",
+    rememberMe: parsed.data.rememberMe
   });
 });
 

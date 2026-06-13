@@ -4831,8 +4831,7 @@ h1 {
 }
 
 .security-option-detail,
-.security-empty-state p,
-.security-approval-strip span {
+.security-empty-state p {
   color: var(--muted);
   font-size: 0.82rem;
   font-weight: 850;
@@ -4851,8 +4850,7 @@ h1 {
   box-shadow: 0 5px 12px rgba(93, 122, 138, 0.08);
 }
 
-.security-option.is-enabled .security-method-icon,
-.security-method-icon.is-approval {
+.security-option.is-enabled .security-method-icon {
   background: linear-gradient(135deg, rgba(0, 223, 238, 0.2), rgba(250, 158, 188, 0.28));
 }
 
@@ -4869,29 +4867,6 @@ h1 {
 
 .security-method-title-row strong {
   min-width: 0;
-}
-
-.security-approval-strip {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  border: 1px dashed rgba(240, 173, 199, 0.9);
-  border-radius: 8px;
-  padding: 12px 13px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 251, 235, 0.58)),
-    repeating-linear-gradient(135deg, rgba(250, 158, 188, 0.05) 0 1px, transparent 1px 24px);
-}
-
-.security-approval-strip div {
-  display: grid;
-  min-width: 0;
-  gap: 4px;
-}
-
-.security-approval-strip strong {
-  color: var(--purple);
 }
 
 .security-passkey-create {
@@ -4976,6 +4951,41 @@ h1 {
   color: var(--ink);
 }
 
+.security-code-dialog label {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.security-code-dialog input {
+  width: 100%;
+  min-height: 52px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(255, 247, 251, 0.86));
+  color: var(--purple);
+  outline: 0;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 6px 16px rgba(93, 122, 138, 0.08);
+}
+
+.security-code-dialog input:focus {
+  border-color: rgba(250, 158, 188, 0.78);
+  background: #fff;
+  box-shadow:
+    0 0 0 4px rgba(250, 158, 188, 0.16),
+    0 10px 22px rgba(93, 122, 138, 0.1);
+}
+
+.security-code-dialog input::placeholder {
+  color: rgba(93, 122, 138, 0.48);
+}
+
 .security-code-copy {
   margin: -4px 0 0;
   color: var(--muted);
@@ -5041,7 +5051,8 @@ h1 {
 
 .security-code-input {
   text-align: center;
-  font-size: 1.15rem;
+  font-size: 1.35rem;
+  font-weight: 900;
   font-variant-numeric: tabular-nums;
 }
 
@@ -5394,6 +5405,47 @@ h1 {
 .auth-form input:focus {
   border-color: rgba(250, 158, 188, 0.68);
   box-shadow: 0 0 0 4px rgba(250, 158, 188, 0.16);
+}
+
+.auth-form .auth-remember-row {
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  margin-top: -2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 247, 251, 0.68);
+  color: var(--muted);
+}
+
+.auth-remember-row input {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  accent-color: var(--blue-dark);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.auth-remember-row span {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.auth-remember-row strong {
+  color: var(--purple);
+  font-size: 0.86rem;
+}
+
+.auth-remember-row small {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 750;
+  line-height: 1.3;
 }
 
 .turnstile-shell {
@@ -6092,7 +6144,6 @@ h1 {
   }
 
   .security-option,
-  .security-approval-strip,
   .passkey-create-row {
     grid-template-columns: 1fr;
   }
@@ -6129,7 +6180,6 @@ h1 {
   .dashboard-heading .primary-button,
   .settings-heading .secondary-button,
   .security-option .secondary-button,
-  .security-approval-strip .secondary-button,
   .passkey-create-row .secondary-button,
   .settings-actions .primary-button,
   .settings-actions .secondary-button {
