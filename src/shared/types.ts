@@ -686,6 +686,19 @@ export type EmailConfirmationResponse = {
   message: string;
 };
 
+export type DiscordVerificationStatus = "confirmed" | "invalid" | "unavailable";
+
+export type DiscordVerificationResponse =
+  | (AuthResponse & {
+      status: "confirmed";
+      returnTo: string;
+    })
+  | {
+      status: Exclude<DiscordVerificationStatus, "confirmed">;
+      message: string;
+      returnTo?: string;
+    };
+
 export type PasskeySummary = {
   id: string;
   name: string;

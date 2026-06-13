@@ -277,10 +277,10 @@ Cloudflare Email Routing and the Turnstile widget still need to exist in the Clo
 - Rate-limited routes return HTTP `429` with `Retry-After` and a JSON message when a user or IP exceeds the configured action window.
 - `POST /api/auth/register` creates an account with the 10-image base storage limit, validates Turnstile, sends a verification email, and starts a session.
 - `POST /api/auth/login` validates Turnstile, starts a session, and awards a random login site-credit bonus.
-- `GET /api/auth/discord/start` serves the single-page Discord sign-in handoff.
-- `POST /api/auth/discord/start` creates Discord OAuth state and returns the authorization URL.
+- `GET /api/auth/discord/start` creates Discord OAuth state and redirects the browser to Discord.
 - `POST /api/settings/security/discord/start` starts a CSRF-protected Discord login binding flow for the current user.
-- `GET /api/auth/discord/callback` completes Discord OAuth2 sign-in or settings-initiated login binding. Sign-in links by verified email when needed and starts a session.
+- `GET /api/auth/discord/callback` completes Discord OAuth2 exchange, then redirects sign-in attempts to `/discord-verification` before creating a local session. Settings-initiated login binding completes from the callback.
+- `POST /api/auth/discord/verify` verifies the pending Discord sign-in challenge, links by verified email when needed, and starts a session.
 - `POST /api/auth/password-reset/request` validates Turnstile and sends a non-enumerating password reset email when the account exists.
 - `POST /api/auth/password-reset/confirm` validates Turnstile, consumes a reset token, updates the password, and revokes all sessions.
 - `POST /api/auth/logout` clears the current session.

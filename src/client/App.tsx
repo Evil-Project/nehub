@@ -109,6 +109,7 @@ import type {
   DeleteCommentResponse,
   DeleteCollectionResponse,
   DiscordStartResponse,
+  DiscordVerificationResponse,
   FollowListMode,
   FollowResponse,
   GalleryResponse,
@@ -478,7 +479,7 @@ type ViewMode =
   | "series"
   | "profileSettings"
   | "privacySecurity"
-  | "discordStart"
+  | "discordVerification"
   | "emailConfirmation"
   | "terms"
   | "privacy";
@@ -509,6 +510,7 @@ type TurnstileAction =
   | "comment"
   | "report"
   | "email-confirm"
+  | "discord-confirm"
   | "password-reset"
   | "password-reset-confirm";
 type ArtworkEditInput = {
@@ -677,8 +679,8 @@ const getInitialRoute = (): RouteState => {
   if (pathname === "/settings/privacy-security") {
     return routeState("privacySecurity");
   }
-  if (pathname === "/api/auth/discord/start") {
-    return routeState("discordStart");
+  if (pathname === "/discord-verification") {
+    return routeState("discordVerification");
   }
   if (pathname === "/email-confirmation") {
     return routeState("emailConfirmation");
@@ -1594,7 +1596,7 @@ function App() {
   const accountNotice = dashboardMessage || authNotice;
   const hasAccountNotice =
     view !== "emailConfirmation" &&
-    view !== "discordStart" &&
+    view !== "discordVerification" &&
     Boolean(accountNotice || (currentUser && !currentUser.emailVerified));
   const activeSearchQuery = isNovelSection ? novelQuery : illustrationQuery;
 
@@ -3921,10 +3923,12 @@ function App() {
             onSessionRefresh={refreshAuthSession}
             siteKey={authConfig?.turnstileSiteKey ?? ""}
           />
-        ) : view === "discordStart" ? (
-          <DiscordStartPage
-            discordEnabled={authConfig ? authConfig.discordEnabled : null}
+        ) : view === "discordVerification" ? (
+          <DiscordVerificationPage
+            onAuthRequired={() => openAuth("login")}
             onHome={() => showIllustrations("latest")}
+            onSessionRefresh={refreshAuthSession}
+            siteKey={authConfig?.turnstileSiteKey ?? ""}
           />
         ) : view === "terms" ? (
           <PolicyPage kind="terms" onOpenPrivacy={() => showPolicy("privacy")} />
@@ -4407,96 +4411,173 @@ function EmailConfirmationPage({
   );
 }
 
-type DiscordStartPageProps = {
-  discordEnabled: boolean | null;
+type DiscordVerificationPageProps = {
+  onAuthRequired: () => void;
   onHome: () => void;
+  onSessionRefresh: () => Promise<AuthSessionResponse>;
+  siteKey: string;
 };
 
-function DiscordStartPage({ discordEnabled, onHome }: DiscordStartPageProps) {
+function DiscordVerificationPage({
+  onAuthRequired,
+  onHome,
+  onSessionRefresh,
+  siteKey
+}: DiscordVerificationPageProps) {
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
-  const returnTo = params.get("returnTo") ?? "/";
-  const [status, setStatus] = useState<"ready" | "pending" | "failed" | "unavailable">(
-    discordEnabled === false ? "unavailable" : "ready"
-  );
+  const token = params.get("token")?.trim() ?? "";
+  const initialStatus =
+    params.get("status") === "confirmed"
+      ? "confirmed"
+      : params.get("status") === "unavailable"
+        ? "unavailable"
+        : params.get("status") === "invalid"
+          ? "invalid"
+          : null;
+  const [status, setStatus] = useState<
+    "challenge" | "pending" | "confirmed" | "invalid" | "unavailable"
+  >(initialStatus ?? (token ? "challenge" : "invalid"));
+  const [turnstileToken, setTurnstileToken] = useState("");
+  const [challengeRevision, setChallengeRevision] = useState(0);
+  const [returnTo, setReturnTo] = useState("/");
   const [message, setMessage] = useState(() =>
-    discordEnabled === false
-      ? "Discord sign-in is not configured."
-      : "Continue to Discord to sign in. You will return to NEHub after approving access."
+    initialStatus === "confirmed"
+      ? "Discord sign-in verified."
+      : initialStatus === "unavailable"
+        ? "Discord verification is temporarily unavailable."
+        : !token
+          ? "Discord verification link is missing."
+          : "Review this Discord sign-in before NEHub creates your session."
   );
 
   useEffect(() => {
-    if (discordEnabled === false) {
-      setStatus("unavailable");
-      setMessage("Discord sign-in is not configured.");
-    } else if (discordEnabled === true && status === "unavailable") {
-      setStatus("ready");
-      setMessage("Continue to Discord to sign in. You will return to NEHub after approving access.");
+    if (!token && !initialStatus) {
+      setStatus("invalid");
+      setMessage("Discord verification link is missing.");
+    } else if (initialStatus === "confirmed") {
+      onSessionRefresh().catch((error: unknown) => {
+        console.error("Unable to refresh Discord session", error);
+      });
     }
-  }, [discordEnabled, status]);
+  }, [initialStatus, onSessionRefresh, token]);
 
-  const handleContinue = async () => {
-    if (discordEnabled === false || status === "pending") {
+  const handleVerify = async () => {
+    if (!token) {
+      setStatus("invalid");
+      setMessage("Discord verification link is missing.");
+      return;
+    }
+    if (!turnstileToken) {
+      setMessage("Complete the security check first.");
       return;
     }
     setStatus("pending");
-    setMessage("Preparing your Discord sign-in.");
+    setMessage("Verifying Discord sign-in.");
     try {
-      const response = await fetch("/api/auth/discord/start", {
+      const response = await fetch("/api/auth/discord/verify", {
         method: "POST",
         credentials: "include",
         headers: {
-          "content-type": "application/json"
+          "content-type": "application/json",
+          accept: "application/json"
         },
-        body: JSON.stringify({ returnTo })
+        body: JSON.stringify({ token, turnstileToken })
       });
-      const payload = (await response.json()) as DiscordStartResponse | { message?: string };
-      if (!response.ok || !("authorizationUrl" in payload)) {
-        throw new Error(payload.message ?? "Discord sign-in could not be started.");
+      const payload = (await response.json().catch(() => null)) as
+        | DiscordVerificationResponse
+        | { message?: string }
+        | null;
+      if (payload && "status" in payload) {
+        setStatus(payload.status);
+        setMessage(payload.message);
+        window.history.replaceState(null, "", `/discord-verification?status=${payload.status}`);
+        if (payload.status === "confirmed") {
+          setReturnTo(payload.returnTo);
+          await onSessionRefresh().catch((error: unknown) => {
+            console.error("Unable to refresh Discord session", error);
+          });
+        } else {
+          setTurnstileToken("");
+          setChallengeRevision((revision) => revision + 1);
+        }
+        return;
       }
-      window.location.assign(payload.authorizationUrl);
+      throw new Error(payload?.message ?? "Discord verification failed.");
     } catch (error) {
-      setStatus("failed");
-      setMessage(error instanceof Error ? error.message : "Discord sign-in could not be started.");
+      setStatus("challenge");
+      setTurnstileToken("");
+      setChallengeRevision((revision) => revision + 1);
+      setMessage(error instanceof Error ? error.message : "Discord verification failed.");
     }
   };
 
   const StatusIcon =
-    status === "pending" ? Cloud : status === "failed" || status === "unavailable" ? X : MessageCircle;
+    status === "confirmed" ? ShieldCheck : status === "invalid" || status === "unavailable" ? X : MessageCircle;
   const title =
     status === "pending"
-      ? "Opening Discord"
+      ? "Verifying Discord"
       : status === "unavailable"
-        ? "Discord unavailable"
-        : status === "failed"
-          ? "Discord sign-in failed"
-          : "Continue with Discord";
-  const cardStatus =
-    status === "unavailable" ? "unavailable" : status === "failed" ? "invalid" : "challenge";
+        ? "Verification unavailable"
+        : status === "invalid"
+          ? "Link needs attention"
+          : status === "confirmed"
+            ? "Discord verified"
+            : "Verify Discord sign-in";
 
   return (
-    <section className="content-main email-confirmation-page" aria-live="polite">
-      <div className={`email-confirmation-card discord-start-card is-${cardStatus}`}>
-        <span className="email-confirmation-icon">
+    <section className="content-main discord-verification-page" aria-live="polite">
+      <div className={`discord-verification-card is-${status}`}>
+        <span className="discord-verification-icon">
           <StatusIcon size={28} />
         </span>
-        <p className="eyebrow">Discord sign-in</p>
+        <p className="eyebrow">Discord verification</p>
         <h1>{title}</h1>
         <p>{message}</p>
-        <div className="email-confirmation-actions">
-          <button
-            className="primary-button"
-            type="button"
-            disabled={discordEnabled === false || status === "pending"}
-            onClick={() => void handleContinue()}
-          >
-            <MessageCircle size={16} />
-            {status === "pending" ? "Opening" : "Continue with Discord"}
-          </button>
-          <button className="secondary-button" type="button" onClick={onHome}>
-            <Home size={16} />
-            Open gallery
-          </button>
-        </div>
+        {status === "challenge" && token ? (
+          <div className="discord-verification-check">
+            <TurnstileWidget
+              key={challengeRevision}
+              siteKey={siteKey}
+              action="discord-confirm"
+              onToken={setTurnstileToken}
+              compact
+            />
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => void handleVerify()}
+              disabled={!siteKey || !turnstileToken}
+            >
+              <ShieldCheck size={16} />
+              Verify and sign in
+            </button>
+          </div>
+        ) : null}
+        {status !== "pending" && status !== "challenge" ? (
+          <div className="discord-verification-actions">
+            {status === "confirmed" ? (
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => window.location.assign(returnTo)}
+              >
+                <LogIn size={16} />
+                Continue
+              </button>
+            ) : (
+              <button className="primary-button" type="button" onClick={onHome}>
+                <Home size={16} />
+                Open gallery
+              </button>
+            )}
+            {status !== "confirmed" ? (
+              <button className="secondary-button" type="button" onClick={onAuthRequired}>
+                <LogIn size={16} />
+                Sign in
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </section>
   );

@@ -3218,10 +3218,6 @@ h1 {
   margin-bottom: 8px;
 }
 
-.discord-start-card {
-  width: min(560px, 100%);
-}
-
 .email-confirmation-card p:not(.eyebrow) {
   max-width: 52ch;
   margin: 0;
@@ -3240,6 +3236,84 @@ h1 {
 
 .email-confirmation-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.discord-verification-page {
+  display: grid;
+  min-height: min(590px, calc(100dvh - 176px));
+  place-items: center;
+}
+
+.discord-verification-card {
+  position: relative;
+  display: grid;
+  justify-items: start;
+  width: min(620px, 100%);
+  overflow: hidden;
+  border: 1px solid rgba(88, 101, 242, 0.34);
+  border-radius: 8px;
+  padding: clamp(24px, 4vw, 36px);
+  background:
+    linear-gradient(120deg, rgba(88, 101, 242, 0.16), transparent 34%),
+    repeating-linear-gradient(135deg, rgba(0, 223, 238, 0.08) 0 2px, transparent 2px 24px),
+    rgba(255, 255, 255, 0.78);
+  box-shadow:
+    0 18px 42px rgba(58, 12, 163, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.discord-verification-card::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 5px;
+  background: linear-gradient(90deg, #5865f2, var(--cyan), var(--blue));
+  content: "";
+}
+
+.discord-verification-icon {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  margin-bottom: 14px;
+  place-items: center;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 8px;
+  background: #5865f2;
+  color: #fff;
+  box-shadow: 4px 4px 0 rgba(0, 223, 238, 0.18);
+}
+
+.discord-verification-card.is-confirmed .discord-verification-icon {
+  background: var(--green);
+}
+
+.discord-verification-card.is-invalid .discord-verification-icon,
+.discord-verification-card.is-unavailable .discord-verification-icon {
+  background: var(--red);
+}
+
+.discord-verification-card h1 {
+  max-width: 12ch;
+  margin-bottom: 8px;
+}
+
+.discord-verification-card p:not(.eyebrow) {
+  max-width: 52ch;
+  margin: 0;
+  color: var(--muted);
+  font-weight: 800;
+  line-height: 1.55;
+}
+
+.discord-verification-check,
+.discord-verification-actions {
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 20px;
