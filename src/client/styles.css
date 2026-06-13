@@ -526,54 +526,40 @@ img {
 }
 
 .page-frame.is-novel-section {
-  --novel-ink: #25384d;
-  --novel-wine: #5f326c;
-  --novel-gold: #b9822e;
-  --novel-teal: #2f7280;
-  --novel-paper: #fffdf6;
+  --novel-ink: var(--text);
+  --novel-wine: var(--purple);
+  --novel-gold: var(--yellow);
+  --novel-teal: var(--cyan);
+  --novel-paper: var(--surface-soft);
 }
 
 .page-frame.is-novel-section .left-menu {
-  border-color: rgba(95, 50, 108, 0.16);
-  background:
-    linear-gradient(180deg, rgba(255, 253, 246, 0.86), rgba(246, 250, 248, 0.72)),
-    repeating-linear-gradient(0deg, rgba(47, 114, 128, 0.06) 0 1px, transparent 1px 26px);
-  box-shadow: 0 18px 38px rgba(37, 56, 77, 0.12);
+  border-color: rgba(255, 255, 255, 0.74);
+  background: rgba(255, 255, 255, 0.42);
+  box-shadow: var(--shadow);
 }
 
 .page-frame.is-novel-section .menu-item {
   position: relative;
   overflow: hidden;
-  border: 1px solid rgba(95, 50, 108, 0.08);
-  background:
-    linear-gradient(135deg, rgba(255, 253, 246, 0.94), rgba(234, 243, 241, 0.82)),
-    linear-gradient(90deg, rgba(185, 130, 46, 0.14), transparent 34%);
-  color: var(--novel-wine);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  border: 0;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.86), rgba(224, 229, 236, 0.72));
+  color: var(--purple);
+  box-shadow: inset 0 1px 3px rgba(255, 255, 255, 0.75);
 }
 
 .page-frame.is-novel-section .menu-item::after {
-  position: absolute;
-  top: 8px;
-  bottom: 8px;
-  left: 0;
-  width: 3px;
-  border-radius: 999px;
-  background: rgba(185, 130, 46, 0.48);
-  content: "";
+  display: none;
 }
 
 .page-frame.is-novel-section .menu-item.is-active {
-  border-color: rgba(185, 130, 46, 0.36);
-  background:
-    linear-gradient(135deg, rgba(255, 253, 246, 0.98), rgba(221, 239, 237, 0.9)),
-    linear-gradient(90deg, rgba(185, 130, 46, 0.24), transparent 42%);
-  color: var(--novel-ink);
-  box-shadow: 3px 3px 0 rgba(47, 114, 128, 0.13);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(250, 158, 188, 0.66));
+  color: var(--purple);
+  box-shadow: var(--sticker-shadow);
 }
 
 .page-frame.is-novel-section .menu-item.is-active::after {
-  background: var(--novel-teal);
+  background: var(--blue);
 }
 
 .side-panel {
@@ -1695,21 +1681,32 @@ h1 {
   gap: 18px;
   align-items: stretch;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 8px;
   padding: 22px;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.8), rgba(255, 247, 251, 0.62)),
-    repeating-linear-gradient(90deg, rgba(58, 12, 163, 0.06) 0 1px, transparent 1px 22px);
+    linear-gradient(135deg, rgba(255, 255, 255, 0.84), rgba(251, 224, 236, 0.68)),
+    repeating-linear-gradient(120deg, rgba(250, 158, 188, 0.08) 0 1px, transparent 1px 34px),
+    rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(10px);
   box-shadow: var(--shadow);
+}
+
+.novels-hero > *,
+.featured-novel > *,
+.novel-detail-hero > *,
+.novel-card > *,
+.novel-card-content > * {
+  min-width: 0;
 }
 
 .novels-hero-copy h1 {
   max-width: 680px;
   margin: 0 0 10px;
   color: var(--purple);
-  font-size: clamp(2rem, 4vw, 4.2rem);
+  font-size: 3.15rem;
   line-height: 0.95;
+  overflow-wrap: anywhere;
   text-shadow: 3px 3px 0 rgba(255, 255, 255, 0.8);
 }
 
@@ -1734,14 +1731,15 @@ h1 {
   display: grid;
   gap: 2px;
   min-width: 96px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(255, 255, 255, 0.8);
   border-radius: 8px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.72);
   color: var(--muted);
   font-size: 0.75rem;
   font-weight: 850;
   text-transform: uppercase;
+  box-shadow: inset 0 1px 3px rgba(255, 255, 255, 0.74);
 }
 
 .novels-hero-stats strong,
@@ -1753,38 +1751,58 @@ h1 {
 }
 
 .featured-novel {
+  position: relative;
   display: grid;
   grid-template-columns: 74px minmax(0, 1fr);
   gap: 16px;
   align-items: center;
   min-height: 220px;
+  overflow: visible;
   border: 3px solid #fff;
   border-radius: 8px;
   padding: 18px;
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--novel-cover, var(--blue)) 42%, #ffffff), rgba(255, 255, 255, 0.88)),
-    linear-gradient(90deg, rgba(58, 12, 163, 0.15), transparent 18%);
+    linear-gradient(135deg, color-mix(in srgb, var(--novel-cover, var(--blue)) 38%, #ffffff), rgba(255, 247, 251, 0.9)),
+    repeating-linear-gradient(120deg, rgba(58, 12, 163, 0.06) 0 1px, transparent 1px 28px);
   color: var(--text);
   cursor: pointer;
   text-align: left;
   box-shadow: 6px 6px 0 rgba(58, 12, 163, 0.1);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.featured-novel::before {
+  position: absolute;
+  top: -12px;
+  right: 22px;
+  width: 86px;
+  height: 24px;
+  border-radius: 4px;
+  background: rgba(0, 223, 238, 0.34);
+  box-shadow: 1px 1px 2px rgba(58, 12, 163, 0.08);
+  transform: rotate(4deg);
+  content: "";
 }
 
 .featured-novel:hover {
   transform: translateY(-2px);
+  box-shadow: 8px 8px 0 rgba(58, 12, 163, 0.12);
 }
 
 .novel-cover-mark {
   display: grid;
   place-items: center;
   width: 74px;
-  height: 156px;
+  height: 74px;
+  border: 3px solid #fff;
   border-radius: 8px;
-  background: var(--novel-cover, var(--blue));
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.28), transparent),
+    var(--novel-cover, var(--blue));
   color: var(--purple);
   font-size: 2.2rem;
   font-weight: 950;
-  box-shadow: inset -10px 0 0 rgba(58, 12, 163, 0.16);
+  box-shadow: 2px 2px 0 rgba(58, 12, 163, 0.08);
 }
 
 .featured-novel small,
@@ -1802,6 +1820,7 @@ h1 {
   color: var(--purple);
   font-size: 1.45rem;
   line-height: 1.08;
+  overflow-wrap: anywhere;
 }
 
 .featured-novel em {
@@ -1846,37 +1865,82 @@ h1 {
 
 .novel-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 30px 20px;
 }
 
 .novel-card {
+  position: relative;
   display: grid;
   gap: 12px;
   min-width: 0;
   border: 1px solid rgba(255, 255, 255, 0.78);
   border-radius: 8px;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.62);
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.6);
   box-shadow: 0 8px 18px rgba(93, 122, 138, 0.1);
   opacity: 0;
   transform: translateY(8px);
   animation: card-in 360ms ease forwards;
 }
 
+.novel-card::before {
+  position: absolute;
+  top: -11px;
+  left: 24px;
+  width: 54px;
+  height: 18px;
+  border-radius: 4px;
+  background: rgba(250, 158, 188, 0.46);
+  box-shadow: 1px 1px 2px rgba(58, 12, 163, 0.08);
+  transform: rotate(-7deg);
+  content: "";
+}
+
+.novel-card:nth-child(5n+1)::before {
+  background: rgba(0, 223, 238, 0.34);
+}
+
+.novel-card:nth-child(5n+2)::before {
+  background: rgba(181, 126, 220, 0.36);
+}
+
+.novel-card:nth-child(5n+3)::before {
+  background: rgba(255, 200, 0, 0.4);
+}
+
 .novel-card-main {
+  position: relative;
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
-  gap: 14px;
-  min-height: 220px;
+  grid-template-columns: 1fr;
+  align-content: end;
+  min-height: 250px;
+  aspect-ratio: 1 / 1.18;
+  overflow: hidden;
   border: 3px solid #fff;
   border-radius: 8px;
-  padding: 16px;
+  padding: 14px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 247, 251, 0.78)),
-    repeating-linear-gradient(0deg, transparent 0 29px, rgba(141, 164, 177, 0.18) 29px 30px);
+    linear-gradient(145deg, color-mix(in srgb, var(--novel-cover, var(--blue)) 48%, #ffffff), rgba(255, 247, 251, 0.9)),
+    repeating-linear-gradient(120deg, rgba(255, 255, 255, 0.24) 0 1px, transparent 1px 28px);
   color: inherit;
   text-decoration: none;
+  box-shadow: none;
+  transition: transform 220ms ease;
+}
+
+.novel-card-main::after {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, transparent 0%, rgba(58, 12, 163, 0.08) 100%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.28), transparent 42%);
+  pointer-events: none;
+  content: "";
+}
+
+.novel-card-main:hover {
+  transform: scale(1.018);
 }
 
 .novel-card-main:hover strong {
@@ -1884,15 +1948,27 @@ h1 {
 }
 
 .novel-spine {
-  border-radius: 999px;
-  background: var(--novel-cover, var(--blue));
-  box-shadow: inset -6px 0 0 rgba(58, 12, 163, 0.18);
+  position: absolute;
+  inset: 0;
+  border-radius: 5px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.2), transparent 34%),
+    color-mix(in srgb, var(--novel-cover, var(--blue)) 72%, #ffffff);
+  box-shadow: inset 0 -70px 80px rgba(58, 12, 163, 0.12);
 }
 
 .novel-card-content {
+  position: relative;
+  z-index: 1;
   display: grid;
   align-content: start;
   min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 18px rgba(61, 90, 106, 0.12);
 }
 
 .novel-card-content strong {
@@ -1913,7 +1989,7 @@ h1 {
   font-weight: 750;
   line-height: 1.5;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 5;
+  -webkit-line-clamp: 4;
 }
 
 .novel-card-footer,
@@ -1921,6 +1997,14 @@ h1 {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.novel-card-footer {
+  justify-content: space-between;
+}
+
+.novel-card-footer .creator-mini {
+  flex: 1 1 auto;
 }
 
 .novel-card-footer > span,
@@ -1938,7 +2022,7 @@ h1 {
 
 .novel-mini-row {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -1955,10 +2039,11 @@ h1 {
 }
 
 .novel-mini-row > span {
-  width: 16px;
-  height: 38px;
-  border-radius: 999px;
-  box-shadow: inset -4px 0 0 rgba(58, 12, 163, 0.16);
+  width: 42px;
+  height: 42px;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  box-shadow: 2px 2px 0 rgba(58, 12, 163, 0.08);
 }
 
 .novel-mini-row strong,
@@ -1985,12 +2070,14 @@ h1 {
   gap: 20px;
   align-items: end;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 8px;
   padding: 22px;
   background:
-    linear-gradient(120deg, color-mix(in srgb, var(--novel-cover, var(--blue)) 24%, #ffffff), rgba(255, 255, 255, 0.8)),
-    repeating-linear-gradient(90deg, rgba(58, 12, 163, 0.06) 0 1px, transparent 1px 28px);
+    linear-gradient(120deg, color-mix(in srgb, var(--novel-cover, var(--blue)) 24%, #ffffff), rgba(255, 247, 251, 0.86)),
+    repeating-linear-gradient(120deg, rgba(250, 158, 188, 0.08) 0 1px, transparent 1px 34px),
+    rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(10px);
   box-shadow: var(--shadow);
 }
 
@@ -2003,8 +2090,9 @@ h1 {
   max-width: 860px;
   margin: 0 0 12px;
   color: var(--purple);
-  font-size: clamp(2.15rem, 5vw, 5.4rem);
+  font-size: 3.45rem;
   line-height: 0.95;
+  overflow-wrap: anywhere;
   text-shadow: 3px 3px 0 rgba(255, 255, 255, 0.78);
 }
 
@@ -2035,12 +2123,12 @@ h1 {
 }
 
 .novel-body {
-  border: 1px solid rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 8px;
   padding: clamp(24px, 5vw, 58px);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 247, 251, 0.86)),
-    repeating-linear-gradient(0deg, transparent 0 34px, rgba(141, 164, 177, 0.14) 34px 35px);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 247, 251, 0.88)),
+    repeating-linear-gradient(120deg, rgba(250, 158, 188, 0.05) 0 1px, transparent 1px 34px);
   box-shadow: var(--shadow);
 }
 
@@ -2069,61 +2157,56 @@ h1 {
 
 .novel-dedicated-page {
   position: relative;
-  --novel-ink: #25384d;
-  --novel-wine: #5f326c;
-  --novel-gold: #b9822e;
-  --novel-teal: #2f7280;
-  --novel-paper: #fffdf6;
+  --novel-ink: var(--text);
+  --novel-wine: var(--purple);
+  --novel-gold: var(--yellow);
+  --novel-teal: var(--cyan);
+  --novel-paper: var(--surface-soft);
 }
 
 .novel-dashboard-main {
   position: relative;
-  --novel-ink: #25384d;
-  --novel-wine: #5f326c;
-  --novel-gold: #b9822e;
-  --novel-teal: #2f7280;
-  --novel-paper: #fffdf6;
+  --novel-ink: var(--text);
+  --novel-wine: var(--purple);
+  --novel-gold: var(--yellow);
+  --novel-teal: var(--cyan);
+  --novel-paper: var(--surface-soft);
 }
 
 .novel-dedicated-page::before,
 .novel-dashboard-main::before {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 4px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, var(--novel-teal), var(--novel-gold));
-  content: "";
+  display: none;
 }
 
 .novel-dedicated-page > *,
 .novel-dashboard-main > * {
-  margin-left: 18px;
+  margin-left: 0;
 }
 
 .novel-dedicated-page h1,
 .novel-dashboard-main h1 {
-  color: var(--novel-ink);
-  text-shadow: 2px 2px 0 rgba(255, 253, 246, 0.9);
+  color: var(--purple);
+  text-shadow: 2px 2px 0 rgba(255, 255, 255, 0.82);
 }
 
 .novel-dedicated-page .eyebrow,
 .novel-dashboard-main .eyebrow {
-  color: var(--novel-teal);
+  color: var(--blue-dark);
   letter-spacing: 0;
 }
 
 .novel-dedicated-page .primary-button,
 .novel-dashboard-main .primary-button {
-  border-color: rgba(255, 253, 246, 0.96);
-  background: linear-gradient(135deg, var(--novel-teal), var(--novel-wine));
-  box-shadow: 3px 3px 0 rgba(37, 56, 77, 0.13);
+  border-color: #fff;
+  background: var(--blue);
+  box-shadow: var(--sticker-shadow);
 }
 
 .novel-dedicated-page .secondary-button,
 .novel-dashboard-main .secondary-button {
-  border-color: rgba(95, 50, 108, 0.16);
-  background: linear-gradient(135deg, rgba(255, 253, 246, 0.96), rgba(234, 243, 241, 0.88));
-  color: var(--novel-wine);
+  border-color: var(--line);
+  background: linear-gradient(135deg, #ffffff 0%, #e0e5ec 100%);
+  color: var(--purple);
 }
 
 .novel-dedicated-page .settings-panel,
@@ -2135,11 +2218,11 @@ h1 {
 .novel-dashboard-main .dashboard-panel,
 .novel-dashboard-main .metric-tile,
 .novel-dashboard-main .status-card {
-  border-color: rgba(95, 50, 108, 0.12);
+  border-color: var(--line);
   background:
-    linear-gradient(135deg, rgba(255, 253, 246, 0.88), rgba(246, 250, 248, 0.7)),
-    repeating-linear-gradient(0deg, transparent 0 31px, rgba(47, 114, 128, 0.09) 31px 32px);
-  box-shadow: 0 12px 28px rgba(37, 56, 77, 0.1);
+    linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(255, 247, 251, 0.68)),
+    rgba(255, 255, 255, 0.62);
+  box-shadow: var(--shadow);
 }
 
 .novel-dedicated-page .collection-folder-card,
@@ -2154,7 +2237,7 @@ h1 {
   inset: 12px auto 12px 0;
   width: 4px;
   border-radius: 999px;
-  background: var(--novel-gold);
+  background: var(--blue);
   content: "";
 }
 
@@ -2162,20 +2245,20 @@ h1 {
 .novel-dedicated-page .notification-icon,
 .novel-dedicated-page .profile-avatar-fallback,
 .novel-dedicated-page .profile-follow-avatar-fallback {
-  background: linear-gradient(135deg, rgba(255, 253, 246, 0.95), rgba(208, 229, 225, 0.94));
-  color: var(--novel-wine);
+  background: linear-gradient(135deg, var(--cyan) 0%, rgba(250, 158, 188, 0.82) 100%);
+  color: var(--purple);
 }
 
 .novel-dedicated-page .profile-tabs,
 .novel-dedicated-page .segmented-control {
-  border-color: rgba(95, 50, 108, 0.14);
-  background: rgba(255, 253, 246, 0.78);
+  border-color: var(--line);
+  background: rgba(255, 247, 251, 0.78);
 }
 
 .novel-dedicated-page .profile-tabs button.is-active,
 .novel-dedicated-page .segmented-control button.is-active {
-  background: linear-gradient(135deg, rgba(255, 253, 246, 0.98), rgba(221, 239, 237, 0.9));
-  color: var(--novel-ink);
+  background: #fff;
+  color: var(--purple);
 }
 
 .recent-row {
@@ -5535,6 +5618,9 @@ h1 {
 
   .page-frame {
     grid-template-columns: 1fr;
+    width: 100%;
+    max-width: 100vw;
+    overflow-x: hidden;
     padding-inline: 16px;
   }
 
@@ -5569,6 +5655,9 @@ h1 {
 
   .content-main {
     grid-column: auto;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
   }
 
   .page-frame.is-novel-section .content-main {
@@ -5747,6 +5836,14 @@ h1 {
     width: 100%;
   }
 
+  .feed-main,
+  .novels-page,
+  .novel-detail-page {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
   .rating-filter select {
     flex: 1;
   }
@@ -5804,16 +5901,67 @@ h1 {
     padding: 16px;
   }
 
+  .novels-hero,
+  .novel-detail-hero {
+    gap: 16px;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .novels-hero-copy h1,
+  .novel-detail-title h1 {
+    max-width: 100%;
+    font-size: 2rem;
+    line-height: 1;
+  }
+
+  .novels-hero-copy p:not(.eyebrow),
+  .novel-detail-title > p:not(.eyebrow) {
+    max-width: 100%;
+    font-size: 0.95rem;
+  }
+
+  .novels-hero-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .novels-hero-stats span,
+  .novel-detail-metrics span {
+    min-width: 0;
+    padding: 9px 10px;
+  }
+
   .featured-novel {
-    grid-template-columns: 52px minmax(0, 1fr);
-    min-height: 170px;
+    grid-template-columns: 48px minmax(0, 1fr);
+    min-height: 0;
+    width: 100%;
+    max-width: 100%;
     padding: 12px;
   }
 
+  .featured-novel::before {
+    right: 18px;
+    width: 64px;
+  }
+
   .novel-cover-mark {
-    width: 52px;
-    height: 118px;
-    font-size: 1.7rem;
+    width: 48px;
+    height: 48px;
+    font-size: 1.45rem;
+  }
+
+  .featured-novel strong {
+    font-size: 1.05rem;
+  }
+
+  .featured-novel em {
+    display: -webkit-box;
+    overflow: hidden;
+    font-size: 0.86rem;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
   }
 
   .novels-toolbar {
@@ -5826,12 +5974,8 @@ h1 {
   }
 
   .novel-card-main {
-    min-height: 190px;
-  }
-
-  .novel-detail-title h1,
-  .novels-hero-copy h1 {
-    font-size: 2.2rem;
+    min-height: 220px;
+    max-width: 100%;
   }
 
   .novel-detail-metrics {
