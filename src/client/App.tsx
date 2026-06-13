@@ -12053,6 +12053,15 @@ function NovelHubPage({
     terms: "Terms",
     privacy: "Privacy"
   };
+  const sectionTabs: { section: NovelSection; label: string; icon: typeof Home }[] = [
+    { section: "home", label: "Home", icon: Home },
+    { section: "following", label: "Following", icon: Grid3X3 },
+    { section: "creators", label: "Creators", icon: UserPlus },
+    { section: "tags", label: "Tags", icon: Bell },
+    { section: "bookmarks", label: "Bookmarks", icon: Bookmark },
+    { section: "rankings", label: "Rankings", icon: Trophy },
+    { section: "collections", label: "Collections", icon: FolderOpen }
+  ];
   const sectionNovels =
     section === "following"
       ? followedNovels
@@ -12062,112 +12071,148 @@ function NovelHubPage({
           ? bookmarkedNovels
           : novels;
   const isRankingsSection = section === "rankings";
-  const heroFeaturedNovel = section === "home" || section === "novels" ? featuredNovel : sectionNovels[0] ?? null;
-  const rankingTotalViews = rankingNovels.reduce((sum, novel) => sum + novel.viewCount, 0);
-  const rankingTotalLikes = rankingNovels.reduce((sum, novel) => sum + novel.likeCount, 0);
-  const rankingSignalMax = Math.max(rankingNovels.length, rankingTotalViews, rankingTotalLikes, 1);
-  const rankingSignals = [
-    { label: "Works indexed", value: formatCount(rankingNovels.length), count: rankingNovels.length },
-    { label: "Views captured", value: formatCount(rankingTotalViews), count: rankingTotalViews },
-    { label: "Reader likes", value: formatCount(rankingTotalLikes), count: rankingTotalLikes }
-  ];
+  const showMatureFilter = section !== "creators" && section !== "tags" && section !== "collections";
+  const activeSectionLabel = sectionTabs.find((item) => item.section === section)?.label ?? "All works";
+  const prominentNovelTags = data?.tags.slice(0, 12) ?? [];
+  const visibleCount =
+    section === "creators"
+      ? creators.length
+      : section === "tags"
+        ? data?.tags.length ?? 0
+        : section === "collections"
+          ? collections.length
+          : sectionNovels.length;
+  const visibleUnitLabel =
+    section === "creators"
+      ? `active ${visibleCount === 1 ? "author" : "authors"}`
+      : section === "tags"
+        ? visibleCount === 1 ? "tag" : "tags"
+        : section === "collections"
+          ? visibleCount === 1 ? "collection" : "collections"
+          : `readable ${visibleCount === 1 ? "work" : "works"}`;
+  const EmptyIcon =
+    section === "bookmarks"
+      ? Bookmark
+      : section === "rankings"
+        ? Trophy
+        : section === "collections"
+          ? FolderOpen
+          : section === "tags"
+            ? Bell
+            : section === "creators"
+              ? UserPlus
+              : NotebookText;
+  const emptyTitle =
+    section === "bookmarks"
+      ? "No bookmarked works yet"
+      : section === "rankings"
+        ? "No ranked works yet"
+        : section === "collections"
+          ? "No collections yet"
+          : section === "tags"
+            ? "No tags yet"
+            : section === "creators"
+              ? "No creators yet"
+              : "No works match this view";
+  const emptyMessage =
+    section === "bookmarks"
+      ? "Bookmarked works will appear here after you save them."
+      : section === "rankings"
+        ? "Rankings will fill in as readable works collect views and likes."
+        : section === "collections"
+          ? "Grouped reading lists will appear here when collections are available."
+          : section === "tags"
+            ? "Tags will appear as authors publish readable works."
+            : section === "creators"
+              ? "Authors publishing readable works will appear here."
+              : "Try the latest feed or adjust the current filters.";
 
   return (
-    <section className={classNames("content-main novels-page", isRankingsSection && "novels-rankings-page")}>
+    <section className={classNames("content-main novels-page novel-feed-page", isRankingsSection && "novels-rankings-page")}>
       <MatureAccessNotice matureAccess={data?.matureAccess ?? null} onLogin={onAuthRequired} onPrivacySecurity={onPrivacySecurity} />
-      <div className="novels-hero">
-        <div className="novels-hero-copy">
-          <p className="eyebrow">{isRankingsSection ? "Novel ranking desk" : "NEHub reads"}</p>
+      <div className="section-heading novel-feed-heading">
+        <div>
+          <p className="eyebrow">NEHub novels</p>
           <h1>{sectionTitleMap[section]}</h1>
           <p>{sectionDescriptionMap[section]}</p>
-          <div className="novels-hero-stats" aria-label="Feed stats">
-            <span>
-              <strong>{formatCount(data?.totalCount ?? novels.length)}</strong>
-              works
-            </span>
-            <span>
-              <strong>{formatCount(totalWords)}</strong>
-              words
-            </span>
-            <span>
-              <strong>{formatCount(section === "creators" ? creators.length : data?.tags.length ?? 0)}</strong>
-              {section === "creators" ? "creators" : "tags"}
-            </span>
-          </div>
         </div>
-        {isRankingsSection ? (
-          <div className="ranking-signal-board" aria-label="Ranking signals">
-            <div className="ranking-signal-heading">
-              <span>Current feed</span>
-              <strong>{rankingNovels[0]?.title ?? "Awaiting ranked works"}</strong>
-            </div>
-            <div className="ranking-signal-list">
-              {rankingSignals.map((signal) => (
-                <div className="ranking-signal-row" key={signal.label}>
-                  <span>{signal.label}</span>
-                  <strong>{signal.value}</strong>
-                  <span
-                    className="ranking-signal-meter"
-                    style={{ "--ranking-fill": `${Math.max((signal.count / rankingSignalMax) * 100, signal.count > 0 ? 18 : 6)}%` } as CSSProperties}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : heroFeaturedNovel ? (
-          <button
-            className="featured-novel"
-            type="button"
-            onClick={() => onOpenNovel(heroFeaturedNovel.id)}
-            style={{ "--novel-cover": heroFeaturedNovel.coverColor } as CSSProperties}
-          >
-            <span className="novel-cover-mark">N</span>
-            <span>
-              <small>Featured</small>
-              <strong>{heroFeaturedNovel.title}</strong>
-              <em>{heroFeaturedNovel.excerpt}</em>
-            </span>
+        <div className="feed-controls">
+          {showMatureFilter ? (
+            <label className="rating-filter novel-rating-filter">
+              <Shield size={15} />
+              <select
+                value={matureFilter}
+                onChange={(event) => onMatureFilterChange(event.target.value as MatureFilter)}
+              >
+                {matureFilterOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          <button className="filter-chip" type="button" onClick={() => onOpenSection("home")}>
+            {activeSectionLabel}
+            <ChevronDown size={15} />
           </button>
-        ) : null}
-      </div>
-
-      <div className="novels-toolbar">
-        <div>
-          <h2>{listTitleMap[section]}</h2>
-          <p>
-            {section === "following"
-              ? `${formatCount(followedCreators.length)} followed ${followedCreators.length === 1 ? "creator" : "creators"}`
-              : section === "creators"
-                ? `${formatCount(creators.length)} active ${creators.length === 1 ? "author" : "authors"}`
-                : section === "tags"
-                  ? `${formatCount(data?.tags.length ?? 0)} tags`
-                  : section === "collections"
-                    ? `${formatCount(collections.length)} ${collections.length === 1 ? "collection" : "collections"}`
-                    : data
-                      ? `${formatCount(sectionNovels.length)} readable ${sectionNovels.length === 1 ? "work" : "works"}`
-                      : "Loading works."}
-          </p>
         </div>
-        {section !== "creators" && section !== "tags" && section !== "collections" ? (
-          <label className="rating-filter novel-rating-filter">
-            <Shield size={15} />
-            <select
-              value={matureFilter}
-              onChange={(event) => onMatureFilterChange(event.target.value as MatureFilter)}
-            >
-              {matureFilterOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
       </div>
 
-      {section === "tags" && data?.tags.length ? (
-        <div className="tag-row novel-tag-row" aria-label="Tags">
-          {data.tags.slice(0, 10).map((tag) => (
+      <div className="work-tabs novel-work-tabs" aria-label="Novel sections">
+        {sectionTabs.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.section}
+              className={classNames("work-tab", section === item.section && "is-active")}
+              type="button"
+              onClick={() => onOpenSection(item.section)}
+            >
+              <Icon size={16} />
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="novel-feed-summary" aria-label="Novel feed summary">
+        <span>
+          <strong>{formatCount(visibleCount)}</strong>
+          {data ? visibleUnitLabel : "loading works"}
+        </span>
+        <span>
+          <strong>{formatCount(totalWords)}</strong>
+          words in current feed
+        </span>
+        <span>
+          <strong>{formatCount(section === "creators" ? followedCreators.length : data?.tags.length ?? 0)}</strong>
+          {section === "creators" ? "followed authors" : "tags"}
+        </span>
+      </div>
+
+      {featuredNovel && (section === "home" || section === "novels") ? (
+        <button
+          className="novel-featured-row"
+          type="button"
+          onClick={() => onOpenNovel(featuredNovel.id)}
+          style={{ "--novel-cover": featuredNovel.coverColor } as CSSProperties}
+        >
+          <span className="novel-featured-cover">
+            <NotebookText size={22} />
+          </span>
+          <span>
+            <small>Featured read</small>
+            <strong>{featuredNovel.title}</strong>
+            <em>{featuredNovel.excerpt}</em>
+          </span>
+          <ChevronDown size={16} />
+        </button>
+      ) : null}
+
+      {prominentNovelTags.length && section !== "tags" ? (
+        <div className="tag-row novel-tag-row" aria-label="Popular novel tags">
+          {prominentNovelTags.map((tag) => (
             <button className="tag-pill novel-tag-pill" key={tag.name} type="button" onClick={() => onOpenSection("novels")}>
               #{tag.name}
               <span>{tag.count}</span>
@@ -12177,35 +12222,60 @@ function NovelHubPage({
       ) : null}
 
       {section === "creators" ? (
-        <div className="novel-grid" aria-live="polite">
+        <div className="creator-discovery-grid novel-creator-grid" aria-live="polite">
           {creators.map((creator, index) => (
-            <article className="novel-card" key={creator.id} style={{ animationDelay: `${Math.min(index * 36, 260)}ms` } as CSSProperties}>
-              <button className="novel-card-main" type="button" onClick={() => onOpenProfile(creator.handle)}>
-                <span className="novel-spine" aria-hidden="true" />
-                <span className="novel-card-content">
-                  <small>@{creator.handle}</small>
+            <article className="creator-discovery-card novel-creator-card" key={creator.id}>
+              <button className="creator-discovery-main" type="button" onClick={() => onOpenProfile(creator.handle)}>
+                {creator.avatarUrl ? (
+                  <img className="creator-discovery-avatar" src={creator.avatarUrl} alt="" />
+                ) : (
+                  <DefaultAvatar className="creator-discovery-avatar creator-discovery-avatar-fallback" name={creator.displayName} />
+                )}
+                <span className="creator-discovery-copy">
                   <strong>{creator.displayName}</strong>
-                  <em>{creator.bio || "Creator publishing on NEHub."}</em>
+                  <small>@{creator.handle}</small>
+                  <span>{creator.bio || "Creator publishing on NEHub."}</span>
                 </span>
               </button>
-              <div className="novel-card-footer">
+              <div className="novel-creator-preview-strip" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+                <span />
+              </div>
+              <div className="creator-discovery-meta">
                 <span>{formatCount(creator.followerCount)} followers</span>
                 <span>{creator.following ? "Following" : "Discover"}</span>
               </div>
             </article>
           ))}
         </div>
+      ) : section === "tags" ? (
+        <div className="tag-row novel-tag-browser" aria-live="polite" aria-label="Novel tags">
+          {(data?.tags ?? []).map((tag) => (
+            <button className="tag-pill novel-tag-pill" key={tag.name} type="button" onClick={() => onOpenSection("novels")}>
+              #{tag.name}
+              <span>{formatCount(tag.count)}</span>
+            </button>
+          ))}
+        </div>
       ) : section === "collections" ? (
-        <div className="novel-grid" aria-live="polite">
+        <div className="creator-discovery-grid novel-collection-grid" aria-live="polite">
           {collections.map((collection, index) => (
-            <article className="novel-card" key={collection.id} style={{ animationDelay: `${Math.min(index * 36, 260)}ms` } as CSSProperties}>
-              <div className="novel-card-main">
-                <span className="novel-spine" aria-hidden="true" />
-                <span className="novel-card-content">
+            <article className="creator-discovery-card novel-collection-card" key={collection.id} style={{ animationDelay: `${Math.min(index * 36, 260)}ms` } as CSSProperties}>
+              <div className="novel-collection-main">
+                <span className="collection-folder-icon">
+                  <FolderOpen size={20} />
+                </span>
+                <div className="creator-discovery-copy">
                   <small>{collection.id}</small>
                   <strong>{collection.title}</strong>
-                  <em>{collection.detail}</em>
-                </span>
+                  <span>{collection.detail}</span>
+                </div>
+              </div>
+              <div className="creator-discovery-meta">
+                <span>Reading list</span>
+                <span>Coming soon</span>
               </div>
             </article>
           ))}
@@ -12226,36 +12296,21 @@ function NovelHubPage({
       )}
 
       {!data ? <p className="empty-feed">Loading works.</p> : null}
-      {data && section === "creators" && creators.length === 0 ? (
-        <p className="empty-feed">No creators match this view yet.</p>
-      ) : null}
-      {data && section === "tags" && (data.tags?.length ?? 0) === 0 ? (
-        <p className="empty-feed">No tags match this view yet.</p>
-      ) : null}
-      {data && section === "collections" && collections.length === 0 ? (
-        <p className="empty-feed">Collections are not supported yet.</p>
-      ) : null}
-      {data && !["creators", "tags", "collections"].includes(section) && sectionNovels.length === 0 ? (
-        isRankingsSection ? (
-          <div className="ranking-empty-state">
-            <span className="ranking-empty-icon" aria-hidden="true">
-              <Trophy size={28} />
-            </span>
-            <div>
-              <strong>No ranked works yet</strong>
-              <p>The board is ready as soon as readable works enter this feed.</p>
-            </div>
+      {data && visibleCount === 0 ? (
+        <div className="novel-empty-state">
+          <span className="novel-empty-icon" aria-hidden="true">
+            <EmptyIcon size={24} />
+          </span>
+          <div>
+            <strong>{emptyTitle}</strong>
+            <p>{emptyMessage}</p>
+          </div>
+          {section !== "home" ? (
             <button className="secondary-button" type="button" onClick={() => onOpenSection("home")}>
               Latest works
             </button>
-          </div>
-        ) : (
-          <p className="empty-feed">
-            {section === "bookmarks"
-              ? "Bookmarks are not supported yet."
-              : "No works match this view yet."}
-          </p>
-        )
+          ) : null}
+        </div>
       ) : null}
     </section>
   );

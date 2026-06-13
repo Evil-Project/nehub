@@ -1855,6 +1855,131 @@ h1 {
   flex: 0 0 auto;
 }
 
+.novel-feed-page {
+  align-content: start;
+  max-width: 1040px;
+}
+
+.novel-feed-heading {
+  margin-bottom: 0;
+}
+
+.novel-feed-heading .eyebrow {
+  margin-bottom: 4px;
+}
+
+.novel-feed-heading h1 {
+  margin-bottom: 4px;
+}
+
+.novel-feed-heading p:not(.eyebrow) {
+  margin-bottom: 0;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.novel-work-tabs {
+  margin-bottom: 0;
+}
+
+.novel-feed-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.novel-feed-summary span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  min-height: 58px;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.64);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 850;
+  box-shadow: inset 0 1px 3px rgba(255, 255, 255, 0.74);
+}
+
+.novel-feed-summary strong {
+  overflow: hidden;
+  color: var(--purple);
+  font-size: 0.94rem;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.novel-featured-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 8px;
+  padding: 12px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(251, 224, 236, 0.56)),
+    repeating-linear-gradient(120deg, rgba(0, 223, 238, 0.08) 0 1px, transparent 1px 24px);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  box-shadow: 0 8px 18px rgba(93, 122, 138, 0.08);
+}
+
+.novel-featured-row:hover strong {
+  color: var(--blue-dark);
+}
+
+.novel-featured-cover {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border: 3px solid #fff;
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.25), transparent),
+    var(--novel-cover, var(--blue));
+  color: var(--purple);
+  box-shadow: var(--sticker-shadow);
+}
+
+.novel-featured-row small {
+  display: block;
+  color: var(--blue-dark);
+  font-size: 0.72rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.novel-featured-row strong,
+.novel-featured-row em {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.novel-featured-row strong {
+  margin-top: 3px;
+  color: var(--purple);
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.novel-featured-row em {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-style: normal;
+  font-weight: 750;
+}
+
 .novels-rankings-page {
   gap: 22px;
 }
@@ -1996,20 +2121,35 @@ h1 {
 }
 
 .ranking-grid {
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
 }
 
 .novel-tag-row {
-  margin-top: -4px;
+  margin: -2px 0 2px;
 }
 
 .novel-tag-pill {
-  cursor: default;
+  cursor: pointer;
+}
+
+.novel-tag-browser {
+  gap: 10px;
+  margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 8px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.48);
+  box-shadow: 0 8px 18px rgba(93, 122, 138, 0.08);
+}
+
+.novel-tag-browser .novel-tag-pill {
+  min-height: 38px;
+  padding-inline: 13px;
 }
 
 .novel-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
   gap: 30px 20px;
 }
 
@@ -2072,7 +2212,7 @@ h1 {
 }
 
 .ranking-grid .novel-card-main {
-  min-height: 280px;
+  min-height: 220px;
 }
 
 .ranking-empty-state {
@@ -2133,7 +2273,7 @@ h1 {
   display: grid;
   grid-template-columns: 1fr;
   align-content: end;
-  min-height: 250px;
+  min-height: 220px;
   aspect-ratio: 1 / 1.18;
   overflow: hidden;
   border: 3px solid #fff;
@@ -2208,7 +2348,91 @@ h1 {
   font-weight: 750;
   line-height: 1.5;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 3;
+}
+
+.novel-creator-grid,
+.novel-collection-grid {
+  margin-top: 0;
+}
+
+.novel-creator-card,
+.novel-collection-card {
+  animation: card-in 360ms ease forwards;
+}
+
+.novel-creator-preview-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.novel-creator-preview-strip span {
+  height: 62px;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.42), transparent),
+    linear-gradient(135deg, var(--cyan), rgba(250, 158, 188, 0.72));
+}
+
+.novel-creator-preview-strip span:nth-child(2) {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.42), transparent),
+    linear-gradient(135deg, var(--yellow), rgba(181, 126, 220, 0.64));
+}
+
+.novel-creator-preview-strip span:nth-child(3) {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.42), transparent),
+    linear-gradient(135deg, rgba(181, 126, 220, 0.72), rgba(0, 223, 238, 0.5));
+}
+
+.novel-collection-main {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.novel-empty-state {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  min-height: 132px;
+  border: 1px dashed rgba(250, 158, 188, 0.74);
+  border-radius: 8px;
+  padding: 18px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.66), rgba(255, 247, 251, 0.52)),
+    repeating-linear-gradient(120deg, rgba(0, 223, 238, 0.07) 0 1px, transparent 1px 26px);
+}
+
+.novel-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 50px;
+  height: 50px;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--cyan), #fff);
+  color: var(--purple);
+  box-shadow: var(--sticker-shadow);
+}
+
+.novel-empty-state strong {
+  display: block;
+  color: var(--purple);
+  font-size: 1.08rem;
+  line-height: 1.2;
+}
+
+.novel-empty-state p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-weight: 800;
+  line-height: 1.4;
 }
 
 .novel-card-footer,
@@ -6553,6 +6777,21 @@ h1 {
     align-items: stretch;
   }
 
+  .novel-featured-row,
+  .novel-empty-state {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .novel-featured-cover,
+  .novel-empty-icon {
+    justify-self: start;
+  }
+
+  .novel-empty-state .secondary-button {
+    width: 100%;
+  }
+
   .ranking-empty-state {
     grid-template-columns: 1fr;
     align-items: stretch;
@@ -6564,7 +6803,8 @@ h1 {
   }
 
   .novel-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px 12px;
   }
 
   .novel-card-main {
