@@ -183,8 +183,9 @@ npx wrangler dev --port 8787 \
 To enable Discord sign-in, create a Discord OAuth2 application and add
 `https://your-origin.example.com/api/auth/discord/callback` as a redirect URI. Set
 `DISCORD_CLIENT_ID` as a Worker var and keep `DISCORD_CLIENT_SECRET` server-side as a
-Wrangler secret. For local testing, add a localhost redirect URI in Discord and put
-these values in `.dev.vars`:
+Wrangler secret. The same callback is used when signed-in users connect Discord login
+from Privacy & security settings. For local testing, add a localhost redirect URI in
+Discord and put these values in `.dev.vars`:
 
 ```bash
 DISCORD_CLIENT_ID=your-discord-client-id
@@ -276,8 +277,10 @@ Cloudflare Email Routing and the Turnstile widget still need to exist in the Clo
 - Rate-limited routes return HTTP `429` with `Retry-After` and a JSON message when a user or IP exceeds the configured action window.
 - `POST /api/auth/register` creates an account with the 10-image base storage limit, validates Turnstile, sends a verification email, and starts a session.
 - `POST /api/auth/login` validates Turnstile, starts a session, and awards a random login site-credit bonus.
-- `GET /api/auth/discord/start` starts Discord OAuth2 sign-in.
-- `GET /api/auth/discord/callback` completes Discord OAuth2 sign-in, links by verified email when needed, and starts a session.
+- `GET /api/auth/discord/start` serves the single-page Discord sign-in handoff.
+- `POST /api/auth/discord/start` creates Discord OAuth state and returns the authorization URL.
+- `POST /api/settings/security/discord/start` starts a CSRF-protected Discord login binding flow for the current user.
+- `GET /api/auth/discord/callback` completes Discord OAuth2 sign-in or settings-initiated login binding. Sign-in links by verified email when needed and starts a session.
 - `POST /api/auth/password-reset/request` validates Turnstile and sends a non-enumerating password reset email when the account exists.
 - `POST /api/auth/password-reset/confirm` validates Turnstile, consumes a reset token, updates the password, and revokes all sessions.
 - `POST /api/auth/logout` clears the current session.

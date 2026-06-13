@@ -67,6 +67,8 @@ import type {
   DeleteArtworkSeriesResponse,
   DeleteArtworkImageResponse,
   DeleteCollectionResponse,
+  DiscordConnectionSummary,
+  DiscordStartResponse,
   FollowListMode,
   GalleryResponse,
   FollowResponse,
@@ -576,6 +578,10 @@ const totpConfirmSchema = z.object({
 
 const emailMfaSettingsSchema = z.object({
   enabled: z.boolean()
+});
+
+const oauthReturnToSchema = z.object({
+  returnTo: z.string().max(500).optional()
 });
 
 const passkeyRegistrationOptionsSchema = z.object({
@@ -2489,9 +2495,13 @@ type UserRow = {
   updated_at: string;
 };
 
+type DiscordOauthMode = "login" | "link";
+
 type DiscordOauthState = {
   state: string;
   returnTo: string;
+  mode: DiscordOauthMode;
+  userId?: string;
 };
 
 type DiscordTokenResponse = {
@@ -2521,6 +2531,17 @@ type TotpCredentialRow = {
 type EmailMfaSettingsRow = {
   user_id: string;
   enabled_at: string;
+};
+
+type AuthProviderAccountRow = {
+  id: string;
+  user_id: string;
+  provider: string;
+  provider_user_id: string;
+  provider_username: string;
+  provider_email: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 type MfaChallengeRow = {
@@ -4047,16 +4068,22 @@ const getEnabledMfaMethods = async (db: D1Database, userId: string): Promise<Mfa
   return [totp ? "totp" : null, email ? "email" : null].filter(Boolean) as MfaMethod[];
 };
 
-const getSecuritySettings = async (db: D1Database, userId: string): Promise<SecuritySettingsResponse> => {
-  const [methods, passkeys] = await Promise.all([
+const getSecuritySettings = async (
+  db: D1Database,
+  userId: string,
+  env: Bindings
+): Promise<SecuritySettingsResponse> => {
+  const [methods, passkeys, discord] = await Promise.all([
     getEnabledMfaMethods(db, userId),
-    getPasskeySummaries(db, userId)
+    getPasskeySummaries(db, userId),
+    getDiscordConnectionSummary(db, userId, env)
   ]);
   return {
     twoStep: {
       totpEnabled: methods.includes("totp"),
       emailEnabled: methods.includes("email")
     },
+    discord,
     passkeys
   };
 };
@@ -5636,6 +5663,60 @@ const verifyUserPassword = async (row: UserRow, password: string) =>
 const discordAuthConfigured = (env: Bindings) =>
   Boolean(env.DISCORD_CLIENT_ID?.trim() && env.DISCORD_CLIENT_SECRET?.trim());
 
+const disconnectedDiscordConnection = (env: Bindings): DiscordConnectionSummary => ({
+  configured: discordAuthConfigured(env),
+  linked: false,
+  username: null,
+  email: null,
+  connectedAt: null
+});
+
+const getDiscordAccountByUserId = async (db: D1Database, userId: string) =>
+  db
+    .prepare(
+      `SELECT id, user_id, provider, provider_user_id, provider_username, provider_email, created_at, updated_at
+       FROM auth_provider_accounts
+       WHERE user_id = ?
+         AND provider = ?
+       LIMIT 1`
+    )
+    .bind(userId, discordAuthProvider)
+    .first<AuthProviderAccountRow>();
+
+const getDiscordProviderAccount = async (db: D1Database, providerUserId: string) =>
+  db
+    .prepare(
+      `SELECT id, user_id, provider, provider_user_id, provider_username, provider_email, created_at, updated_at
+       FROM auth_provider_accounts
+       WHERE provider = ?
+         AND provider_user_id = ?
+       LIMIT 1`
+    )
+    .bind(discordAuthProvider, providerUserId)
+    .first<AuthProviderAccountRow>();
+
+const getDiscordConnectionSummary = async (
+  db: D1Database,
+  userId: string,
+  env: Bindings
+): Promise<DiscordConnectionSummary> => {
+  try {
+    const account = await getDiscordAccountByUserId(db, userId);
+    return {
+      configured: discordAuthConfigured(env),
+      linked: Boolean(account),
+      username: account?.provider_username || null,
+      email: account?.provider_email ?? null,
+      connectedAt: account?.created_at ?? null
+    };
+  } catch (error) {
+    if (isMissingTableError(error, ["auth_provider_accounts"])) {
+      return disconnectedDiscordConnection(env);
+    }
+    throw error;
+  }
+};
+
 const discordRedirectUri = (context: AppContext) =>
   context.env.DISCORD_REDIRECT_URI?.trim() ||
   `${new URL(context.req.url).origin}/api/auth/discord/callback`;
@@ -5676,14 +5757,22 @@ const parseDiscordOauthState = (context: AppContext): DiscordOauthState | null =
   }
   try {
     const parsed = JSON.parse(rawValue) as Partial<DiscordOauthState>;
+    const mode = parsed.mode === "link" ? "link" : "login";
+    const userId =
+      typeof parsed.userId === "string" && /^usr_[A-Za-z0-9_-]{3,96}$/.test(parsed.userId)
+        ? parsed.userId
+        : undefined;
     if (
       typeof parsed.state === "string" &&
       /^[A-Za-z0-9_-]{32,160}$/.test(parsed.state) &&
-      typeof parsed.returnTo === "string"
+      typeof parsed.returnTo === "string" &&
+      (mode === "login" || userId)
     ) {
       return {
         state: parsed.state,
-        returnTo: sanitizeOauthReturnTo(parsed.returnTo)
+        returnTo: sanitizeOauthReturnTo(parsed.returnTo),
+        mode,
+        userId
       };
     }
   } catch {
@@ -5809,6 +5898,16 @@ const linkDiscordAccount = async (
   profile: Required<Pick<DiscordUserResponse, "id">> & DiscordUserResponse,
   email: string | null
 ) => {
+  const existingForUser = await getDiscordAccountByUserId(db, userId);
+  if (existingForUser && existingForUser.provider_user_id !== profile.id) {
+    return { linked: false, error: "discord_link_existing" as const };
+  }
+
+  const existing = await getDiscordProviderAccount(db, profile.id);
+  if (existing && existing.user_id !== userId) {
+    return { linked: false, error: "discord_link_taken" as const };
+  }
+
   await db
     .prepare(
       `INSERT INTO auth_provider_accounts
@@ -5818,7 +5917,8 @@ const linkDiscordAccount = async (
          user_id = excluded.user_id,
          provider_username = excluded.provider_username,
          provider_email = excluded.provider_email,
-         updated_at = CURRENT_TIMESTAMP`
+         updated_at = CURRENT_TIMESTAMP
+       WHERE auth_provider_accounts.user_id = excluded.user_id`
     )
     .bind(
       `apa_${crypto.randomUUID().replaceAll("-", "")}`,
@@ -5829,6 +5929,12 @@ const linkDiscordAccount = async (
       email
     )
     .run();
+
+  const linked = await getDiscordProviderAccount(db, profile.id);
+  if (!linked || linked.user_id !== userId) {
+    return { linked: false, error: "discord_link_taken" as const };
+  }
+  return { linked: true as const };
 };
 
 const markUserEmailVerified = async (db: D1Database, user: UserRow, email: string) => {
@@ -5915,7 +6021,10 @@ const getOrCreateDiscordUser = async (
   const linkedUser = await getUserRowByDiscordAccount(db, profile.id);
   if (linkedUser) {
     const user = email ? await markUserEmailVerified(db, linkedUser, email) : linkedUser;
-    await linkDiscordAccount(db, user.id, profile, email);
+    const linkResult = await linkDiscordAccount(db, user.id, profile, email);
+    if (!linkResult.linked) {
+      return { error: "discord_failed" };
+    }
     return { user };
   }
 
@@ -5939,7 +6048,10 @@ const getOrCreateDiscordUser = async (
     user = await markUserEmailVerified(db, user, email);
   }
 
-  await linkDiscordAccount(db, user.id, profile, email);
+  const linkResult = await linkDiscordAccount(db, user.id, profile, email);
+  if (!linkResult.linked) {
+    return { error: "discord_failed" };
+  }
   return { user };
 };
 
@@ -7861,13 +7973,14 @@ app.get("/api/auth/config", (context) =>
   })
 );
 
-app.get("/api/auth/discord/start", async (context) => {
-  const returnTo = sanitizeOauthReturnTo(context.req.query("returnTo"));
+app.get("/api/auth/discord/start", appShellResponse);
+
+app.post("/api/auth/discord/start", async (context) => {
   if (!context.env.DB) {
-    return discordAuthRedirect(context, returnTo, { authError: "discord_unavailable" });
+    return authUnavailable(context);
   }
   if (!discordAuthConfigured(context.env)) {
-    return discordAuthRedirect(context, returnTo, { authError: "discord_config" });
+    return context.json({ message: "Discord sign-in is not configured." }, 503);
   }
 
   const rateLimitError = await enforceRateLimit(context, {
@@ -7878,13 +7991,71 @@ app.get("/api/auth/discord/start", async (context) => {
     return rateLimitError;
   }
 
+  const parsed = await parseJson(context, oauthReturnToSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Discord return destination is invalid." }, 400);
+  }
+
+  const returnTo = sanitizeOauthReturnTo(parsed.data.returnTo);
   const state = randomToken(32);
   context.header(
     "Set-Cookie",
-    discordOauthStateCookie(context, encodeDiscordOauthState({ state, returnTo })),
+    discordOauthStateCookie(context, encodeDiscordOauthState({ state, returnTo, mode: "login" })),
     { append: true }
   );
-  return context.redirect(discordAuthorizeUrl(context, state).toString(), 302);
+  return context.json<DiscordStartResponse>({
+    authorizationUrl: discordAuthorizeUrl(context, state).toString(),
+    message: "Continue with Discord to sign in."
+  });
+});
+
+app.post("/api/settings/security/discord/start", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to connect Discord login." }, 401);
+  }
+  if (!discordAuthConfigured(context.env)) {
+    return context.json({ message: "Discord login is not configured." }, 503);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "settings:discord-link-start",
+    userId: user.id,
+    ...rateLimitDefaults.auth
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const recentAuthError = await requireRecentSessionAuth(context, context.env.DB, user.id);
+  if (recentAuthError) {
+    return recentAuthError;
+  }
+
+  const parsed = await parseJson(context, oauthReturnToSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Discord return destination is invalid." }, 400);
+  }
+
+  const returnTo = sanitizeOauthReturnTo(parsed.data.returnTo);
+  const state = randomToken(32);
+  context.header(
+    "Set-Cookie",
+    discordOauthStateCookie(
+      context,
+      encodeDiscordOauthState({ state, returnTo, mode: "link", userId: user.id })
+    ),
+    { append: true }
+  );
+  return context.json<DiscordStartResponse>({
+    authorizationUrl: discordAuthorizeUrl(context, state).toString(),
+    message: "Continue with Discord to connect login."
+  });
 });
 
 app.get("/api/auth/discord/callback", async (context) => {
@@ -7919,6 +8090,34 @@ app.get("/api/auth/discord/callback", async (context) => {
 
   try {
     const profile = await fetchDiscordProfile(context, code);
+    if (storedState.mode === "link") {
+      const user = storedState.userId
+        ? await getCurrentUser(context.env.DB, context.req.raw)
+        : null;
+      if (!user || user.id !== storedState.userId) {
+        return discordAuthRedirect(context, returnTo, { authError: "discord_link_session" });
+      }
+
+      const linkResult = await linkDiscordAccount(
+        context.env.DB,
+        user.id,
+        profile,
+        verifiedDiscordEmail(profile)
+      );
+      if (!linkResult.linked) {
+        return discordAuthRedirect(context, returnTo, { authError: linkResult.error });
+      }
+
+      await sendSecurityNoticeEmail(context.env, user, "Discord login connected", [
+        "Discord login was connected to your account.",
+        "",
+        `Browser: ${requestUserAgent(context)}`,
+        "",
+        "If this was not you, change your password and review your account security settings."
+      ]);
+      return discordAuthRedirect(context, returnTo, { auth: "discord_linked" });
+    }
+
     const result = await getOrCreateDiscordUser(context.env.DB, profile);
     if (!result.user) {
       return discordAuthRedirect(context, returnTo, {
@@ -7940,7 +8139,9 @@ app.get("/api/auth/discord/callback", async (context) => {
     return discordAuthRedirect(context, returnTo, { auth: "discord" });
   } catch (error) {
     console.warn("Discord authentication failed", error);
-    return discordAuthRedirect(context, returnTo, { authError: "discord_failed" });
+    return discordAuthRedirect(context, returnTo, {
+      authError: storedState?.mode === "link" ? "discord_link_failed" : "discord_failed"
+    });
   }
 });
 
@@ -12271,7 +12472,9 @@ app.get("/api/settings/security", async (context) => {
   if (!user) {
     return context.json({ message: "Sign in to manage account security." }, 401);
   }
-  return context.json<SecuritySettingsResponse>(await getSecuritySettings(context.env.DB, user.id));
+  return context.json<SecuritySettingsResponse>(
+    await getSecuritySettings(context.env.DB, user.id, context.env)
+  );
 });
 
 app.post("/api/settings/security/totp/start", async (context) => {
@@ -12377,7 +12580,7 @@ app.post("/api/settings/security/totp/confirm", async (context) => {
     .bind(user.id)
     .run();
   return context.json<SecuritySettingsResponse>({
-    ...(await getSecuritySettings(context.env.DB, user.id)),
+    ...(await getSecuritySettings(context.env.DB, user.id, context.env)),
     message: "Authenticator app enabled."
   });
 });
@@ -12410,7 +12613,7 @@ app.delete("/api/settings/security/totp", async (context) => {
     .bind(user.id)
     .run();
   return context.json<SecuritySettingsResponse>({
-    ...(await getSecuritySettings(context.env.DB, user.id)),
+    ...(await getSecuritySettings(context.env.DB, user.id, context.env)),
     message: "Authenticator app disabled."
   });
 });
@@ -12458,7 +12661,7 @@ app.put("/api/settings/security/email", async (context) => {
       .run();
   }
   return context.json<SecuritySettingsResponse>({
-    ...(await getSecuritySettings(context.env.DB, user.id)),
+    ...(await getSecuritySettings(context.env.DB, user.id, context.env)),
     message: parsed.data.enabled ? "Email sign-in codes enabled." : "Email sign-in codes disabled."
   });
 });
@@ -12621,7 +12824,7 @@ app.post("/api/settings/security/passkeys", async (context) => {
   }
 
   return context.json<SecuritySettingsResponse>({
-    ...(await getSecuritySettings(context.env.DB, user.id)),
+    ...(await getSecuritySettings(context.env.DB, user.id, context.env)),
     message: "Passkey added."
   });
 });
@@ -12655,7 +12858,7 @@ app.delete("/api/settings/security/passkeys/:id", async (context) => {
     .bind(id, user.id)
     .run();
   return context.json<SecuritySettingsResponse>({
-    ...(await getSecuritySettings(context.env.DB, user.id)),
+    ...(await getSecuritySettings(context.env.DB, user.id, context.env)),
     message: "Passkey removed."
   });
 });
@@ -15863,13 +16066,13 @@ const indexHtml = async (context: AppContext) => {
   return { assetResponse, html: await assetResponse.text() };
 };
 
-const appShellResponse = async (context: AppContext) => {
+async function appShellResponse(context: AppContext) {
   const { assetResponse, html } = await indexHtml(context);
   if (!assetResponse.ok) {
     return assetResponse;
   }
   return indexHtmlResponse(context, html);
-};
+}
 
 app.get("/novels", async (context) => {
   const { assetResponse, html } = await indexHtml(context);

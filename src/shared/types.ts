@@ -693,13 +693,27 @@ export type PasskeySummary = {
   lastUsedAt: string | null;
 };
 
+export type DiscordConnectionSummary = {
+  configured: boolean;
+  linked: boolean;
+  username: string | null;
+  email: string | null;
+  connectedAt: string | null;
+};
+
 export type SecuritySettingsResponse = {
   twoStep: {
     totpEnabled: boolean;
     emailEnabled: boolean;
   };
+  discord: DiscordConnectionSummary;
   passkeys: PasskeySummary[];
   message?: string;
+};
+
+export type DiscordStartResponse = {
+  authorizationUrl: string;
+  message: string;
 };
 
 export type TotpSetupResponse = {

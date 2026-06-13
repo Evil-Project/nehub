@@ -3218,6 +3218,10 @@ h1 {
   margin-bottom: 8px;
 }
 
+.discord-start-card {
+  width: min(560px, 100%);
+}
+
 .email-confirmation-card p:not(.eyebrow) {
   max-width: 52ch;
   margin: 0;
@@ -3591,8 +3595,76 @@ h1 {
 }
 
 .profile-handle {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 34px;
   margin-bottom: 10px;
+  border: 1px solid rgba(250, 158, 188, 0.42);
+  border-radius: 999px;
+  padding: 4px 5px 4px 10px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(255, 247, 251, 0.86));
   color: var(--blue-dark);
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 6px 16px rgba(250, 158, 188, 0.16);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.profile-handle:hover,
+.profile-handle:focus-visible {
+  border-color: rgba(250, 158, 188, 0.78);
+  color: var(--purple);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.94),
+    0 8px 18px rgba(250, 158, 188, 0.22);
+  transform: translateY(-1px);
+}
+
+.profile-handle:focus-visible {
+  outline: 3px solid rgba(250, 158, 188, 0.22);
+  outline-offset: 2px;
+}
+
+.profile-handle-main {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.profile-handle-main svg {
+  flex: 0 0 auto;
+  color: var(--blue);
+}
+
+.profile-handle-main span {
+  overflow-wrap: anywhere;
+}
+
+.profile-handle-action {
+  display: grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--blue);
+  color: #fff;
+  box-shadow: 1px 1px 0 rgba(58, 12, 163, 0.12);
+}
+
+.profile-handle.is-copied {
+  border-color: rgba(31, 184, 138, 0.42);
+  color: var(--green);
+}
+
+.profile-handle.is-copied .profile-handle-action {
+  background: var(--green);
 }
 
 .profile-links {

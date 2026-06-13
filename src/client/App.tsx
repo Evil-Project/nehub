@@ -5,9 +5,11 @@ import {
   Bell,
   Bookmark,
   Calendar,
+  Check,
   ChevronDown,
   ChevronUp,
   Cloud,
+  Copy,
   Database,
   Download,
   Eye,
@@ -106,6 +108,7 @@ import type {
   DeleteArtworkResponse,
   DeleteCommentResponse,
   DeleteCollectionResponse,
+  DiscordStartResponse,
   FollowListMode,
   FollowResponse,
   GalleryResponse,
@@ -475,6 +478,7 @@ type ViewMode =
   | "series"
   | "profileSettings"
   | "privacySecurity"
+  | "discordStart"
   | "emailConfirmation"
   | "terms"
   | "privacy";
@@ -672,6 +676,9 @@ const getInitialRoute = (): RouteState => {
   }
   if (pathname === "/settings/privacy-security") {
     return routeState("privacySecurity");
+  }
+  if (pathname === "/api/auth/discord/start") {
+    return routeState("discordStart");
   }
   if (pathname === "/email-confirmation") {
     return routeState("emailConfirmation");
@@ -1004,12 +1011,18 @@ function App() {
     }
     if (auth === "discord") {
       setAuthNotice("Signed in with Discord.");
+    } else if (auth === "discord_linked") {
+      setAuthNotice("Discord login connected.");
     } else if (authError) {
       const discordAuthErrors: Record<string, string> = {
         discord_config: "Discord sign-in is not configured.",
         discord_denied: "Discord sign-in was cancelled.",
         discord_email: "Discord did not provide a verified email address.",
         discord_failed: "Discord sign-in could not be completed.",
+        discord_link_existing: "This account already has Discord login connected.",
+        discord_link_failed: "Discord login could not be connected.",
+        discord_link_session: "Sign in to the same account before connecting Discord login.",
+        discord_link_taken: "That Discord account is already connected to another account.",
         discord_session: "Discord sign-in completed, but a local session could not be created.",
         discord_state: "Discord sign-in expired. Try again.",
         discord_suspended: "This account is suspended.",
@@ -1581,6 +1594,7 @@ function App() {
   const accountNotice = dashboardMessage || authNotice;
   const hasAccountNotice =
     view !== "emailConfirmation" &&
+    view !== "discordStart" &&
     Boolean(accountNotice || (currentUser && !currentUser.emailVerified));
   const activeSearchQuery = isNovelSection ? novelQuery : illustrationQuery;
 
@@ -3907,6 +3921,11 @@ function App() {
             onSessionRefresh={refreshAuthSession}
             siteKey={authConfig?.turnstileSiteKey ?? ""}
           />
+        ) : view === "discordStart" ? (
+          <DiscordStartPage
+            discordEnabled={authConfig ? authConfig.discordEnabled : null}
+            onHome={() => showIllustrations("latest")}
+          />
         ) : view === "terms" ? (
           <PolicyPage kind="terms" onOpenPrivacy={() => showPolicy("privacy")} />
         ) : view === "privacy" ? (
@@ -4383,6 +4402,101 @@ function EmailConfirmationPage({
             ) : null}
           </div>
         ) : null}
+      </div>
+    </section>
+  );
+}
+
+type DiscordStartPageProps = {
+  discordEnabled: boolean | null;
+  onHome: () => void;
+};
+
+function DiscordStartPage({ discordEnabled, onHome }: DiscordStartPageProps) {
+  const params = useMemo(() => new URLSearchParams(window.location.search), []);
+  const returnTo = params.get("returnTo") ?? "/";
+  const [status, setStatus] = useState<"ready" | "pending" | "failed" | "unavailable">(
+    discordEnabled === false ? "unavailable" : "ready"
+  );
+  const [message, setMessage] = useState(() =>
+    discordEnabled === false
+      ? "Discord sign-in is not configured."
+      : "Continue to Discord to sign in. You will return to NEHub after approving access."
+  );
+
+  useEffect(() => {
+    if (discordEnabled === false) {
+      setStatus("unavailable");
+      setMessage("Discord sign-in is not configured.");
+    } else if (discordEnabled === true && status === "unavailable") {
+      setStatus("ready");
+      setMessage("Continue to Discord to sign in. You will return to NEHub after approving access.");
+    }
+  }, [discordEnabled, status]);
+
+  const handleContinue = async () => {
+    if (discordEnabled === false || status === "pending") {
+      return;
+    }
+    setStatus("pending");
+    setMessage("Preparing your Discord sign-in.");
+    try {
+      const response = await fetch("/api/auth/discord/start", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({ returnTo })
+      });
+      const payload = (await response.json()) as DiscordStartResponse | { message?: string };
+      if (!response.ok || !("authorizationUrl" in payload)) {
+        throw new Error(payload.message ?? "Discord sign-in could not be started.");
+      }
+      window.location.assign(payload.authorizationUrl);
+    } catch (error) {
+      setStatus("failed");
+      setMessage(error instanceof Error ? error.message : "Discord sign-in could not be started.");
+    }
+  };
+
+  const StatusIcon =
+    status === "pending" ? Cloud : status === "failed" || status === "unavailable" ? X : MessageCircle;
+  const title =
+    status === "pending"
+      ? "Opening Discord"
+      : status === "unavailable"
+        ? "Discord unavailable"
+        : status === "failed"
+          ? "Discord sign-in failed"
+          : "Continue with Discord";
+  const cardStatus =
+    status === "unavailable" ? "unavailable" : status === "failed" ? "invalid" : "challenge";
+
+  return (
+    <section className="content-main email-confirmation-page" aria-live="polite">
+      <div className={`email-confirmation-card discord-start-card is-${cardStatus}`}>
+        <span className="email-confirmation-icon">
+          <StatusIcon size={28} />
+        </span>
+        <p className="eyebrow">Discord sign-in</p>
+        <h1>{title}</h1>
+        <p>{message}</p>
+        <div className="email-confirmation-actions">
+          <button
+            className="primary-button"
+            type="button"
+            disabled={discordEnabled === false || status === "pending"}
+            onClick={() => void handleContinue()}
+          >
+            <MessageCircle size={16} />
+            {status === "pending" ? "Opening" : "Continue with Discord"}
+          </button>
+          <button className="secondary-button" type="button" onClick={onHome}>
+            <Home size={16} />
+            Open gallery
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -8353,6 +8467,8 @@ function ProfilePage({
   const [followListLoadingMore, setFollowListLoadingMore] = useState(false);
   const [followListMessage, setFollowListMessage] = useState("");
   const [followListBusyUser, setFollowListBusyUser] = useState("");
+  const [copiedUsername, setCopiedUsername] = useState(false);
+  const copiedUsernameTimer = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -8363,6 +8479,11 @@ function ProfilePage({
     setFollowListMode(null);
     setFollowListData(null);
     setFollowListMessage("");
+    if (copiedUsernameTimer.current !== null) {
+      window.clearTimeout(copiedUsernameTimer.current);
+      copiedUsernameTimer.current = null;
+    }
+    setCopiedUsername(false);
 
     if (!username) {
       setLoading(false);
@@ -8402,6 +8523,15 @@ function ProfilePage({
       cancelled = true;
     };
   }, [currentUser?.id, profileRevision, username]);
+
+  useEffect(
+    () => () => {
+      if (copiedUsernameTimer.current !== null) {
+        window.clearTimeout(copiedUsernameTimer.current);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (!followListMode || !username) {
@@ -8523,6 +8653,37 @@ function ProfilePage({
     }
     setFollowListMessage("");
     setFollowListMode((current) => (current === mode ? null : mode));
+  };
+
+  const handleCopyUsername = async () => {
+    if (!profile) {
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(profile.username);
+      } else {
+        const input = document.createElement("textarea");
+        input.value = profile.username;
+        input.setAttribute("readonly", "");
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        input.remove();
+      }
+      if (copiedUsernameTimer.current !== null) {
+        window.clearTimeout(copiedUsernameTimer.current);
+      }
+      setCopiedUsername(true);
+      copiedUsernameTimer.current = window.setTimeout(() => {
+        setCopiedUsername(false);
+        copiedUsernameTimer.current = null;
+      }, 1600);
+    } catch {
+      setMessage("Username could not be copied.");
+    }
   };
 
   const handleLoadMoreFollowList = async () => {
@@ -8876,10 +9037,21 @@ function ProfilePage({
             <div className="profile-copy">
               <p className="eyebrow">{novelContext ? "Novel profile" : "Creator profile"}</p>
               <h1>{profile.displayName}</h1>
-              <div className="profile-handle">
-                <AtSign size={15} />
-                {profile.username}
-              </div>
+              <button
+                className={classNames("profile-handle", copiedUsername && "is-copied")}
+                type="button"
+                title={copiedUsername ? "Username copied" : "Copy username"}
+                aria-label={`Copy username ${profile.username}`}
+                onClick={() => void handleCopyUsername()}
+              >
+                <span className="profile-handle-main">
+                  <AtSign size={14} />
+                  <span>{profile.username}</span>
+                </span>
+                <span className="profile-handle-action" aria-hidden="true">
+                  {copiedUsername ? <Check size={14} /> : <Copy size={14} />}
+                </span>
+              </button>
               {profile.websiteUrl || (ownProfile && profileVisibilityMeta && ProfileVisibilityIcon) ? (
                 <div className="profile-links">
                   {profile.websiteUrl ? (
@@ -9565,6 +9737,7 @@ function PrivacySecurityPage({
   const [exportMessage, setExportMessage] = useState("");
   const [deactivationMessage, setDeactivationMessage] = useState("");
   const [securityMessage, setSecurityMessage] = useState("");
+  const [discordMessage, setDiscordMessage] = useState("");
   const [totpSetup, setTotpSetup] = useState<TotpSetupResponse | null>(null);
   const [totpCode, setTotpCode] = useState("");
   const [passkeyName, setPasskeyName] = useState("My passkey");
@@ -9681,6 +9854,7 @@ function PrivacySecurityPage({
     }
     setSecurityLoading(true);
     setSecurityMessage("");
+    setDiscordMessage("");
     try {
       const response = await fetch("/api/settings/security", { credentials: "include" });
       const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
@@ -9967,6 +10141,36 @@ function PrivacySecurityPage({
     if (payload.message) {
       setSecurityMessage(payload.message);
       onNotice(payload.message);
+    }
+  };
+
+  const handleDiscordLink = async () => {
+    if (securitySaving || securitySettings?.discord.linked) {
+      return;
+    }
+    setSecuritySaving(true);
+    setDiscordMessage("");
+    try {
+      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      const response = await fetch("/api/settings/security/discord/start", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          [csrfHeaderName]: csrfToken
+        },
+        body: JSON.stringify({ returnTo })
+      });
+      const payload = (await response.json()) as DiscordStartResponse | { message?: string };
+      if (!response.ok || !("authorizationUrl" in payload)) {
+        throw new Error(payload.message ?? "Discord login could not be connected.");
+      }
+      window.location.assign(payload.authorizationUrl);
+    } catch (error) {
+      setDiscordMessage(
+        error instanceof Error ? error.message : "Discord login could not be connected."
+      );
+      setSecuritySaving(false);
     }
   };
 
@@ -10322,6 +10526,7 @@ function PrivacySecurityPage({
   const sessions = sessionsData?.sessions ?? [];
   const otherSessionCount = sessions.filter((session) => !session.current).length;
   const blockedUsers = blockedUsersData?.users ?? [];
+  const discordConnection = securitySettings?.discord ?? null;
   const novelContext = context === "novels";
 
   return (
@@ -10421,7 +10626,7 @@ function PrivacySecurityPage({
               </label>
               <MatureAccessStatus matureAccess={matureAccess} />
               <div className="settings-actions">
-                <button className="primary-button" type="submit" disabled={saving}>
+                <button className="secondary-button" type="submit" disabled={saving}>
                   <ShieldCheck size={17} />
                   {saving ? "Saving" : "Save mature access"}
                 </button>
@@ -10457,7 +10662,7 @@ function PrivacySecurityPage({
                 <p className="muted">No muted tags.</p>
               )}
               <div className="settings-actions">
-                <button className="primary-button" type="submit" disabled={saving}>
+                <button className="secondary-button" type="submit" disabled={saving}>
                   <EyeOff size={17} />
                   {saving ? "Saving" : "Save muted tags"}
                 </button>
@@ -10600,6 +10805,47 @@ function PrivacySecurityPage({
                   </button>
                 </article>
               </div>
+            </div>
+          </section>
+
+          <section className="settings-form connected-logins-form">
+            <div className="settings-panel">
+              <div className="panel-title">
+                <MessageCircle size={18} />
+                Connected logins
+              </div>
+              {securityLoading ? <p className="muted">Loading connected logins.</p> : null}
+              <div className="security-option-list">
+                <article className="security-option">
+                  <div>
+                    <strong>Discord</strong>
+                    <span>
+                      {!discordConnection?.configured
+                        ? "Not configured"
+                        : discordConnection.linked
+                          ? discordConnection.username
+                            ? `Connected as ${discordConnection.username}`
+                            : "Connected"
+                          : "Not connected"}
+                    </span>
+                  </div>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={
+                      securitySaving ||
+                      securityLoading ||
+                      !discordConnection?.configured ||
+                      discordConnection.linked
+                    }
+                    onClick={() => void handleDiscordLink()}
+                  >
+                    <MessageCircle size={16} />
+                    {discordConnection?.linked ? "Connected" : "Connect"}
+                  </button>
+                </article>
+              </div>
+              {discordMessage ? <p className="settings-message">{discordMessage}</p> : null}
             </div>
           </section>
 
