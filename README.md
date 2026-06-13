@@ -235,6 +235,8 @@ Add these repository secrets before using the workflow:
 - `TURNSTILE_SECRET_KEY`: production Turnstile secret key.
 - `ADMIN_BOOTSTRAP_PASSWORD`: first-run password for the default admin account. Use a strong unique value, then remove or rotate it after the first successful admin login.
 - `DISCORD_CLIENT_SECRET`: Discord OAuth2 client secret when Discord sign-in is enabled.
+- `DISCORD_CLIENT_ID`: optional secret fallback for the Discord OAuth2 client ID when you prefer to keep all Discord settings in repository secrets.
+- `DISCORD_REDIRECT_URI`: optional secret fallback for the explicit Discord callback URL.
 
 Optional repository variable:
 
@@ -246,7 +248,7 @@ Add these production repository variables before using the workflow:
 - `PUBLIC_ARTWORK_MEDIA_URL`: public artwork media origin, for example `https://art.evilneur.org/`.
 - `PUBLIC_TURNSTILE_SITE_KEY`: production Turnstile site key.
 - `AUTH_EMAIL_FROM`: allowed Cloudflare Email Routing sender.
-- `DISCORD_CLIENT_ID`: Discord OAuth2 client ID when Discord sign-in is enabled.
+- `DISCORD_CLIENT_ID`: Discord OAuth2 client ID when Discord sign-in is enabled. This can also be set as a repository secret.
 
 Optional repository variables override resource names and production settings:
 
@@ -255,7 +257,7 @@ Optional repository variables override resource names and production settings:
 - `R2_BUCKET_NAME`: defaults to `nehub-artworks`.
 - `R2_LOCATION`: optional R2 location hint, such as `wnam`, `enam`, `weur`, or `apac`.
 - `PUBLIC_APP_NAME`: defaults to `NEHub`.
-- `DISCORD_REDIRECT_URI`: explicit Discord callback URL when it differs from `${PUBLIC_APP_URL}/api/auth/discord/callback`.
+- `DISCORD_REDIRECT_URI`: explicit Discord callback URL when it differs from `${PUBLIC_APP_URL}/api/auth/discord/callback`. This can also be set as a repository secret.
 - `MATURE_RESTRICTED_REGIONS`: comma-separated ISO 3166-1 alpha-2 country codes.
 
 The workflow installs dependencies with `npm ci`, runs `npm run check`, builds with `npm run build`, runs `scripts/provision-cloudflare.mjs`, applies pending remote D1 migrations, and deploys with `npx wrangler deploy`. Production deploys fail early if required values are missing or still use local/test placeholders.
