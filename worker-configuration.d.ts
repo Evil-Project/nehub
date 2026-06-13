@@ -10,5 +10,8 @@ interface Env {
   AUTH_EMAIL_FROM: string;
   TURNSTILE_SECRET_KEY?: string;
   ADMIN_BOOTSTRAP_PASSWORD?: string;
+  DISCORD_CLIENT_ID?: string;
+  DISCORD_CLIENT_SECRET?: string;
+  DISCORD_REDIRECT_URI?: string;
   MATURE_RESTRICTED_REGIONS?: string;
 }

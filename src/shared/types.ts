@@ -618,6 +618,7 @@ export type MatureAccess = {
 
 export type AuthConfigResponse = {
   turnstileSiteKey: string;
+  discordEnabled: boolean;
 };
 
 export type AuthSessionResponse = {
@@ -730,7 +731,7 @@ export type PasskeyRegistrationOptionsResponse = {
     attestation: "none";
     authenticatorSelection: {
       residentKey: "preferred";
-      userVerification: "preferred";
+      userVerification: "required";
     };
     excludeCredentials: PasskeyCredentialDescriptor[];
   };
@@ -741,7 +742,7 @@ export type PasskeyAuthenticationOptionsResponse = {
     challenge: string;
     rpId: string;
     timeout: number;
-    userVerification: "preferred";
+    userVerification: "required";
     allowCredentials?: PasskeyCredentialDescriptor[];
   };
 };

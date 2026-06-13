@@ -180,6 +180,18 @@ npx wrangler dev --port 8787 \
   --var ADMIN_BOOTSTRAP_PASSWORD:use-a-strong-local-password
 ```
 
+To enable Discord sign-in, create a Discord OAuth2 application and add
+`https://your-origin.example.com/api/auth/discord/callback` as a redirect URI. Set
+`DISCORD_CLIENT_ID` as a Worker var and keep `DISCORD_CLIENT_SECRET` server-side as a
+Wrangler secret. For local testing, add a localhost redirect URI in Discord and put
+these values in `.dev.vars`:
+
+```bash
+DISCORD_CLIENT_ID=your-discord-client-id
+DISCORD_CLIENT_SECRET=your-discord-client-secret
+DISCORD_REDIRECT_URI=http://localhost:8787/api/auth/discord/callback
+```
+
 Configure Email Routing for Workers and set `AUTH_EMAIL_FROM` to an allowed sender address for your zone. The Worker uses the `EMAIL` `send_email` binding from `wrangler.jsonc` to send verification links, password reset links, email-change confirmations, and account security notices.
 
 Set `MATURE_RESTRICTED_REGIONS` to a comma-separated list of ISO 3166-1 alpha-2 country codes where mature content must be hidden:
@@ -222,6 +234,7 @@ Add these repository secrets before using the workflow:
 - `CLOUDFLARE_API_TOKEN`: Cloudflare API token with permission to create/read D1 databases, create/read R2 buckets, deploy Workers, upload Workers static assets, and upload Worker secrets.
 - `TURNSTILE_SECRET_KEY`: production Turnstile secret key.
 - `ADMIN_BOOTSTRAP_PASSWORD`: first-run password for the default admin account. Use a strong unique value, then remove or rotate it after the first successful admin login.
+- `DISCORD_CLIENT_SECRET`: Discord OAuth2 client secret when Discord sign-in is enabled.
 
 Optional repository variable:
 
@@ -233,6 +246,7 @@ Add these production repository variables before using the workflow:
 - `PUBLIC_ARTWORK_MEDIA_URL`: public artwork media origin, for example `https://art.evilneur.org/`.
 - `PUBLIC_TURNSTILE_SITE_KEY`: production Turnstile site key.
 - `AUTH_EMAIL_FROM`: allowed Cloudflare Email Routing sender.
+- `DISCORD_CLIENT_ID`: Discord OAuth2 client ID when Discord sign-in is enabled.
 
 Optional repository variables override resource names and production settings:
 
@@ -241,6 +255,7 @@ Optional repository variables override resource names and production settings:
 - `R2_BUCKET_NAME`: defaults to `nehub-artworks`.
 - `R2_LOCATION`: optional R2 location hint, such as `wnam`, `enam`, `weur`, or `apac`.
 - `PUBLIC_APP_NAME`: defaults to `NEHub`.
+- `DISCORD_REDIRECT_URI`: explicit Discord callback URL when it differs from `${PUBLIC_APP_URL}/api/auth/discord/callback`.
 - `MATURE_RESTRICTED_REGIONS`: comma-separated ISO 3166-1 alpha-2 country codes.
 
 The workflow installs dependencies with `npm ci`, runs `npm run check`, builds with `npm run build`, runs `scripts/provision-cloudflare.mjs`, applies pending remote D1 migrations, and deploys with `npx wrangler deploy`. Production deploys fail early if required values are missing or still use local/test placeholders.
@@ -252,13 +267,15 @@ Cloudflare Email Routing and the Turnstile widget still need to exist in the Clo
 ## API Surface
 
 - `GET /api/health` reports Worker, D1, and R2 binding status.
-- `GET /api/auth/config` returns the public Turnstile site key.
+- `GET /api/auth/config` returns the public Turnstile site key and whether Discord sign-in is enabled.
 - `GET /api/auth/session` returns the current signed-in user from the HttpOnly session cookie, including storage usage and site-credit state.
 - Authenticated user payloads include account storage state: 10 base image slots, site credits, credit-unlocked slots, legacy bonus slots, total image limit, used images, remaining images, and the last login-credit date.
 - Cookie-authenticated POST routes require the `x-csrf-token` returned by auth/session responses.
 - Rate-limited routes return HTTP `429` with `Retry-After` and a JSON message when a user or IP exceeds the configured action window.
 - `POST /api/auth/register` creates an account with the 10-image base storage limit, validates Turnstile, sends a verification email, and starts a session.
 - `POST /api/auth/login` validates Turnstile, starts a session, and awards a random login site-credit bonus.
+- `GET /api/auth/discord/start` starts Discord OAuth2 sign-in.
+- `GET /api/auth/discord/callback` completes Discord OAuth2 sign-in, links by verified email when needed, and starts a session.
 - `POST /api/auth/password-reset/request` validates Turnstile and sends a non-enumerating password reset email when the account exists.
 - `POST /api/auth/password-reset/confirm` validates Turnstile, consumes a reset token, updates the password, and revokes all sessions.
 - `POST /api/auth/logout` clears the current session.

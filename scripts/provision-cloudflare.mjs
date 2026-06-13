@@ -211,6 +211,8 @@ const vars = {
     "AUTH_EMAIL_FROM",
     isProductionDeploy ? "" : config.vars?.AUTH_EMAIL_FROM
   ),
+  DISCORD_CLIENT_ID: getEnv("DISCORD_CLIENT_ID", config.vars?.DISCORD_CLIENT_ID),
+  DISCORD_REDIRECT_URI: getEnv("DISCORD_REDIRECT_URI", config.vars?.DISCORD_REDIRECT_URI),
   MATURE_RESTRICTED_REGIONS: getEnv(
     "MATURE_RESTRICTED_REGIONS",
     config.vars?.MATURE_RESTRICTED_REGIONS
@@ -226,6 +228,17 @@ if (isProductionDeploy) {
   assertProductionValue("PUBLIC_APP_URL", vars.PUBLIC_APP_URL);
   assertProductionValue("PUBLIC_TURNSTILE_SITE_KEY", vars.PUBLIC_TURNSTILE_SITE_KEY);
   assertProductionValue("AUTH_EMAIL_FROM", vars.AUTH_EMAIL_FROM);
+  const discordClientSecret = getEnv("DISCORD_CLIENT_SECRET");
+  if (vars.DISCORD_CLIENT_ID || discordClientSecret) {
+    assertProductionValue("DISCORD_CLIENT_ID", vars.DISCORD_CLIENT_ID);
+    assertProductionValue("DISCORD_CLIENT_SECRET", requireEnv("DISCORD_CLIENT_SECRET"));
+  }
+  if (vars.DISCORD_REDIRECT_URI) {
+    assertProductionValue("DISCORD_REDIRECT_URI", vars.DISCORD_REDIRECT_URI);
+    if (!vars.DISCORD_REDIRECT_URI.startsWith("https://")) {
+      throw new Error("DISCORD_REDIRECT_URI must use https:// for production deploys");
+    }
+  }
 
   if (!vars.PUBLIC_APP_URL.startsWith("https://")) {
     throw new Error("PUBLIC_APP_URL must use https:// for production deploys");
@@ -309,7 +322,7 @@ mkdirSync(dirname(ciConfigPath), { recursive: true });
 writeFileSync(ciConfigPath, `${JSON.stringify(ciConfig, null, 2)}\n`);
 
 const secrets = {};
-for (const key of ["TURNSTILE_SECRET_KEY", "ADMIN_BOOTSTRAP_PASSWORD"]) {
+for (const key of ["TURNSTILE_SECRET_KEY", "ADMIN_BOOTSTRAP_PASSWORD", "DISCORD_CLIENT_SECRET"]) {
   const value = getEnv(key);
   if (value) {
     secrets[key] = value;

@@ -529,6 +529,7 @@ type SeriesSettingsInput = {
 
 type RouteState = {
   view: ViewMode;
+  routeContext: "illustrations" | "novels";
   username: string;
   artworkId: string;
   novelId: string;
@@ -543,6 +544,7 @@ const routeState = (
   values: Partial<Omit<RouteState, "view">> = {}
 ): RouteState => ({
   view,
+  routeContext: values.routeContext ?? (view === "novels" || view === "novel" ? "novels" : "illustrations"),
   username: values.username ?? "",
   artworkId: values.artworkId ?? "",
   novelId: values.novelId ?? "",
@@ -570,17 +572,58 @@ const getInitialRoute = (): RouteState => {
   }
   if (pathname.startsWith("/novels/")) {
     const novelPath = pathname.slice("/novels/".length).replace(/^\/+|\/+$/g, "");
+    if (novelPath.startsWith("@")) {
+      return routeState("profile", {
+        routeContext: "novels",
+        username: novelPath.slice(1).replace(/^\/+|\/+$/g, "")
+      });
+    }
+    if (novelPath === "notifications") {
+      return routeState("notifications", { routeContext: "novels" });
+    }
+    if (novelPath === "analytics") {
+      return routeState("analytics", { routeContext: "novels" });
+    }
+    if (novelPath === "my-folders") {
+      return routeState("collections", { routeContext: "novels" });
+    }
+    if (novelPath.startsWith("my-folders/")) {
+      return routeState("collection", {
+        routeContext: "novels",
+        collectionId: novelPath.slice("my-folders/".length).replace(/^\/+|\/+$/g, "")
+      });
+    }
+    if (novelPath === "my-series") {
+      return routeState("seriesList", { routeContext: "novels" });
+    }
+    if (novelPath.startsWith("my-series/")) {
+      return routeState("series", {
+        routeContext: "novels",
+        seriesId: novelPath.slice("my-series/".length).replace(/^\/+|\/+$/g, "")
+      });
+    }
+    if (novelPath === "settings/profile") {
+      return routeState("profileSettings", { routeContext: "novels" });
+    }
+    if (novelPath === "settings/privacy-security") {
+      return routeState("privacySecurity", { routeContext: "novels" });
+    }
+    if (novelPath === "dashboard") {
+      return routeState("dashboard", { routeContext: "novels" });
+    }
     if (novelSectionSlugSet.has(novelPath)) {
       return routeState("novels", {
+        routeContext: "novels",
         novelSection: novelPath as NovelSection
       });
     }
     return routeState("novel", {
+      routeContext: "novels",
       novelId: novelPath
     });
   }
   if (pathname === "/novels") {
-    return routeState("novels", { novelSection: "home" });
+    return routeState("novels", { routeContext: "novels", novelSection: "home" });
   }
   if (pathname.startsWith("/tags/")) {
     return routeState("tag", {
@@ -679,6 +722,7 @@ function App() {
   const [passwordResetToken, setPasswordResetToken] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [view, setView] = useState<ViewMode>(initialRoute.view);
+  const [routeContext, setRouteContext] = useState<"illustrations" | "novels">(initialRoute.routeContext);
   const [profileUsername, setProfileUsername] = useState(initialRoute.username);
   const [routeArtworkId, setRouteArtworkId] = useState(initialRoute.artworkId);
   const [routeNovelId, setRouteNovelId] = useState(initialRoute.novelId);
@@ -709,7 +753,7 @@ function App() {
   const [postAuthNovelSection, setPostAuthNovelSection] = useState<NovelSection | null>(null);
   const [galleryLoadingMore, setGalleryLoadingMore] = useState(false);
   const [contentAccessRevision, setContentAccessRevision] = useState(0);
-  const isNovelSection = view === "novels" || view === "novel";
+  const isNovelSection = routeContext === "novels";
   const isIllustrationsSection = view === "illustrations" || view === "artwork";
 
   const refreshAuthSession = useCallback(async () => {
@@ -937,6 +981,8 @@ function App() {
     const verified = params.get("verified");
     const emailChanged = params.get("emailChanged");
     const resetToken = params.get("resetToken");
+    const auth = params.get("auth");
+    const authError = params.get("authError");
     if (verified === "1") {
       setAuthNotice("Email confirmation complete. Your account is verified.");
     } else if (verified === "invalid") {
@@ -955,10 +1001,27 @@ function App() {
       setAuthOpen(true);
       setAuthNotice("Enter a new password to finish resetting your account.");
     }
-    if (verified || emailChanged || resetToken) {
+    if (auth === "discord") {
+      setAuthNotice("Signed in with Discord.");
+    } else if (authError) {
+      const discordAuthErrors: Record<string, string> = {
+        discord_config: "Discord sign-in is not configured.",
+        discord_denied: "Discord sign-in was cancelled.",
+        discord_email: "Discord did not provide a verified email address.",
+        discord_failed: "Discord sign-in could not be completed.",
+        discord_session: "Discord sign-in completed, but a local session could not be created.",
+        discord_state: "Discord sign-in expired. Try again.",
+        discord_suspended: "This account is suspended.",
+        discord_unavailable: "Authentication is temporarily unavailable."
+      };
+      setAuthNotice(discordAuthErrors[authError] ?? "Discord sign-in could not be completed.");
+    }
+    if (verified || emailChanged || resetToken || auth || authError) {
       params.delete("verified");
       params.delete("emailChanged");
       params.delete("resetToken");
+      params.delete("auth");
+      params.delete("authError");
       const nextSearch = params.toString();
       window.history.replaceState(
         null,
@@ -1184,6 +1247,7 @@ function App() {
     if (!canModerate) {
       setDashboardMessage("Moderator access is required.");
       setView("illustrations");
+      setRouteContext("illustrations");
       if (window.location.hash === "#dashboard") {
         window.history.pushState(null, "", window.location.pathname + window.location.search);
       }
@@ -1280,6 +1344,7 @@ function App() {
     const handleRouteChange = () => {
       const route = getInitialRoute();
       setView(route.view);
+      setRouteContext(route.routeContext);
       setProfileUsername(route.username);
       setRouteArtworkId(route.artworkId);
       setRouteNovelId(route.novelId);
@@ -1312,7 +1377,7 @@ function App() {
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setNovelDetail(null);
-    pushRoute("/novels", "novels", "", "home");
+    pushRoute("/novels", "novels", "", "home", "", "", "", "novels");
   }, [authReady, currentUser, routeNovelSection, view]);
 
   useEffect(() => {
@@ -1515,9 +1580,11 @@ function App() {
     novelSection: NovelSection = "home",
     collectionId = "",
     seriesId = "",
-    tag = ""
+    tag = "",
+    nextRouteContext: "illustrations" | "novels" = path.startsWith("/novels") ? "novels" : "illustrations"
   ) => {
     setView(nextView);
+    setRouteContext(nextRouteContext);
     setProfileUsername(username);
     setRouteArtworkId("");
     setRouteNovelId("");
@@ -1604,7 +1671,7 @@ function App() {
       return;
     }
     setNotificationsOpen(false);
-    pushRoute("/notifications", "notifications");
+    pushRoute(isNovelSection ? "/novels/notifications" : "/notifications", "notifications");
   };
 
   const showCollections = () => {
@@ -1613,7 +1680,7 @@ function App() {
       setAuthNotice("Sign in to manage collections.");
       return;
     }
-    pushRoute("/collections", "collections");
+    pushRoute(isNovelSection ? "/novels/my-folders" : "/collections", "collections");
   };
 
   const showCollectionDiscover = () => {
@@ -1627,7 +1694,13 @@ function App() {
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setNovelDetail(null);
-    pushRoute(`/collections/${encodeURIComponent(collectionId)}`, "collection", "", undefined, collectionId);
+    pushRoute(
+      isNovelSection ? `/novels/my-folders/${encodeURIComponent(collectionId)}` : `/collections/${encodeURIComponent(collectionId)}`,
+      "collection",
+      "",
+      "home",
+      collectionId
+    );
   };
 
   const showSeriesList = () => {
@@ -1636,7 +1709,7 @@ function App() {
       setAuthNotice("Sign in to manage series.");
       return;
     }
-    pushRoute("/series", "seriesList");
+    pushRoute(isNovelSection ? "/novels/my-series" : "/series", "seriesList");
   };
 
   const showSeries = (seriesId: string) => {
@@ -1646,7 +1719,14 @@ function App() {
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setNovelDetail(null);
-    pushRoute(`/series/${encodeURIComponent(seriesId)}`, "series", "", undefined, "", seriesId);
+    pushRoute(
+      isNovelSection ? `/novels/my-series/${encodeURIComponent(seriesId)}` : `/series/${encodeURIComponent(seriesId)}`,
+      "series",
+      "",
+      "home",
+      "",
+      seriesId
+    );
   };
 
   const showAnalytics = () => {
@@ -1655,7 +1735,7 @@ function App() {
       setAuthNotice("Sign in to view creator analytics.");
       return;
     }
-    pushRoute("/analytics", "analytics");
+    pushRoute(isNovelSection ? "/novels/analytics" : "/analytics", "analytics");
   };
 
   const showDashboard = () => {
@@ -1664,7 +1744,7 @@ function App() {
       openAuth("login");
       return;
     }
-    pushRoute("/#dashboard", "dashboard");
+    pushRoute(isNovelSection ? "/novels/dashboard" : "/#dashboard", "dashboard");
   };
 
   const showProfile = (username: string) => {
@@ -1672,7 +1752,7 @@ function App() {
     if (!cleaned) {
       return;
     }
-    pushRoute(`/@${encodeURIComponent(cleaned)}`, "profile", cleaned);
+    pushRoute(isNovelSection ? `/novels/@${encodeURIComponent(cleaned)}` : `/@${encodeURIComponent(cleaned)}`, "profile", cleaned);
   };
 
   const showProfileSettings = () => {
@@ -1680,7 +1760,7 @@ function App() {
       openAuth("login");
       return;
     }
-    pushRoute("/settings/profile", "profileSettings");
+    pushRoute(isNovelSection ? "/novels/settings/profile" : "/settings/profile", "profileSettings");
   };
 
   const showPrivacySecurity = () => {
@@ -1688,11 +1768,18 @@ function App() {
       openAuth("login");
       return;
     }
-    pushRoute("/settings/privacy-security", "privacySecurity");
+    pushRoute(isNovelSection ? "/novels/settings/privacy-security" : "/settings/privacy-security", "privacySecurity");
   };
 
   const showPolicy = (nextView: "terms" | "privacy") => {
-    pushRoute(nextView === "terms" ? "/terms" : "/privacy", nextView);
+    if (isNovelSection) {
+      openNovelSection(nextView);
+      return;
+    }
+    pushRoute(
+      nextView === "terms" ? "/terms" : "/privacy",
+      nextView
+    );
   };
 
   const openArtwork = (artwork: Artwork) => {
@@ -1700,6 +1787,7 @@ function App() {
     setRouteArtworkId(artwork.id);
     setRouteNovelId("");
     setView("illustrations");
+    setRouteContext("illustrations");
     setProfileUsername("");
     setRouteCollectionId("");
     setRouteSeriesId("");
@@ -1716,6 +1804,7 @@ function App() {
     setRouteArtworkId(artworkId);
     setRouteNovelId("");
     setView("artwork");
+    setRouteContext("illustrations");
     setProfileUsername("");
     setRouteCollectionId("");
     setRouteSeriesId("");
@@ -1740,6 +1829,7 @@ function App() {
     setRouteArtworkId("");
     setRouteNovelId(novelId);
     setView("novel");
+    setRouteContext("novels");
     setProfileUsername("");
     setRouteCollectionId("");
     setRouteSeriesId("");
@@ -3154,7 +3244,7 @@ function App() {
               </button>
               <button type="button">Manga</button>
               <button
-                className={classNames((view === "novels" || view === "novel") && "is-active")}
+                className={classNames(isNovelSection && "is-active")}
                 type="button"
                 onClick={() => showNovels("home")}
               >
@@ -3936,6 +4026,7 @@ function App() {
         <AuthDialog
           mode={authMode}
           siteKey={authConfig?.turnstileSiteKey ?? ""}
+          discordEnabled={authConfig?.discordEnabled ?? false}
           initialResetToken={passwordResetToken}
           onClose={() => setAuthOpen(false)}
           onModeChange={setAuthMode}
@@ -4380,6 +4471,7 @@ function TurnstileWidget({ siteKey, action, onToken, compact = false }: Turnstil
 type AuthDialogProps = {
   mode: AuthMode;
   siteKey: string;
+  discordEnabled: boolean;
   initialResetToken: string;
   onClose: () => void;
   onModeChange: (mode: AuthMode) => void;
@@ -4390,6 +4482,7 @@ type AuthDialogProps = {
 function AuthDialog({
   mode,
   siteKey,
+  discordEnabled,
   initialResetToken,
   onClose,
   onModeChange,
@@ -4618,6 +4711,11 @@ function AuthDialog({
     }
   };
 
+  const handleDiscordSignIn = () => {
+    const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    window.location.assign(`/api/auth/discord/start?returnTo=${encodeURIComponent(returnTo)}`);
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (submitting) {
@@ -4737,6 +4835,17 @@ function AuthDialog({
               </div>
 
               <form className="auth-form" onSubmit={handleSubmit}>
+                {discordEnabled ? (
+                  <button
+                    className="secondary-button auth-submit auth-provider-button"
+                    type="button"
+                    disabled={submitting}
+                    onClick={handleDiscordSignIn}
+                  >
+                    <MessageCircle size={17} />
+                    Continue with Discord
+                  </button>
+                ) : null}
                 {isRegister ? (
                   <>
                     <label>
