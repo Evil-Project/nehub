@@ -12501,7 +12501,7 @@ app.get("/api/admin/stats", async (context) => {
     return admin.response;
   }
 
-  const [accountRows, contentRows, recentUsers] = await Promise.all([
+  const [accountRows, contentRows, novelContentRows, recentUsers, recentNovels] = await Promise.all([
     admin.db
       .prepare(
         `SELECT
@@ -12537,6 +12537,28 @@ app.get("/api/admin/stats", async (context) => {
     admin.db
       .prepare(
         `SELECT
+          COUNT(*) AS novels,
+          SUM(CASE WHEN COALESCE(is_draft, 0) = 0 THEN 1 ELSE 0 END) AS published_novels,
+          COALESCE(SUM(like_count), 0) AS novel_likes,
+          COALESCE(SUM(bookmark_count), 0) AS novel_bookmarks,
+          COALESCE(SUM(view_count), 0) AS novel_views,
+          COALESCE(SUM(word_count), 0) AS novel_words,
+          COUNT(DISTINCT creator_id) AS novel_creators
+         FROM novels
+         WHERE deleted_at IS NULL`
+      )
+      .first<{
+        novels: number;
+        published_novels: number | null;
+        novel_likes: number | null;
+        novel_bookmarks: number | null;
+        novel_views: number | null;
+        novel_words: number | null;
+        novel_creators: number;
+      }>(),
+    admin.db
+      .prepare(
+        `SELECT
           id,
           email,
           username,
@@ -12555,10 +12577,54 @@ app.get("/api/admin/stats", async (context) => {
          ORDER BY datetime(created_at) DESC
          LIMIT 8`
       )
-      .all<Omit<UserRow, "password_hash">>()
+      .all<Omit<UserRow, "password_hash">>(),
+    admin.db
+      .prepare(
+        `SELECT
+          novels.id,
+          novels.title,
+          novels.cover_color,
+          novels.word_count,
+          novels.read_minutes,
+          novels.like_count,
+          novels.bookmark_count,
+          novels.view_count,
+          novels.mature_rating,
+          novels.is_draft,
+          novels.created_at,
+          creators.handle AS creator_handle,
+          creators.display_name AS creator_display_name,
+          (
+            SELECT COUNT(*)
+            FROM novel_comments
+            WHERE novel_comments.novel_id = novels.id
+              AND novel_comments.deleted_at IS NULL
+          ) AS comment_count
+         FROM novels
+         JOIN creators ON creators.id = novels.creator_id
+         WHERE novels.deleted_at IS NULL
+         ORDER BY datetime(novels.created_at) DESC, novels.id DESC
+         LIMIT 8`
+      )
+      .all<{
+        id: string;
+        title: string;
+        cover_color: string | null;
+        word_count: number | null;
+        read_minutes: number | null;
+        like_count: number | null;
+        bookmark_count: number | null;
+        view_count: number | null;
+        mature_rating: string | null;
+        is_draft: number | null;
+        created_at: string;
+        creator_handle: string;
+        creator_display_name: string;
+        comment_count: number | null;
+      }>()
   ]);
 
-  const [sessionCount, pendingVerificationCount] = await Promise.all([
+  const [sessionCount, pendingVerificationCount, novelCommentCount] = await Promise.all([
     admin.db
       .prepare(
         `SELECT COUNT(*) AS count
@@ -12572,6 +12638,15 @@ app.get("/api/admin/stats", async (context) => {
          FROM email_verification_tokens
          WHERE consumed_at IS NULL
            AND datetime(expires_at) > datetime('now')`
+      )
+      .first<{ count: number }>(),
+    admin.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM novel_comments
+         JOIN novels ON novels.id = novel_comments.novel_id
+         WHERE novel_comments.deleted_at IS NULL
+           AND novels.deleted_at IS NULL`
       )
       .first<{ count: number }>()
   ]);
@@ -12590,14 +12665,40 @@ app.get("/api/admin/stats", async (context) => {
       artworks: contentRows?.artworks ?? 0,
       creators: contentRows?.creators ?? 0,
       likes: contentRows?.likes ?? 0,
-      views: contentRows?.views ?? 0
+      views: contentRows?.views ?? 0,
+      novels: novelContentRows?.novels ?? 0,
+      publishedNovels: novelContentRows?.published_novels ?? 0,
+      novelCreators: novelContentRows?.novel_creators ?? 0,
+      novelLikes: novelContentRows?.novel_likes ?? 0,
+      novelBookmarks: novelContentRows?.novel_bookmarks ?? 0,
+      novelViews: novelContentRows?.novel_views ?? 0,
+      novelComments: novelCommentCount?.count ?? 0,
+      novelWords: novelContentRows?.novel_words ?? 0
     },
     storage: {
       d1: Boolean(context.env.DB),
       r2: Boolean(context.env.ARTWORKS),
       email: Boolean(context.env.EMAIL)
     },
-    recentUsers: recentUsers.results.map(adminUserFromRow)
+    recentUsers: recentUsers.results.map(adminUserFromRow),
+    recentNovels: recentNovels.results.map((row) => ({
+      id: row.id,
+      title: row.title,
+      coverColor: row.cover_color || "#fa9ebc",
+      creator: {
+        handle: row.creator_handle,
+        displayName: row.creator_display_name
+      },
+      wordCount: row.word_count ?? 0,
+      readMinutes: row.read_minutes ?? Math.max(1, Math.ceil((row.word_count ?? 0) / 220)),
+      likeCount: row.like_count ?? 0,
+      bookmarkCount: row.bookmark_count ?? 0,
+      viewCount: row.view_count ?? 0,
+      commentCount: row.comment_count ?? 0,
+      matureRating: asMatureRating(row.mature_rating),
+      isDraft: Boolean(row.is_draft),
+      createdAt: row.created_at
+    }))
   });
 });
 
@@ -20177,13 +20278,289 @@ const indexHtml = async (context: AppContext) => {
   return { assetResponse, html: await assetResponse.text() };
 };
 
+type SeoMeta = {
+  title: string;
+  description: string;
+  path?: string;
+  type?: "website" | "article";
+  image?: string;
+  robots?: string;
+};
+
+const stripSeoMeta = (html: string) =>
+  html
+    .replace(/<title>.*?<\/title>\s*/i, "")
+    .replace(
+      /\s*<meta\s+(?:name|property)="(?:description|robots|og:[^"]+|twitter:[^"]+)"[^>]*>\s*/gi,
+      ""
+    )
+    .replace(/\s*<link\s+rel="canonical"[^>]*>\s*/gi, "");
+
+const appUrlForPath = (context: AppContext, path: string) =>
+  new URL(path, context.env.PUBLIC_APP_URL).toString();
+
+const injectSeoMeta = (context: AppContext, html: string, meta: SeoMeta) => {
+  const appName = context.env.PUBLIC_APP_NAME;
+  const title = meta.title === appName ? appName : `${meta.title} · ${appName}`;
+  const canonicalUrl = appUrlForPath(context, meta.path ?? context.req.path);
+  const imageUrl = meta.image ? new URL(meta.image, context.env.PUBLIC_APP_URL).toString() : "";
+  const imageMeta = imageUrl
+    ? `<meta property="og:image" content="${escapeHtml(imageUrl)}" />
+    <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />`
+    : "";
+  const tags = `<title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(meta.description)}" />
+    <meta name="robots" content="${escapeHtml(meta.robots ?? "index,follow")}" />
+    <link rel="canonical" href="${escapeHtml(canonicalUrl)}" />
+    <meta property="og:type" content="${meta.type ?? "website"}" />
+    <meta property="og:site_name" content="${escapeHtml(appName)}" />
+    <meta property="og:title" content="${escapeHtml(title)}" />
+    <meta property="og:description" content="${escapeHtml(meta.description)}" />
+    <meta property="og:url" content="${escapeHtml(canonicalUrl)}" />
+    ${imageMeta}
+    <meta name="twitter:card" content="${imageUrl ? "summary_large_image" : "summary"}" />
+    <meta name="twitter:title" content="${escapeHtml(title)}" />
+    <meta name="twitter:description" content="${escapeHtml(meta.description)}" />`;
+  return stripSeoMeta(html).replace("</head>", `    ${tags}\n  </head>`);
+};
+
+const shellSeoByPath: Record<string, Omit<SeoMeta, "path">> = {
+  "/": {
+    title: "NEHub - Illustrations and Novels",
+    description:
+      "Discover illustrations, serialized fiction, creators, tags, rankings, and reading lists on NEHub."
+  },
+  "/rankings": {
+    title: "Illustration Rankings",
+    description: "Browse trending NEHub illustrations ranked by community activity."
+  },
+  "/creators": {
+    title: "Creators",
+    description: "Find illustrators and writers publishing on NEHub."
+  },
+  "/collections": {
+    title: "Collections",
+    description: "Organize and browse NEHub artwork collections."
+  },
+  "/collections/discover": {
+    title: "Discover Collections",
+    description: "Explore public NEHub collections curated by the community."
+  },
+  "/series": {
+    title: "Artwork Series",
+    description: "Browse connected artwork series from NEHub creators."
+  },
+  "/tags": {
+    title: "Tags",
+    description: "Explore NEHub artwork and novel tags."
+  },
+  "/novels": {
+    title: "Novels",
+    description: "Read serialized novels, short stories, prose, and poetry from NEHub writers."
+  },
+  "/novels/home": {
+    title: "Latest Novels",
+    description: "Read the latest chapters, stories, prose, and poetry published on NEHub."
+  },
+  "/novels/following": {
+    title: "Following Novels",
+    description: "Follow updates from NEHub writers you subscribe to.",
+    robots: "noindex,follow"
+  },
+  "/novels/creators": {
+    title: "Novel Creators",
+    description: "Find writers publishing serialized fiction, short stories, prose, and poetry on NEHub."
+  },
+  "/novels/tags": {
+    title: "Novel Tags",
+    description: "Browse NEHub fiction tags across serialized novels, prose, and poetry."
+  },
+  "/novels/rankings": {
+    title: "Novel Rankings",
+    description: "Explore ranked NEHub novels by reads, likes, and bookmarks."
+  },
+  "/novels/bookmarks": {
+    title: "Novel Bookmarks",
+    description: "Open your saved NEHub novels and reading queue.",
+    robots: "noindex,follow"
+  },
+  "/novels/collections": {
+    title: "Reading Lists",
+    description: "Create and browse NEHub reading lists for novels and stories."
+  },
+  "/terms": {
+    title: "Terms",
+    description: "Read the NEHub terms for creators, readers, and community members."
+  },
+  "/privacy": {
+    title: "Privacy Policy",
+    description: "Read how NEHub handles account, artwork, novel, and community data."
+  },
+  "/novels/terms": {
+    title: "Novel Terms",
+    description: "Read the NEHub terms for novel publishing and reading features."
+  },
+  "/novels/privacy": {
+    title: "Novel Privacy",
+    description: "Read how NEHub handles novel, reading list, and reading progress data."
+  }
+};
+
+const shellSeoForRequest = (context: AppContext): SeoMeta => {
+  const path = context.req.path;
+  const mapped = shellSeoByPath[path];
+  if (mapped) {
+    return { ...mapped, path };
+  }
+  if (path.startsWith("/tags/")) {
+    const tag = decodeURIComponent(path.replace(/^\/tags\//, "")).replace(/\s+/g, " ");
+    return {
+      title: `#${tag}`,
+      description: `Discover NEHub illustrations and novels tagged #${tag}.`,
+      path
+    };
+  }
+  if (path.startsWith("/@")) {
+    const username = decodeURIComponent(path.slice(2));
+    return {
+      title: `@${username}`,
+      description: `View @${username}'s NEHub profile, artwork, novels, and collections.`,
+      path
+    };
+  }
+  return {
+    title: context.env.PUBLIC_APP_NAME,
+    description:
+      "NEHub is a Cloudflare-native community for illustrations, serialized fiction, creators, tags, and rankings.",
+    path
+  };
+};
+
 async function appShellResponse(context: AppContext) {
   const { assetResponse, html } = await indexHtml(context);
   if (!assetResponse.ok) {
     return assetResponse;
   }
-  return indexHtmlResponse(context, html);
+  return indexHtmlResponse(context, injectSeoMeta(context, html, shellSeoForRequest(context)));
 }
+
+app.get("/robots.txt", (context) => {
+  const baseUrl = context.env.PUBLIC_APP_URL.replace(/\/$/, "");
+  return new Response(
+    [
+      "User-agent: *",
+      "Allow: /",
+      "Disallow: /api/",
+      "Disallow: /dashboard",
+      "Disallow: /settings/",
+      "Disallow: /notifications",
+      "Disallow: /analytics",
+      "Disallow: /novels/dashboard",
+      "Disallow: /novels/settings/",
+      "Disallow: /novels/notifications",
+      "Disallow: /novels/analytics",
+      `Sitemap: ${baseUrl}/sitemap.xml`,
+      ""
+    ].join("\n"),
+    {
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "public, max-age=3600"
+      }
+    }
+  );
+});
+
+const sitemapDate = (value: string | null | undefined) => {
+  if (!value) {
+    return new Date().toISOString().slice(0, 10);
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value.slice(0, 10) : date.toISOString().slice(0, 10);
+};
+
+const sitemapEntry = (context: AppContext, path: string, lastmod?: string | null, priority = "0.7") =>
+  `  <url>
+    <loc>${escapeXml(appUrlForPath(context, path))}</loc>
+    <lastmod>${escapeXml(sitemapDate(lastmod))}</lastmod>
+    <priority>${priority}</priority>
+  </url>`;
+
+app.get("/sitemap.xml", async (context) => {
+  const now = new Date().toISOString();
+  const entries = [
+    sitemapEntry(context, "/", now, "1.0"),
+    sitemapEntry(context, "/rankings", now, "0.8"),
+    sitemapEntry(context, "/creators", now, "0.8"),
+    sitemapEntry(context, "/collections/discover", now, "0.7"),
+    sitemapEntry(context, "/series", now, "0.7"),
+    sitemapEntry(context, "/novels", now, "0.9"),
+    sitemapEntry(context, "/novels/rankings", now, "0.8"),
+    sitemapEntry(context, "/novels/creators", now, "0.8"),
+    sitemapEntry(context, "/novels/tags", now, "0.7")
+  ];
+
+  if (context.env.DB) {
+    try {
+      const artworkRows = await context.env.DB.prepare(
+        `SELECT artworks.id, artworks.created_at
+         FROM artworks
+         JOIN users AS creator_user ON creator_user.id = artworks.creator_id
+         WHERE artworks.hidden_at IS NULL
+           AND COALESCE(artworks.visibility, 'public') = 'public'
+           AND COALESCE(artworks.review_status, 'approved') = 'approved'
+           AND creator_user.profile_visibility = 'public'
+         ORDER BY datetime(artworks.created_at) DESC, artworks.id DESC
+         LIMIT 500`
+      ).all<{ id: string; created_at: string }>();
+      for (const row of artworkRows.results) {
+        entries.push(sitemapEntry(context, `/artworks/${encodeURIComponent(row.id)}`, row.created_at, "0.6"));
+      }
+    } catch (error) {
+      console.warn("Unable to include artworks in sitemap", error);
+    }
+
+    try {
+      const novelRows = await context.env.DB.prepare(
+        `SELECT novels.id, novels.updated_at, novels.created_at
+         FROM novels
+         JOIN users AS creator_user ON creator_user.id = novels.creator_id
+         WHERE novels.deleted_at IS NULL
+           AND COALESCE(novels.is_draft, 0) = 0
+           AND COALESCE(novels.visibility, 'public') = 'public'
+           AND creator_user.profile_visibility = 'public'
+         ORDER BY datetime(novels.updated_at) DESC, novels.id DESC
+         LIMIT 500`
+      ).all<{ id: string; updated_at: string | null; created_at: string }>();
+      for (const row of novelRows.results) {
+        entries.push(
+          sitemapEntry(
+            context,
+            `/novels/${encodeURIComponent(row.id)}`,
+            row.updated_at ?? row.created_at,
+            "0.7"
+          )
+        );
+      }
+    } catch (error) {
+      console.warn("Unable to include novels in sitemap", error);
+    }
+  }
+
+  return new Response(
+    `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${entries.join("\n")}
+</urlset>
+`,
+    {
+      headers: {
+        "content-type": "application/xml; charset=utf-8",
+        "cache-control": "public, max-age=3600"
+      }
+    }
+  );
+});
 
 for (const path of [
   "/",
@@ -20208,85 +20585,16 @@ app.get("/collections/:id", appShellResponse);
 app.get("/series/:id", appShellResponse);
 app.get("/tags/:tag", appShellResponse);
 
-app.get("/novels", async (context) => {
-  const { assetResponse, html } = await indexHtml(context);
-  if (!assetResponse.ok) {
-    return assetResponse;
-  }
-  return indexHtmlResponse(context, html);
-});
-
-app.get("/novels/home", async (context) => {
-  const { assetResponse, html } = await indexHtml(context);
-  if (!assetResponse.ok) {
-    return assetResponse;
-  }
-  return indexHtmlResponse(context, html);
-});
-
-app.get("/novels/following", async (context) => {
-  const { assetResponse, html } = await indexHtml(context);
-  if (!assetResponse.ok) {
-    return assetResponse;
-  }
-  return indexHtmlResponse(context, html);
-});
-
-app.get("/novels/creators", async (context) => {
-  const { assetResponse, html } = await indexHtml(context);
-  if (!assetResponse.ok) {
-    return assetResponse;
-  }
-  return indexHtmlResponse(context, html);
-});
-
-app.get("/novels/tags", async (context) => {
-  const { assetResponse, html } = await indexHtml(context);
-  if (!assetResponse.ok) {
-    return assetResponse;
-  }
-  return indexHtmlResponse(context, html);
-});
-
-app.get("/novels/rankings", async (context) => {
-  const { assetResponse, html } = await indexHtml(context);
-  if (!assetResponse.ok) {
-    return assetResponse;
-  }
-  return indexHtmlResponse(context, html);
-});
-
-app.get("/novels/bookmarks", async (context) => {
-  const { assetResponse, html } = await indexHtml(context);
-  if (!assetResponse.ok) {
-    return assetResponse;
-  }
-  return indexHtmlResponse(context, html);
-});
-
-app.get("/novels/collections", async (context) => {
-  const { assetResponse, html } = await indexHtml(context);
-  if (!assetResponse.ok) {
-    return assetResponse;
-  }
-  return indexHtmlResponse(context, html);
-});
-
-app.get("/novels/terms", async (context) => {
-  const { assetResponse, html } = await indexHtml(context);
-  if (!assetResponse.ok) {
-    return assetResponse;
-  }
-  return indexHtmlResponse(context, html);
-});
-
-app.get("/novels/privacy", async (context) => {
-  const { assetResponse, html } = await indexHtml(context);
-  if (!assetResponse.ok) {
-    return assetResponse;
-  }
-  return indexHtmlResponse(context, html);
-});
+app.get("/novels", appShellResponse);
+app.get("/novels/home", appShellResponse);
+app.get("/novels/following", appShellResponse);
+app.get("/novels/creators", appShellResponse);
+app.get("/novels/tags", appShellResponse);
+app.get("/novels/rankings", appShellResponse);
+app.get("/novels/bookmarks", appShellResponse);
+app.get("/novels/collections", appShellResponse);
+app.get("/novels/terms", appShellResponse);
+app.get("/novels/privacy", appShellResponse);
 
 app.get("/novels/notifications", appShellResponse);
 app.get("/novels/analytics", appShellResponse);
@@ -20383,19 +20691,12 @@ app.get("/novels/:id", async (context) => {
     const description = metaNovel.mature
       ? "Open NEHub to read this work with your mature-content settings."
       : metaNovel.excerpt || `Novel by ${metaNovel.creator.displayName} on ${context.env.PUBLIC_APP_NAME}.`;
-    const url = new URL(context.req.path, context.env.PUBLIC_APP_URL).toString();
-    const meta = `<title>${escapeHtml(title)} · ${escapeHtml(context.env.PUBLIC_APP_NAME)}</title>
-    <meta name="description" content="${escapeHtml(description)}" />
-    <meta property="og:type" content="article" />
-    <meta property="og:site_name" content="${escapeHtml(context.env.PUBLIC_APP_NAME)}" />
-    <meta property="og:title" content="${escapeHtml(title)}" />
-    <meta property="og:description" content="${escapeHtml(description)}" />
-    <meta property="og:url" content="${escapeHtml(url)}" />
-    <meta name="twitter:card" content="summary" />`;
-    html = html
-      .replace(/<title>.*?<\/title>/, "")
-      .replace(/<meta\s+name="description"[^>]*>\s*/i, "")
-      .replace("</head>", `    ${meta}\n  </head>`);
+    html = injectSeoMeta(context, html, {
+      title,
+      description,
+      type: "article",
+      robots: metaNovel.mature ? "noindex,follow" : "index,follow"
+    });
   }
 
   return indexHtmlResponse(context, html);
@@ -20465,27 +20766,13 @@ app.get("/artworks/:id", async (context) => {
         const image = mature
           ? ""
           : new URL(artwork.thumbnail_url, context.env.PUBLIC_APP_URL).toString();
-        const url = new URL(context.req.path, context.env.PUBLIC_APP_URL).toString();
-        const imageMeta = image
-          ? `<meta property="og:image" content="${escapeHtml(image)}" />
-    <meta name="twitter:image" content="${escapeHtml(image)}" />`
-          : "";
-        const meta = `<title>${escapeHtml(title)} · ${escapeHtml(context.env.PUBLIC_APP_NAME)}</title>
-    <meta name="description" content="${escapeHtml(description)}" />
-    <meta property="og:type" content="article" />
-    <meta property="og:site_name" content="${escapeHtml(context.env.PUBLIC_APP_NAME)}" />
-    <meta property="og:title" content="${escapeHtml(title)}" />
-    <meta property="og:description" content="${escapeHtml(description)}" />
-    <meta property="og:url" content="${escapeHtml(url)}" />
-    ${imageMeta}
-    <meta name="twitter:card" content="${image ? "summary_large_image" : "summary"}" />`;
-        html = html
-          .replace(/<title>.*?<\/title>/, "")
-          .replace(
-            /<meta\s+name="description"[^>]*>\s*/i,
-            ""
-          )
-          .replace("</head>", `    ${meta}\n  </head>`);
+        html = injectSeoMeta(context, html, {
+          title,
+          description,
+          type: "article",
+          image,
+          robots: mature ? "noindex,follow" : "index,follow"
+        });
       }
     } catch (error) {
       console.warn("Unable to inject artwork metadata", error);

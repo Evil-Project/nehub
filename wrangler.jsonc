@@ -29,10 +29,12 @@
       "/novels/*",
       "/privacy",
       "/rankings",
+      "/robots.txt",
       "/series",
       "/series/*",
       "/security-confirmation",
       "/settings/*",
+      "/sitemap.xml",
       "/tags/*",
       "/terms"
     ]

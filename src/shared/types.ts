@@ -1013,6 +1013,25 @@ export type AdminUsersResponse = {
   totalCount: number;
 };
 
+export type AdminRecentNovel = {
+  id: string;
+  title: string;
+  coverColor: string;
+  creator: {
+    handle: string;
+    displayName: string;
+  };
+  wordCount: number;
+  readMinutes: number;
+  likeCount: number;
+  bookmarkCount: number;
+  viewCount: number;
+  commentCount: number;
+  matureRating: MatureRating;
+  isDraft: boolean;
+  createdAt: string;
+};
+
 export type AdminStatsResponse = {
   accounts: {
     totalUsers: number;
@@ -1028,6 +1047,14 @@ export type AdminStatsResponse = {
     creators: number;
     likes: number;
     views: number;
+    novels: number;
+    publishedNovels: number;
+    novelCreators: number;
+    novelLikes: number;
+    novelBookmarks: number;
+    novelViews: number;
+    novelComments: number;
+    novelWords: number;
   };
   storage: {
     d1: boolean;
@@ -1035,6 +1062,7 @@ export type AdminStatsResponse = {
     email: boolean;
   };
   recentUsers: AdminUserSummary[];
+  recentNovels: AdminRecentNovel[];
 };
 
 export type AdminUserActionResponse = {

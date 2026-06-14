@@ -4764,7 +4764,7 @@ function App() {
             creatorsCount={gallery?.creators.length ?? 0}
             totalLikes={totalLikes}
             totalViews={totalViews}
-            onUpload={openUpload}
+            onUpload={routeContext === "novels" ? () => openNovelForm() : openUpload}
             onResolveReport={handleResolveReport}
             onReportStatusChange={setAdminReportStatus}
             onReportTargetChange={setAdminReportTarget}
@@ -7044,6 +7044,7 @@ function Dashboard({
   );
   const contentStats = adminStats?.content;
   const accountStats = adminStats?.accounts;
+  const recentNovels = adminStats?.recentNovels ?? [];
   const reports = adminReports?.reports ?? [];
   const auditEntries = adminAuditLog?.entries ?? [];
   const pendingReviewArtworks = adminArtworkReviews?.artworks ?? [];
@@ -7076,8 +7077,8 @@ function Dashboard({
           {message ? <p className="dashboard-message">{message}</p> : null}
         </div>
         <button className="primary-button" type="button" onClick={onUpload}>
-          <ImageUp size={17} />
-          {novelContext ? "Post work" : "Post artwork"}
+          {novelContext ? <NotebookText size={17} /> : <ImageUp size={17} />}
+          {novelContext ? "Post novel" : "Post artwork"}
         </button>
       </div>
 
@@ -7168,11 +7169,52 @@ function Dashboard({
             Content metrics
           </div>
           <div className="metric-grid">
-            <MetricTile label="Artworks" value={formatCount(contentStats?.artworks ?? artworks.length)} />
-            <MetricTile label="Creators" value={formatCount(contentStats?.creators ?? creatorsCount)} />
-            <MetricTile label="Tags" value={formatCount(tagsCount)} />
-            <MetricTile label="Likes" value={formatCount(contentStats?.likes ?? totalLikes)} />
-            <MetricTile label="Views" value={formatCount(contentStats?.views ?? totalViews)} />
+            {novelContext ? (
+              <>
+                <MetricTile label="Novels" value={formatCount(contentStats?.novels ?? 0)} />
+                <MetricTile
+                  label="Published"
+                  value={formatCount(contentStats?.publishedNovels ?? 0)}
+                />
+                <MetricTile
+                  label="Novelists"
+                  value={formatCount(contentStats?.novelCreators ?? 0)}
+                />
+                <MetricTile
+                  label="Words"
+                  value={formatCount(contentStats?.novelWords ?? 0)}
+                />
+                <MetricTile
+                  label="Reads"
+                  value={formatCount(contentStats?.novelViews ?? 0)}
+                />
+                <MetricTile
+                  label="Bookmarks"
+                  value={formatCount(contentStats?.novelBookmarks ?? 0)}
+                />
+                <MetricTile
+                  label="Likes"
+                  value={formatCount(contentStats?.novelLikes ?? 0)}
+                />
+                <MetricTile
+                  label="Comments"
+                  value={formatCount(contentStats?.novelComments ?? 0)}
+                />
+              </>
+            ) : (
+              <>
+                <MetricTile label="Artworks" value={formatCount(contentStats?.artworks ?? artworks.length)} />
+                <MetricTile label="Creators" value={formatCount(contentStats?.creators ?? creatorsCount)} />
+                <MetricTile label="Tags" value={formatCount(tagsCount)} />
+                <MetricTile label="Likes" value={formatCount(contentStats?.likes ?? totalLikes)} />
+                <MetricTile label="Views" value={formatCount(contentStats?.views ?? totalViews)} />
+                <MetricTile label="Novels" value={formatCount(contentStats?.novels ?? 0)} />
+                <MetricTile
+                  label="Novel reads"
+                  value={formatCount(contentStats?.novelViews ?? 0)}
+                />
+              </>
+            )}
             <MetricTile label={`${reportStatusLabel} reports`} value={formatCount(filteredReportTotal)} />
             <MetricTile label="Source" value={source.toUpperCase()} />
           </div>
@@ -7202,6 +7244,11 @@ function Dashboard({
             label="Gallery data"
             value={source === "d1" ? "Persisted" : "Empty"}
             active={source === "d1"}
+          />
+          <StatusLine
+            label="Novel content"
+            value={`${formatCount(contentStats?.novels ?? 0)} works`}
+            active={Boolean(contentStats?.novels)}
           />
         </section>
 
@@ -7561,25 +7608,70 @@ function Dashboard({
 
         <section className="dashboard-panel recent-panel">
           <div className="panel-title">
-            <Grid3X3 size={18} />
-            Recent works
+            {novelContext ? <NotebookText size={18} /> : <Grid3X3 size={18} />}
+            {novelContext ? "Recent novels" : "Recent works"}
           </div>
-          {recent.slice(0, 6).map((artwork) => (
-            <div className="recent-row" key={artwork.id}>
-              <img
-                src={artwork.thumbnailUrl}
-                alt=""
-                loading="lazy"
-                decoding="async"
-              />
-              <div>
-                <strong>{artwork.title}</strong>
-                <span>
-                  {dateFormat.format(new Date(artwork.createdAt))} · {formatCount(artwork.viewCount)} views
-                </span>
-              </div>
-            </div>
-          ))}
+          {novelContext ? (
+            <>
+              {recentNovels.map((novel) => (
+                <div className="recent-row recent-novel-row" key={novel.id}>
+                  <span className="recent-novel-mark" style={{ background: novel.coverColor }}>
+                    {novel.title.slice(0, 1).toUpperCase()}
+                  </span>
+                  <div>
+                    <strong>{novel.title}</strong>
+                    <span>
+                      @{novel.creator.handle} · {formatCount(novel.wordCount)} words ·{" "}
+                      {formatCount(novel.viewCount)} reads
+                      {novel.isDraft ? " · draft" : ""}
+                      {novel.matureRating !== "general" ? ` · ${matureRatingLabel(novel.matureRating)}` : ""}
+                    </span>
+                  </div>
+                </div>
+              ))}
+              {adminStats && recentNovels.length === 0 ? (
+                <p className="muted">No novels have been posted yet.</p>
+              ) : null}
+              {!adminStats ? <p className="muted">Loading novels.</p> : null}
+            </>
+          ) : (
+            <>
+              {recent.slice(0, 6).map((artwork) => (
+                <div className="recent-row" key={artwork.id}>
+                  <img
+                    src={artwork.thumbnailUrl}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <div>
+                    <strong>{artwork.title}</strong>
+                    <span>
+                      {dateFormat.format(new Date(artwork.createdAt))} · {formatCount(artwork.viewCount)} views
+                    </span>
+                  </div>
+                </div>
+              ))}
+              <div className="recent-section-title">Recent novels</div>
+              {recentNovels.slice(0, 4).map((novel) => (
+                <div className="recent-row recent-novel-row" key={novel.id}>
+                  <span className="recent-novel-mark" style={{ background: novel.coverColor }}>
+                    {novel.title.slice(0, 1).toUpperCase()}
+                  </span>
+                  <div>
+                    <strong>{novel.title}</strong>
+                    <span>
+                      @{novel.creator.handle} · {formatCount(novel.wordCount)} words ·{" "}
+                      {formatCount(novel.viewCount)} reads
+                    </span>
+                  </div>
+                </div>
+              ))}
+              {adminStats && recentNovels.length === 0 ? (
+                <p className="muted">No novels have been posted yet.</p>
+              ) : null}
+            </>
+          )}
         </section>
       </div>
     </section>
@@ -17356,13 +17448,19 @@ function NovelFormDrawer({
               </select>
             </label>
           </div>
-          <label className="checkbox-row">
+          <label className={classNames("draft-toggle", input.isDraft && "is-active")}>
             <input
               type="checkbox"
               checked={input.isDraft}
               onChange={(event) => updateInput("isDraft", event.target.checked)}
             />
-            Save as draft
+            <span className="draft-toggle-box" aria-hidden="true">
+              <Check size={15} />
+            </span>
+            <span className="draft-toggle-copy">
+              <strong>Save as draft</strong>
+              <small>Keep it private until you are ready to publish.</small>
+            </span>
           </label>
           <label>
             Cover color
