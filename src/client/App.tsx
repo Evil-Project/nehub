@@ -49,6 +49,8 @@ import {
   UserX,
   X
 } from "lucide-react";
+import DOMPurify from "dompurify";
+import { marked } from "marked";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, ReactNode } from "react";
 import type {
@@ -107,6 +109,10 @@ import type {
   DeleteArtworkImageResponse,
   DeleteArtworkResponse,
   DeleteCommentResponse,
+  DeleteNovelCommentResponse,
+  DeleteNovelResponse,
+  DeleteNovelSeriesResponse,
+  DeleteReadingListResponse,
   DeleteCollectionResponse,
   DiscordStartResponse,
   DiscordVerificationResponse,
@@ -121,8 +127,28 @@ import type {
   NotificationPreferencesResponse,
   NotificationsResponse,
   Novel,
+  NovelCommentResponse,
+  NovelContentFormat,
+  NovelExportFormat,
+  NovelImportResponse,
   NovelListResponse,
+  NovelMutationResponse,
+  NovelRankingResponse,
   NovelResponse,
+  NovelSortMode,
+  NovelSeries,
+  NovelSeriesDetailResponse,
+  NovelSeriesItemResponse,
+  NovelSeriesListResponse,
+  NovelSeriesResponse,
+  NovelTocItem,
+  ReadingList,
+  ReadingListDetailResponse,
+  ReadingListNovelResponse,
+  ReadingListResponse,
+  ReadingListsResponse,
+  ReadingProgressResponse,
+  ReadingProgressUpdateResponse,
   PasswordChangeResponse,
   EmailChangeRequestResponse,
   EmailConfirmationKind,
@@ -194,6 +220,7 @@ const reportStatusFilterOptions: { value: ReportStatus; label: string }[] = [
 const reportTargetFilterOptions: { value: AdminReportTargetFilter; label: string }[] = [
   { value: "all", label: "All targets" },
   { value: "artwork", label: "Artworks" },
+  { value: "novel", label: "Novels" },
   { value: "comment", label: "Comments" },
   { value: "user", label: "Users" }
 ];
@@ -223,6 +250,14 @@ const matureFilterOptions: { value: MatureFilter; label: string }[] = [
   { value: "general", label: "General" },
   { value: "restricted", label: "Restricted" },
   { value: "adult", label: "Adult" }
+];
+
+const novelSortOptions: { value: NovelSortMode; label: string; icon: typeof Grid3X3 }[] = [
+  { value: "newest", label: "Newest", icon: Grid3X3 },
+  { value: "most_liked", label: "Most liked", icon: Heart },
+  { value: "most_bookmarked", label: "Most saved", icon: Bookmark },
+  { value: "most_viewed", label: "Most read", icon: Eye },
+  { value: "word_count", label: "Longest", icon: NotebookText }
 ];
 
 const artworkVisibilityOptions: {
@@ -464,6 +499,96 @@ const matureRatingLabel = (rating: MatureRating) => {
 const artworkVisibilityLabel = (visibility: ArtworkVisibility) =>
   artworkVisibilityOptions.find((option) => option.value === visibility)?.label ?? "Public";
 
+const slugifyNovelTocId = (value: string, fallbackIndex: number) =>
+  `sec_${value
+    .trim()
+    .toLowerCase()
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40) || `section_${fallbackIndex + 1}`}`;
+
+const extractNovelToc = (content: string, format: NovelContentFormat) => {
+  if (format !== "markdown") {
+    return [] as NovelTocItem[];
+  }
+  return content
+    .split(/\r?\n/)
+    .map((line, index) => {
+      const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+      if (!match) {
+        return null;
+      }
+      return {
+        id: slugifyNovelTocId(match[2], index),
+        text: match[2],
+        level: match[1].length
+      } satisfies NovelTocItem;
+    })
+    .filter((item): item is NovelTocItem => Boolean(item));
+};
+
+const novelArtworkEmbedPattern = /!\[([^\]]*)]\(artwork_id:([A-Za-z0-9_-]{1,80})\)/g;
+
+const renderNovelMarkdown = (markdown: string, linkedArtworks: Artwork[] = []) => {
+  const toc = extractNovelToc(markdown, "markdown");
+  const artworkById = new Map(linkedArtworks.map((artwork) => [artwork.id, artwork]));
+  const embeddedArtworks: Array<{ artworkId: string; altText: string }> = [];
+  const markdownWithEmbeds = markdown.replace(
+    novelArtworkEmbedPattern,
+    (_match, altText: string, artworkId: string) => {
+      const index = embeddedArtworks.push({ artworkId, altText }) - 1;
+      return `<div data-novel-artwork-index="${index}"></div>`;
+    }
+  );
+  const rendered = marked.parse(markdownWithEmbeds, { breaks: true, gfm: true }) as string;
+  if (typeof window === "undefined") {
+    return DOMPurify.sanitize(rendered, { USE_PROFILES: { html: true } });
+  }
+  const parser = new window.DOMParser();
+  const doc = parser.parseFromString(rendered, "text/html");
+  const headings = Array.from(doc.querySelectorAll("h1, h2, h3, h4, h5, h6"));
+  headings.forEach((heading, index) => {
+    const tocItem = toc[index];
+    if (tocItem) {
+      heading.id = tocItem.id;
+    }
+  });
+  doc.querySelectorAll("[data-novel-artwork-index]").forEach((element) => {
+    const embedIndex = Number(element.getAttribute("data-novel-artwork-index") ?? "-1");
+    const embed = embeddedArtworks[embedIndex];
+    const artwork = embed ? artworkById.get(embed.artworkId) : undefined;
+    if (!artwork) {
+      element.replaceWith(doc.createTextNode(""));
+      return;
+    }
+    const card = doc.createElement("a");
+    card.className = "novel-artwork-embed";
+    card.href = `/artworks/${encodeURIComponent(artwork.id)}`;
+    card.setAttribute("data-artwork-id", artwork.id);
+    const image = doc.createElement("img");
+    image.src = artwork.thumbnailUrl;
+    image.alt = embed.altText || artwork.title;
+    image.loading = "lazy";
+    const copy = doc.createElement("span");
+    const title = doc.createElement("strong");
+    title.textContent = artwork.title;
+    const meta = doc.createElement("small");
+    meta.textContent = `Illustration by ${artwork.creator.displayName}`;
+    copy.appendChild(title);
+    copy.appendChild(meta);
+    card.appendChild(image);
+    card.appendChild(copy);
+    element.replaceWith(card);
+  });
+  return DOMPurify.sanitize(doc.body.innerHTML, {
+    ADD_ATTR: ["data-artwork-id"],
+    USE_PROFILES: { html: true }
+  });
+};
+
+const estimateReadMinutes = (wordCount: number) => Math.max(1, Math.ceil(wordCount / 200));
+
 type ViewMode =
   | "illustrations"
   | "artwork"
@@ -501,10 +626,10 @@ const novelSectionSlugs = [
 ] as const;
 type NovelSection = (typeof novelSectionSlugs)[number];
 const novelSectionSlugSet = new Set<string>(novelSectionSlugs);
-const authRequiredNovelSections = new Set<NovelSection>(["tags", "bookmarks"]);
+const authRequiredNovelSections = new Set<NovelSection>(["bookmarks"]);
 const novelSectionRequiresAuth = (section: NovelSection) => authRequiredNovelSections.has(section);
 const novelSectionAuthNotice = (section: NovelSection) =>
-  section === "bookmarks" ? "Sign in to view your bookmarks." : "Sign in to view tags.";
+  section === "bookmarks" ? "Sign in to view your bookmarks." : "Sign in to continue.";
 const securityApprovalActionLabels: Record<SecurityApprovalAction, string> = {
   discord_link: "connect Discord",
   totp_start: "set up authenticator",
@@ -532,6 +657,35 @@ type ArtworkEditInput = {
   tags: string;
   matureRating: MatureRating;
   visibility: ArtworkVisibility;
+};
+type NovelEditInput = {
+  title: string;
+  content: string;
+  description: string;
+  tags: string;
+  matureRating: MatureRating;
+  visibility: ArtworkVisibility;
+  isDraft: boolean;
+  coverColor: string;
+  contentFormat: NovelContentFormat;
+  seriesId: string | null;
+  chapterNumber: number | null;
+};
+type NovelImportInput = {
+  title: string;
+  tags: string;
+  matureRating: MatureRating;
+  visibility: ArtworkVisibility;
+  coverColor: string;
+};
+type ReadingListSettingsInput = {
+  title: string;
+  description: string;
+  visibility: CollectionVisibility;
+};
+type NovelSeriesSettingsInput = {
+  title: string;
+  description: string;
 };
 type CollectionSettingsInput = {
   name: string;
@@ -712,6 +866,9 @@ function App() {
   const [gallery, setGallery] = useState<GalleryResponse | null>(null);
   const [rankingData, setRankingData] = useState<RankingResponse | null>(null);
   const [rankingPeriod, setRankingPeriod] = useState<RankingPeriod>("daily");
+  const [novelRankingData, setNovelRankingData] = useState<NovelRankingResponse | null>(null);
+  const [novelRankingPeriod, setNovelRankingPeriod] = useState<RankingPeriod>("daily");
+  const [readingProgressData, setReadingProgressData] = useState<ReadingProgressResponse | null>(null);
   const [activityData, setActivityData] = useState<ActivityResponse | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [adminStats, setAdminStats] = useState<AdminStatsResponse | null>(null);
@@ -738,6 +895,8 @@ function App() {
   const [tagSubscriptions, setTagSubscriptions] = useState<TagSubscriptionsResponse | null>(null);
   const [collections, setCollections] = useState<CollectionsResponse | null>(null);
   const [seriesList, setSeriesList] = useState<ArtworkSeriesListResponse | null>(null);
+  const [readingLists, setReadingLists] = useState<ReadingListsResponse | null>(null);
+  const [novelSeriesList, setNovelSeriesList] = useState<NovelSeriesListResponse | null>(null);
   const canAdminister = currentUser?.role === "admin";
   const canModerate = currentUser?.role === "admin" || currentUser?.role === "moderator";
   const [authOpen, setAuthOpen] = useState(false);
@@ -762,11 +921,18 @@ function App() {
   const [activeTag, setActiveTag] = useState("");
   const [illustrationMatureFilter, setIllustrationMatureFilter] = useState<MatureFilter>("all");
   const [novelMatureFilter, setNovelMatureFilter] = useState<MatureFilter>("all");
+  const [activeNovelTag, setActiveNovelTag] = useState("");
+  const [novelSortMode, setNovelSortMode] = useState<NovelSortMode>("newest");
   const [selectedArtwork, setSelectedArtwork] = useState<Artwork | null>(null);
   const [artworkDetail, setArtworkDetail] = useState<ArtworkResponse | null>(null);
   const [novelsData, setNovelsData] = useState<NovelListResponse | null>(null);
   const [novelDetail, setNovelDetail] = useState<NovelResponse | null>(null);
   const [novelLoading, setNovelLoading] = useState(false);
+  const [novelFormOpen, setNovelFormOpen] = useState(false);
+  const [novelFormMode, setNovelFormMode] = useState<"create" | "edit">("create");
+  const [novelFormNovel, setNovelFormNovel] = useState<Novel | null>(null);
+  const [novelFormMessage, setNovelFormMessage] = useState("");
+  const [novelFormSubmitting, setNovelFormSubmitting] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadMessage, setUploadMessage] = useState("");
@@ -813,8 +979,14 @@ function App() {
     if (novelMatureFilter !== "all") {
       params.set("rating", novelMatureFilter);
     }
+    if (activeNovelTag) {
+      params.set("tag", activeNovelTag);
+    }
+    if (novelSortMode !== "newest") {
+      params.set("sort", novelSortMode);
+    }
     return params;
-  }, [novelMatureFilter, novelQuery]);
+  }, [activeNovelTag, novelMatureFilter, novelQuery, novelSortMode]);
   const novelsUrl = useMemo(() => `/api/novels?${novelParams.toString()}`, [novelParams]);
 
   useEffect(() => {
@@ -942,6 +1114,74 @@ function App() {
       cancelled = true;
     };
   }, [contentAccessRevision, currentUser?.id, rankingPeriod]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch(`/api/novels/rankings?period=${novelRankingPeriod}&limit=12`, {
+      credentials: "include"
+    })
+      .then(async (response) => {
+        const payload = (await response.json()) as NovelRankingResponse | { message?: string };
+        if (!response.ok || !("rankings" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ??
+              "Novel rankings could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setNovelRankingData(payload);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setNovelRankingData(null);
+        }
+        console.error("Unable to load novel rankings", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [contentAccessRevision, currentUser?.id, novelRankingPeriod]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setReadingProgressData(null);
+      return;
+    }
+
+    let cancelled = false;
+    fetch("/api/novels/reading-progress?limit=8", { credentials: "include" })
+      .then(async (response) => {
+        const payload = (await response.json()) as ReadingProgressResponse | { message?: string };
+        if (!response.ok || !("progress" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ??
+              "Reading progress could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setReadingProgressData(payload);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setReadingProgressData(null);
+        }
+        console.error("Unable to load reading progress", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [contentAccessRevision, currentUser?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1155,6 +1395,46 @@ function App() {
     setSeriesList(payload);
   }, [currentUser]);
 
+  const loadReadingLists = useCallback(async () => {
+    if (!currentUser) {
+      setReadingLists(null);
+      return;
+    }
+    const response = await fetch("/api/reading-lists", { credentials: "include" });
+    const payload = (await response.json()) as ReadingListsResponse | { message?: string };
+    if (!response.ok) {
+      const message =
+        "message" in payload && payload.message
+          ? payload.message
+          : "Unable to load reading shelves.";
+      throw new Error(message);
+    }
+    if (!("readingLists" in payload)) {
+      throw new Error("Unable to load reading shelves.");
+    }
+    setReadingLists(payload);
+  }, [currentUser]);
+
+  const loadNovelSeries = useCallback(async () => {
+    if (!currentUser) {
+      setNovelSeriesList(null);
+      return;
+    }
+    const response = await fetch("/api/novel-series", { credentials: "include" });
+    const payload = (await response.json()) as NovelSeriesListResponse | { message?: string };
+    if (!response.ok) {
+      const message =
+        "message" in payload && payload.message
+          ? payload.message
+          : "Unable to load serials.";
+      throw new Error(message);
+    }
+    if (!("series" in payload)) {
+      throw new Error("Unable to load serials.");
+    }
+    setNovelSeriesList(payload);
+  }, [currentUser]);
+
   const loadAdminAuditLog = useCallback(async () => {
     if (!canAdminister) {
       setAdminAuditLog(null);
@@ -1249,6 +1529,8 @@ function App() {
       setTagSubscriptions(null);
       setCollections(null);
       setSeriesList(null);
+      setReadingLists(null);
+      setNovelSeriesList(null);
       setAdminReports(null);
       setAdminUsers(null);
       setAdminTags(null);
@@ -1268,11 +1550,19 @@ function App() {
     loadSeries().catch((error: unknown) => {
       console.error("Unable to load series", error);
     });
+    loadReadingLists().catch((error: unknown) => {
+      console.error("Unable to load reading lists", error);
+    });
+    loadNovelSeries().catch((error: unknown) => {
+      console.error("Unable to load novel series", error);
+    });
   }, [
     authReady,
     currentUser,
     loadCollections,
     loadNotifications,
+    loadNovelSeries,
+    loadReadingLists,
     loadSeries,
     loadTagSubscriptions
   ]);
@@ -1560,11 +1850,18 @@ function App() {
   const followedNovelCreators = novelCreators.filter((creator) => creator.following);
   const followedNovelCreatorIds = new Set(followedNovelCreators.map((creator) => creator.id));
   const followedNovels = novels.filter((novel) => followedNovelCreatorIds.has(novel.creator.id));
-  const novelRankingItems = [...novels]
-    .sort((left, right) => right.likeCount - left.likeCount || right.viewCount - left.viewCount)
-    .slice(0, 8);
-  const bookmarkedNovels: Novel[] = [];
-  const novelCollections: Array<{ id: string; title: string; detail: string }> = [];
+  const novelRankingNovels =
+    novelRankingData?.rankings.map((item) => item.novel) ??
+    [...novels]
+      .sort((left, right) => right.likeCount - left.likeCount || right.viewCount - left.viewCount)
+      .slice(0, 8);
+  const bookmarkedNovels = novels.filter((novel) => novel.bookmarked);
+  const continueReadingItems = readingProgressData?.progress ?? [];
+  const novelCollections = (readingLists?.readingLists ?? []).map((readingList) => ({
+    id: readingList.id,
+    title: readingList.title,
+    detail: `${formatCount(readingList.novelCount)} entries · ${readingList.visibility}`
+  }));
   const novelSectionTitleMap: Record<NovelSection, string> = {
     home: "Latest creator works",
     following: "Following",
@@ -1578,7 +1875,9 @@ function App() {
     privacy: "Privacy"
   };
   const novelSectionDescriptionMap: Record<NovelSection, string> = {
-    home: "Fresh chapters, essays, and luminous fragments from NEHub creators.",
+    home: activeTag
+      ? `Works tagged #${activeTag}.`
+      : "Fresh chapters, essays, and luminous fragments from NEHub creators.",
     following: "Works from creators you already follow.",
     creators: "Authors publishing across NEHub.",
     tags: "Browse the labels shaping the current fiction feed.",
@@ -1983,6 +2282,17 @@ function App() {
     setUploadOpen(true);
   };
 
+  const openNovelForm = (novel?: Novel) => {
+    if (!currentUser) {
+      openAuth("login");
+      return;
+    }
+    setNovelFormMode(novel ? "edit" : "create");
+    setNovelFormNovel(novel ?? null);
+    setNovelFormMessage("");
+    setNovelFormOpen(true);
+  };
+
   const handleAuthSuccess = (payload: AuthResponse) => {
     setCurrentUser(payload.user);
     setCsrfToken(payload.csrfToken);
@@ -2018,6 +2328,8 @@ function App() {
       setTagSubscriptions(null);
       setCollections(null);
       setSeriesList(null);
+      setReadingLists(null);
+      setNovelSeriesList(null);
       if (
         view === "dashboard" ||
         view === "collections" ||
@@ -2051,6 +2363,8 @@ function App() {
     setTagSubscriptions(null);
     setCollections(null);
     setSeriesList(null);
+    setReadingLists(null);
+    setNovelSeriesList(null);
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setAuthNotice(payload.message);
@@ -2078,6 +2392,31 @@ function App() {
       current?.artwork.id === updatedArtwork.id
         ? { ...current, artwork: updatedArtwork }
         : current
+    );
+  };
+
+  const syncNovel = (updatedNovel: Novel) => {
+    setNovelsData((current) => {
+      if (!current) {
+        return current;
+      }
+      const existing = current.novels.some((item) => item.id === updatedNovel.id);
+      const novels = existing
+        ? current.novels.map((item) => (item.id === updatedNovel.id ? updatedNovel : item))
+        : [updatedNovel, ...current.novels];
+      return {
+        ...current,
+        novels,
+        featuredNovel:
+          current.featuredNovel?.id === updatedNovel.id || !current.featuredNovel
+            ? updatedNovel
+            : current.featuredNovel,
+        tags: current.tags,
+        totalCount: existing ? current.totalCount : current.totalCount + 1
+      };
+    });
+    setNovelDetail((current) =>
+      current?.novel.id === updatedNovel.id ? { ...current, novel: updatedNovel } : current
     );
   };
 
@@ -2349,6 +2688,176 @@ function App() {
     return payload.message;
   };
 
+  const handleNovelLike = async (novel: Novel) => {
+    if (!currentUser) {
+      openAuth("login");
+      return;
+    }
+    const response = await fetch(`/api/novels/${novel.id}/like`, {
+      method: "POST",
+      credentials: "include",
+      headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
+    });
+    const payload = (await response.json()) as NovelMutationResponse | { message?: string };
+    if (!response.ok || !("novel" in payload)) {
+      setAuthNotice(payload.message ?? "Unable to like novel.");
+      return;
+    }
+    syncNovel(payload.novel);
+  };
+
+  const handleNovelBookmark = async (novel: Novel) => {
+    if (!currentUser) {
+      openAuth("login");
+      return;
+    }
+    const response = await fetch(`/api/novels/${novel.id}/bookmark`, {
+      method: "POST",
+      credentials: "include",
+      headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
+    });
+    const payload = (await response.json()) as NovelMutationResponse | { message?: string };
+    if (!response.ok || !("novel" in payload)) {
+      setAuthNotice(payload.message ?? "Unable to bookmark novel.");
+      return;
+    }
+    syncNovel(payload.novel);
+  };
+
+  const handleUpdateReadingProgress = async (
+    novel: Novel,
+    lastPosition: number,
+    scrollPercent: number
+  ) => {
+    if (!currentUser) {
+      return;
+    }
+    const response = await fetch(`/api/novels/${novel.id}/progress`, {
+      method: "PUT",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify({ lastPosition, scrollPercent })
+    });
+    const payload = (await response.json()) as ReadingProgressUpdateResponse | { message?: string };
+    if (!response.ok || !("progress" in payload)) {
+      throw new Error(payload.message ?? "Unable to save reading progress.");
+    }
+    setReadingProgressData((current) => {
+      const remaining = (current?.progress ?? []).filter(
+        (item) => item.novelId !== payload.progress.novelId
+      );
+      return {
+        matureAccess:
+          current?.matureAccess ?? {
+            allowed: true,
+            signedIn: true,
+            ageVerified: true,
+            enabled: true,
+            restrictedRegion: false,
+            country: null,
+            reason: "allowed"
+          },
+        progress: [payload.progress, ...remaining].slice(0, 8)
+      };
+    });
+  };
+
+  const handleNovelComment = async (
+    novel: Novel,
+    body: string,
+    turnstileToken: string,
+    parentId?: string
+  ) => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to comment.");
+    }
+    const response = await fetch(`/api/novels/${novel.id}/comments`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify({ body, parentId, turnstileToken })
+    });
+    const payload = (await response.json()) as NovelCommentResponse | { message?: string };
+    if (!response.ok || !("comment" in payload)) {
+      throw new Error(payload.message ?? "Unable to post comment.");
+    }
+    syncNovel(payload.novel);
+    setNovelDetail((current) =>
+      current?.novel.id === novel.id
+        ? {
+            ...current,
+            novel: payload.novel,
+            comments: [payload.comment, ...current.comments]
+          }
+        : current
+    );
+    return payload.message;
+  };
+
+  const handleUpdateNovelComment = async (comment: Comment, body: string) => {
+    const response = await fetch(`/api/novel-comments/${comment.id}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify({ body })
+    });
+    const payload = (await response.json()) as NovelCommentResponse | { message?: string };
+    if (!response.ok || !("comment" in payload)) {
+      throw new Error(payload.message ?? "Unable to update comment.");
+    }
+    syncNovel(payload.novel);
+    setNovelDetail((current) =>
+      current
+        ? {
+            ...current,
+            novel: payload.novel,
+            comments: current.comments.map((item) =>
+              item.id === payload.comment.id ? payload.comment : item
+            )
+          }
+        : current
+    );
+    return payload.message;
+  };
+
+  const handleDeleteNovelComment = async (comment: Comment) => {
+    const response = await fetch(`/api/novel-comments/${comment.id}`, {
+      method: "DELETE",
+      credentials: "include",
+      headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
+    });
+    const payload = (await response
+      .json()
+      .catch(() => ({ message: "Unable to delete comment." }))) as
+      | DeleteNovelCommentResponse
+      | { message?: string };
+    if (!response.ok || !("deleted" in payload)) {
+      setAuthNotice(payload.message ?? "Unable to delete comment.");
+      return;
+    }
+    syncNovel(payload.novel);
+    setNovelDetail((current) =>
+      current
+        ? {
+            ...current,
+            novel: payload.novel,
+            comments: current.comments.filter((item) => item.id !== payload.commentId)
+          }
+        : current
+    );
+    setAuthNotice(payload.message);
+  };
+
   const handleUpdateComment = async (comment: Comment, body: string) => {
     const response = await fetch(`/api/comments/${comment.id}`, {
       method: "PUT",
@@ -2565,6 +3074,51 @@ function App() {
               artworks: current.artworks.filter((artwork) => artwork.id !== payload.targetId)
             }
           : current
+      );
+    }
+    void loadAdminAuditLog().catch(() => undefined);
+    try {
+      const resolveMessage = await resolveReportRequest(report, "resolved");
+      setDashboardMessage(`${payload.message} ${resolveMessage}`);
+    } catch (error) {
+      setDashboardMessage(error instanceof Error ? error.message : payload.message);
+    }
+  };
+
+  const handleModerateReportedNovel = async (
+    report: ModerationReport,
+    action: "hide" | "restore"
+  ) => {
+    const response = await fetch(`/api/admin/novels/${report.targetId}/moderation`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify({ action })
+    });
+    const payload = (await response.json()) as
+      | AdminModerationActionResponse
+      | { message?: string };
+    if (!response.ok || !("action" in payload)) {
+      setDashboardMessage(payload.message ?? "Unable to moderate novel.");
+      return;
+    }
+    if (payload.action === "hide_novel") {
+      setNovelsData((current) =>
+        current
+          ? {
+              ...current,
+              novels: current.novels.filter((novel) => novel.id !== payload.targetId),
+              featuredNovel:
+                current.featuredNovel?.id === payload.targetId ? null : current.featuredNovel,
+              totalCount: Math.max(0, current.totalCount - 1)
+            }
+          : current
+      );
+      setNovelDetail((current) =>
+        current?.novel.id === payload.targetId ? null : current
       );
     }
     void loadAdminAuditLog().catch(() => undefined);
@@ -2942,6 +3496,10 @@ function App() {
       openArtworkById(notification.artworkId);
       return;
     }
+    if (notification.novelId) {
+      openNovel(notification.novelId);
+      return;
+    }
     if (notification.actor?.username) {
       showProfile(notification.actor.username);
     }
@@ -3207,6 +3765,238 @@ function App() {
     return payload.message;
   };
 
+  const handleCreateReadingList = async (title: string) => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to create reading shelves.");
+    }
+    const response = await fetch("/api/reading-lists", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify({ title, description: "", visibility: "private" })
+    });
+    const payload = (await response.json()) as ReadingListResponse | { message?: string };
+    if (!response.ok || !("readingList" in payload)) {
+      throw new Error(payload.message ?? "Unable to create reading shelf.");
+    }
+    setReadingLists((current) => ({
+      readingLists: [payload.readingList, ...(current?.readingLists ?? [])]
+    }));
+    return payload.message;
+  };
+
+  const handleUpdateReadingList = async (
+    readingListId: string,
+    input: ReadingListSettingsInput
+  ) => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to update reading shelves.");
+    }
+    const response = await fetch(`/api/reading-lists/${readingListId}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify(input)
+    });
+    const payload = (await response.json()) as ReadingListResponse | { message?: string };
+    if (!response.ok || !("readingList" in payload)) {
+      throw new Error(payload.message ?? "Unable to update reading shelf.");
+    }
+    setReadingLists((current) =>
+      current
+        ? {
+            readingLists: current.readingLists.map((item) =>
+              item.id === payload.readingList.id ? payload.readingList : item
+            )
+          }
+        : { readingLists: [payload.readingList] }
+    );
+    return payload;
+  };
+
+  const handleDeleteReadingList = async (readingListId: string) => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to delete reading shelves.");
+    }
+    const response = await fetch(`/api/reading-lists/${readingListId}`, {
+      method: "DELETE",
+      credentials: "include",
+      headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
+    });
+    const payload = (await response
+      .json()
+      .catch(() => ({ message: "Unable to delete reading shelf." }))) as
+      | DeleteReadingListResponse
+      | { message?: string };
+    if (!response.ok || !("deleted" in payload)) {
+      throw new Error(payload.message ?? "Unable to delete reading shelf.");
+    }
+    setReadingLists((current) =>
+      current
+        ? {
+            readingLists: current.readingLists.filter((item) => item.id !== payload.readingListId)
+          }
+        : current
+    );
+    return payload.message;
+  };
+
+  const handleToggleReadingListNovel = async (readingList: ReadingList, novel: Novel) => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to update reading shelves.");
+    }
+    const response = await fetch(`/api/reading-lists/${readingList.id}/novels`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify({ novelId: novel.id })
+    });
+    const payload = (await response.json()) as ReadingListNovelResponse | { message?: string };
+    if (!response.ok || !("readingList" in payload)) {
+      throw new Error(payload.message ?? "Unable to update reading shelf.");
+    }
+    setReadingLists((current) =>
+      current
+        ? {
+            readingLists: current.readingLists.map((item) =>
+              item.id === payload.readingList.id ? payload.readingList : item
+            )
+          }
+        : { readingLists: [payload.readingList] }
+    );
+    syncNovel(payload.novel);
+    return payload;
+  };
+
+  const handleCreateNovelSeries = async (title: string) => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to create serials.");
+    }
+    const response = await fetch("/api/novel-series", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify({ title, description: "" })
+    });
+    const payload = (await response.json()) as NovelSeriesResponse | { message?: string };
+    if (!response.ok || !("series" in payload)) {
+      throw new Error(payload.message ?? "Unable to create serial.");
+    }
+    setNovelSeriesList((current) => ({
+      series: [payload.series, ...(current?.series ?? [])]
+    }));
+    return payload.message;
+  };
+
+  const handleUpdateNovelSeries = async (
+    seriesId: string,
+    input: NovelSeriesSettingsInput
+  ) => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to update serials.");
+    }
+    const response = await fetch(`/api/novel-series/${seriesId}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify(input)
+    });
+    const payload = (await response.json()) as NovelSeriesResponse | { message?: string };
+    if (!response.ok || !("series" in payload)) {
+      throw new Error(payload.message ?? "Unable to update serial.");
+    }
+    setNovelSeriesList((current) =>
+      current
+        ? {
+            series: current.series.map((item) =>
+              item.id === payload.series.id ? payload.series : item
+            )
+          }
+        : { series: [payload.series] }
+    );
+    return payload;
+  };
+
+  const handleDeleteNovelSeries = async (seriesId: string) => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to delete serials.");
+    }
+    const response = await fetch(`/api/novel-series/${seriesId}`, {
+      method: "DELETE",
+      credentials: "include",
+      headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
+    });
+    const payload = (await response
+      .json()
+      .catch(() => ({ message: "Unable to delete serial." }))) as
+      | DeleteNovelSeriesResponse
+      | { message?: string };
+    if (!response.ok || !("deleted" in payload)) {
+      throw new Error(payload.message ?? "Unable to delete serial.");
+    }
+    setNovelSeriesList((current) =>
+      current
+        ? {
+            series: current.series.filter((item) => item.id !== payload.seriesId)
+          }
+        : current
+    );
+    return payload.message;
+  };
+
+  const handleToggleNovelSeriesItem = async (series: NovelSeries, novel: Novel) => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to update serials.");
+    }
+    const response = await fetch(`/api/novel-series/${series.id}/novels`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify({ novelId: novel.id })
+    });
+    const payload = (await response.json()) as NovelSeriesItemResponse | { message?: string };
+    if (!response.ok || !("series" in payload)) {
+      throw new Error(payload.message ?? "Unable to update serial.");
+    }
+    setNovelSeriesList((current) =>
+      current
+        ? {
+            series: current.series.map((item) =>
+              item.id === payload.series.id ? payload.series : item
+            )
+          }
+        : { series: [payload.series] }
+    );
+    syncNovel(payload.novel);
+    return payload;
+  };
+
   const handleLoadMoreGallery = async () => {
     if (!gallery?.nextCursor) {
       return;
@@ -3309,6 +4099,180 @@ function App() {
     }
   };
 
+  const handleSaveNovel = async (
+    input: NovelEditInput,
+    turnstileToken: string
+  ) => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to write novels.");
+    }
+    setNovelFormSubmitting(true);
+    try {
+      const editing = novelFormMode === "edit" && novelFormNovel;
+      const response = await fetch(editing ? `/api/novels/${novelFormNovel.id}` : "/api/novels", {
+        method: editing ? "PUT" : "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+        },
+        body: JSON.stringify(editing ? input : { ...input, turnstileToken })
+      });
+      const payload = (await response
+        .json()
+        .catch(() => ({ message: "Unable to save novel." }))) as
+        | NovelMutationResponse
+        | { message?: string };
+      if (!response.ok || !("novel" in payload)) {
+        throw new Error(payload.message ?? "Unable to save novel.");
+      }
+      syncNovel(payload.novel);
+      setNovelFormOpen(false);
+      setNovelFormNovel(null);
+      setNovelFormMessage(payload.message);
+      setAuthNotice(payload.message);
+      if (!editing) {
+        openNovel(payload.novel.id);
+      }
+      return payload.message;
+    } finally {
+      setNovelFormSubmitting(false);
+    }
+  };
+
+  const handleImportNovel = async (
+    input: NovelImportInput,
+    file: File,
+    turnstileToken: string
+  ) => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to import novels.");
+    }
+    setNovelFormSubmitting(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("title", input.title);
+      formData.append("tags", input.tags);
+      formData.append("matureRating", input.matureRating);
+      formData.append("visibility", input.visibility);
+      formData.append("coverColor", input.coverColor);
+      formData.append("turnstileToken", turnstileToken);
+      const response = await fetch("/api/novels/import", {
+        method: "POST",
+        credentials: "include",
+        headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined,
+        body: formData
+      });
+      const payload = (await response
+        .json()
+        .catch(() => ({ message: "Unable to import novel." }))) as
+        | NovelImportResponse
+        | { message?: string };
+      if (!response.ok || !("novel" in payload)) {
+        throw new Error(payload.message ?? "Unable to import novel.");
+      }
+      syncNovel(payload.novel);
+      setNovelFormOpen(false);
+      setNovelFormNovel(null);
+      setNovelFormMessage(payload.message);
+      setAuthNotice(payload.message);
+      openNovel(payload.novel.id);
+      return payload.message;
+    } finally {
+      setNovelFormSubmitting(false);
+    }
+  };
+
+  const handleExportNovel = (novel: Novel, format: NovelExportFormat) => {
+    window.location.assign(`/api/novels/${encodeURIComponent(novel.id)}/export?format=${format}`);
+  };
+
+  const handleReportNovel = async (
+    novel: Novel,
+    reason: ReportReason,
+    details: string,
+    turnstileToken: string
+  ) => {
+    if (!currentUser) {
+      openAuth("login");
+      throw new Error("Sign in to report novels.");
+    }
+    const response = await fetch(`/api/novels/${novel.id}/report`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json",
+        ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+      },
+      body: JSON.stringify({ reason, details, turnstileToken })
+    });
+    const payload = (await response.json()) as ReportResponse | { message?: string };
+    if (!response.ok || !("report" in payload)) {
+      throw new Error(payload.message ?? "Unable to submit report.");
+    }
+    setAdminReports((current) =>
+      current
+        ? {
+            ...current,
+            reports:
+              current.status === "open" &&
+              (current.targetType === "all" || current.targetType === payload.report.targetType) &&
+              (current.reason === "all" || current.reason === payload.report.reason)
+                ? [payload.report, ...current.reports].slice(0, current.limit)
+                : current.reports,
+            totalCount:
+              current.status === "open" &&
+              (current.targetType === "all" || current.targetType === payload.report.targetType) &&
+              (current.reason === "all" || current.reason === payload.report.reason)
+                ? current.totalCount + 1
+                : current.totalCount
+          }
+        : current
+    );
+    return payload.message;
+  };
+
+  const handleDeleteNovel = async (novel: Novel) => {
+    if (!currentUser) {
+      openAuth("login");
+      return;
+    }
+    if (!window.confirm(`Delete "${novel.title}"?`)) {
+      return;
+    }
+    const response = await fetch(`/api/novels/${novel.id}`, {
+      method: "DELETE",
+      credentials: "include",
+      headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
+    });
+    const payload = (await response
+      .json()
+      .catch(() => ({ message: "Unable to delete novel." }))) as
+      | DeleteNovelResponse
+      | { message?: string };
+    if (!response.ok || !("deleted" in payload)) {
+      setAuthNotice(payload.message ?? "Unable to delete novel.");
+      return;
+    }
+    setNovelsData((current) =>
+      current
+        ? {
+            ...current,
+            novels: current.novels.filter((item) => item.id !== payload.novelId),
+            featuredNovel:
+              current.featuredNovel?.id === payload.novelId ? null : current.featuredNovel,
+            totalCount: Math.max(0, current.totalCount - 1)
+          }
+        : current
+    );
+    setNovelDetail(null);
+    setAuthNotice(payload.message);
+    showNovels("home");
+  };
+
   const handleSettingsUser = (user: AuthUser, notice = "Settings saved.") => {
     setCurrentUser(user);
     setAuthNotice(notice);
@@ -3329,11 +4293,33 @@ function App() {
       <header className="global-header">
         <div className="header-inner">
           <div className="brand-cluster">
-            <div className="brand-mark">N</div>
-            <div className="brand-wordmark" aria-label="NEHub">
-              <strong>NEHub</strong>
-              <span>{isNovelSection ? "reading diary" : "art diary"}</span>
-            </div>
+            <a
+              className="brand-home-link"
+              href="/"
+              aria-label="Go to home"
+              onClick={(event) => {
+                if (
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey ||
+                  event.button !== 0
+                ) {
+                  return;
+                }
+
+                event.preventDefault();
+                showIllustrations("latest");
+              }}
+            >
+              <div className="brand-mark" aria-hidden="true">
+                N
+              </div>
+              <div className="brand-wordmark" aria-label="NEHub">
+                <strong>NEHub</strong>
+                <span>{isNovelSection ? "reading diary" : "art diary"}</span>
+              </div>
+            </a>
             <nav className="main-nav" aria-label="Content types">
               <button
                 className={classNames(isIllustrationsSection && sort === "latest" && "is-active")}
@@ -3480,10 +4466,10 @@ function App() {
             <button
               className="primary-button"
               type="button"
-              onClick={openUpload}
+              onClick={isNovelSection ? () => openNovelForm() : openUpload}
             >
-              <ImageUp size={17} />
-              Post
+              {isNovelSection ? <NotebookText size={17} /> : <ImageUp size={17} />}
+              {isNovelSection ? "Write" : "Post"}
             </button>
             <AccountControl
               user={currentUser}
@@ -3791,6 +4777,7 @@ function App() {
             onToggleArtworkReview={handleToggleArtworkReview}
             onReviewArtwork={handleReviewArtwork}
             onModerateArtwork={handleModerateReportedArtwork}
+            onModerateNovel={handleModerateReportedNovel}
             onDeleteReportedComment={handleDeleteReportedComment}
             onToggleUserSuspension={handleToggleUserSuspension}
             onSuspendReportedUser={handleSuspendReportedUser}
@@ -3814,13 +4801,22 @@ function App() {
               creators={novelCreators}
               followedCreators={followedNovelCreators}
               followedNovels={followedNovels}
-              rankingNovels={novelRankingItems}
+              rankingNovels={novelRankingNovels}
+              rankingItems={novelRankingData?.rankings ?? []}
+              rankingPeriod={novelRankingPeriod}
+              continueReadingItems={continueReadingItems}
               bookmarkedNovels={bookmarkedNovels}
               collections={novelCollections}
               matureFilter={novelMatureFilter}
+              sortMode={novelSortMode}
+              activeTag={activeNovelTag}
               query={novelQuery}
               onMatureFilterChange={setNovelMatureFilter}
+              onSortModeChange={setNovelSortMode}
+              onTagFilterChange={setActiveNovelTag}
+              onRankingPeriodChange={setNovelRankingPeriod}
               onAuthRequired={() => openAuth("login")}
+              onWriteNovel={() => openNovelForm()}
               onOpenNovel={openNovel}
               onOpenProfile={showProfile}
               onPrivacySecurity={showPrivacySecurity}
@@ -3831,8 +4827,24 @@ function App() {
           <NovelDetailPage
             detail={novelDetail}
             loading={novelLoading}
+            currentUser={currentUser}
+            siteKey={authConfig?.turnstileSiteKey ?? ""}
+            readingLists={readingLists?.readingLists ?? []}
             onBack={showNovels}
             onAuthRequired={() => openAuth("login")}
+            onLikeNovel={handleNovelLike}
+            onBookmarkNovel={handleNovelBookmark}
+            onExportNovel={handleExportNovel}
+            onReportNovel={handleReportNovel}
+            onEditNovel={openNovelForm}
+            onDeleteNovel={handleDeleteNovel}
+            onCreateReadingList={handleCreateReadingList}
+            onToggleReadingListNovel={handleToggleReadingListNovel}
+            onCommentNovel={handleNovelComment}
+            onUpdateNovelComment={handleUpdateNovelComment}
+            onDeleteNovelComment={handleDeleteNovelComment}
+            onUpdateReadingProgress={handleUpdateReadingProgress}
+            onOpenArtwork={openArtworkById}
             onOpenNovel={openNovel}
             onOpenProfile={showProfile}
             onPrivacySecurity={showPrivacySecurity}
@@ -3910,53 +4922,105 @@ function App() {
             onOpenPrivacySecurity={showPrivacySecurity}
           />
         ) : view === "collections" ? (
-          <CollectionsPage
-            context={routeContext}
-            collections={collections?.collections ?? []}
-            currentUser={currentUser}
-            onAuthRequired={() => openAuth("login")}
-            onCreateCollection={handleCreateCollection}
-            onOpenCollection={showCollection}
-          />
+          routeContext === "novels" ? (
+            <ReadingListsPage
+              readingLists={readingLists?.readingLists ?? []}
+              currentUser={currentUser}
+              onAuthRequired={() => openAuth("login")}
+              onCreateReadingList={handleCreateReadingList}
+              onOpenReadingList={showCollection}
+            />
+          ) : (
+            <CollectionsPage
+              context={routeContext}
+              collections={collections?.collections ?? []}
+              currentUser={currentUser}
+              onAuthRequired={() => openAuth("login")}
+              onCreateCollection={handleCreateCollection}
+              onOpenCollection={showCollection}
+            />
+          )
         ) : view === "collection" ? (
-          <CollectionPage
-            context={routeContext}
-            collectionId={routeCollectionId}
-            currentUser={currentUser}
-            onAuthRequired={() => openAuth("login")}
-            onBack={showCollections}
-            onBookmark={handleBookmark}
-            onDelete={handleDeleteCollection}
-            onDeleted={showCollections}
-            onOpenArtwork={openArtwork}
-            onOpenProfile={showProfile}
-            onOpenPrivacySecurity={showPrivacySecurity}
-            onUpdate={handleUpdateCollection}
-          />
+          routeContext === "novels" ? (
+            <ReadingListPage
+              readingListId={routeCollectionId}
+              csrfToken={csrfToken}
+              currentUser={currentUser}
+              onAuthRequired={() => openAuth("login")}
+              onBack={showCollections}
+              onDelete={handleDeleteReadingList}
+              onDeleted={showCollections}
+              onOpenNovel={openNovel}
+              onOpenProfile={showProfile}
+              onOpenPrivacySecurity={showPrivacySecurity}
+              onUpdate={handleUpdateReadingList}
+            />
+          ) : (
+            <CollectionPage
+              context={routeContext}
+              collectionId={routeCollectionId}
+              currentUser={currentUser}
+              onAuthRequired={() => openAuth("login")}
+              onBack={showCollections}
+              onBookmark={handleBookmark}
+              onDelete={handleDeleteCollection}
+              onDeleted={showCollections}
+              onOpenArtwork={openArtwork}
+              onOpenProfile={showProfile}
+              onOpenPrivacySecurity={showPrivacySecurity}
+              onUpdate={handleUpdateCollection}
+            />
+          )
         ) : view === "seriesList" ? (
-          <SeriesListPage
-            context={routeContext}
-            seriesList={seriesList?.series ?? []}
-            currentUser={currentUser}
-            onAuthRequired={() => openAuth("login")}
-            onCreateSeries={handleCreateSeries}
-            onOpenSeries={showSeries}
-          />
+          routeContext === "novels" ? (
+            <NovelSeriesListPage
+              seriesList={novelSeriesList?.series ?? []}
+              currentUser={currentUser}
+              onAuthRequired={() => openAuth("login")}
+              onCreateSeries={handleCreateNovelSeries}
+              onOpenSeries={showSeries}
+            />
+          ) : (
+            <SeriesListPage
+              context={routeContext}
+              seriesList={seriesList?.series ?? []}
+              currentUser={currentUser}
+              onAuthRequired={() => openAuth("login")}
+              onCreateSeries={handleCreateSeries}
+              onOpenSeries={showSeries}
+            />
+          )
         ) : view === "series" ? (
-          <SeriesPage
-            context={routeContext}
-            seriesId={routeSeriesId}
-            currentUser={currentUser}
-            onAuthRequired={() => openAuth("login")}
-            onBack={showSeriesList}
-            onBookmark={handleBookmark}
-            onDelete={handleDeleteSeries}
-            onDeleted={showSeriesList}
-            onOpenArtwork={openArtwork}
-            onOpenProfile={showProfile}
-            onOpenPrivacySecurity={showPrivacySecurity}
-            onUpdate={handleUpdateSeries}
-          />
+          routeContext === "novels" ? (
+            <NovelSeriesPage
+              seriesId={routeSeriesId}
+              csrfToken={csrfToken}
+              currentUser={currentUser}
+              onAuthRequired={() => openAuth("login")}
+              onBack={showSeriesList}
+              onDelete={handleDeleteNovelSeries}
+              onDeleted={showSeriesList}
+              onOpenNovel={openNovel}
+              onOpenProfile={showProfile}
+              onOpenPrivacySecurity={showPrivacySecurity}
+              onUpdate={handleUpdateNovelSeries}
+            />
+          ) : (
+            <SeriesPage
+              context={routeContext}
+              seriesId={routeSeriesId}
+              currentUser={currentUser}
+              onAuthRequired={() => openAuth("login")}
+              onBack={showSeriesList}
+              onBookmark={handleBookmark}
+              onDelete={handleDeleteSeries}
+              onDeleted={showSeriesList}
+              onOpenArtwork={openArtwork}
+              onOpenProfile={showProfile}
+              onOpenPrivacySecurity={showPrivacySecurity}
+              onUpdate={handleUpdateSeries}
+            />
+          )
         ) : view === "profileSettings" ? (
           <ProfileSettingsPage
             context={routeContext}
@@ -4077,6 +5141,7 @@ function App() {
             onToggleTagSubscription={handleToggleTagSubscription}
             onOpenArtwork={openArtwork}
             onOpenArtworkPage={openArtworkPage}
+            onOpenNovel={openNovel}
             onBookmark={handleBookmark}
             onOpenProfile={showProfile}
             onLoadMore={handleLoadMoreGallery}
@@ -4140,6 +5205,26 @@ function App() {
         onUnlockStorageSlot={handleUnlockStorageSlot}
         storageUnlocking={storageUnlockSubmitting}
         onSubmit={handleUpload}
+      />
+
+      <NovelFormDrawer
+        open={novelFormOpen}
+        mode={novelFormMode}
+        novel={novelFormNovel}
+        message={novelFormMessage}
+        siteKey={authConfig?.turnstileSiteKey ?? ""}
+        matureAccess={novelsData?.matureAccess ?? null}
+        seriesList={novelSeriesList?.series ?? []}
+        submitting={novelFormSubmitting}
+        onClose={() => {
+          if (!novelFormSubmitting) {
+            setNovelFormOpen(false);
+            setNovelFormNovel(null);
+          }
+        }}
+        onOpenPrivacySecurity={showPrivacySecurity}
+        onSubmit={handleSaveNovel}
+        onImport={handleImportNovel}
       />
 
       {authOpen ? (
@@ -5488,10 +6573,10 @@ function NotificationsPage({
       <div className="notification-page-list">
         {notifications.map((notification) => {
           const Icon = notificationIconFor(notification);
-          const targetLabel = notification.artworkId
-            ? novelContext
-              ? "Open work"
-              : "Open artwork"
+          const targetLabel = notification.novelId
+            ? "Open novel"
+            : notification.artworkId
+            ? "Open artwork"
             : notification.actor
               ? "Open profile"
               : "Mark read";
@@ -5747,10 +6832,11 @@ function AnalyticsArtworkRow({ item, onOpen }: AnalyticsArtworkRowProps) {
 type ActivityPanelProps = {
   data: ActivityResponse | null;
   onOpenArtwork: (artwork: Artwork) => void;
+  onOpenNovel?: (novelId: string) => void;
   onOpenProfile: (username: string) => void;
 };
 
-function ActivityPanel({ data, onOpenArtwork, onOpenProfile }: ActivityPanelProps) {
+function ActivityPanel({ data, onOpenArtwork, onOpenNovel, onOpenProfile }: ActivityPanelProps) {
   const activities = data?.activities ?? [];
   const label = data?.scope === "following" ? "Following pulse" : "Community pulse";
 
@@ -5766,6 +6852,7 @@ function ActivityPanel({ data, onOpenArtwork, onOpenProfile }: ActivityPanelProp
           item={item}
           key={item.id}
           onOpenArtwork={onOpenArtwork}
+          onOpenNovel={onOpenNovel}
           onOpenProfile={onOpenProfile}
         />
       ))}
@@ -5783,10 +6870,11 @@ function ActivityPanel({ data, onOpenArtwork, onOpenProfile }: ActivityPanelProp
 type ActivityRowProps = {
   item: ActivityItem;
   onOpenArtwork: (artwork: Artwork) => void;
+  onOpenNovel?: (novelId: string) => void;
   onOpenProfile: (username: string) => void;
 };
 
-function ActivityRow({ item, onOpenArtwork, onOpenProfile }: ActivityRowProps) {
+function ActivityRow({ item, onOpenArtwork, onOpenNovel, onOpenProfile }: ActivityRowProps) {
   const Icon =
     item.type === "publish"
       ? ImageUp
@@ -5825,6 +6913,17 @@ function ActivityRow({ item, onOpenArtwork, onOpenProfile }: ActivityRowProps) {
               loading="lazy"
               decoding="async"
             />
+          </button>
+        ) : item.novel ? (
+          <button
+            className="activity-artwork activity-novel"
+            type="button"
+            onClick={() => onOpenNovel?.(item.novel?.id ?? "")}
+          >
+            <span>{item.message}</span>
+            <span className="activity-novel-mark" style={{ background: item.novel.coverColor }}>
+              {item.novel.title.slice(0, 1).toUpperCase()}
+            </span>
           </button>
         ) : (
           <p>{item.message}</p>
@@ -5881,6 +6980,7 @@ type DashboardProps = {
   onToggleArtworkReview: (enabled: boolean) => void;
   onReviewArtwork: (artwork: Artwork, action: "approve" | "reject") => void;
   onModerateArtwork: (report: ModerationReport, action: "hide" | "restore") => void;
+  onModerateNovel: (report: ModerationReport, action: "hide" | "restore") => void;
   onDeleteReportedComment: (report: ModerationReport) => void;
   onToggleUserSuspension: (
     user: AdminUserSummary,
@@ -5930,6 +7030,7 @@ function Dashboard({
   onToggleArtworkReview,
   onReviewArtwork,
   onModerateArtwork,
+  onModerateNovel,
   onDeleteReportedComment,
   onToggleUserSuspension,
   onSuspendReportedUser,
@@ -6364,6 +7465,16 @@ function Dashboard({
                     >
                       <EyeOff size={15} />
                       Hide artwork
+                    </button>
+                  ) : null}
+                  {report.targetType === "novel" ? (
+                    <button
+                      className="danger-button"
+                      type="button"
+                      onClick={() => onModerateNovel(report, "hide")}
+                    >
+                      <EyeOff size={15} />
+                      Unpublish novel
                     </button>
                   ) : null}
                   {report.targetType === "comment" ? (
@@ -11995,12 +13106,21 @@ type NovelHubPageProps = {
   followedCreators: Creator[];
   followedNovels: Novel[];
   rankingNovels: Novel[];
+  rankingItems: NovelRankingResponse["rankings"];
+  rankingPeriod: RankingPeriod;
+  continueReadingItems: ReadingProgressResponse["progress"];
   bookmarkedNovels: Novel[];
   collections: Array<{ id: string; title: string; detail: string }>;
   matureFilter: MatureFilter;
+  sortMode: NovelSortMode;
+  activeTag: string;
   query: string;
   onMatureFilterChange: (filter: MatureFilter) => void;
+  onSortModeChange: (sortMode: NovelSortMode) => void;
+  onTagFilterChange: (tag: string) => void;
+  onRankingPeriodChange: (period: RankingPeriod) => void;
   onAuthRequired: () => void;
+  onWriteNovel: () => void;
   onOpenNovel: (novelId: string) => void;
   onOpenProfile: (username: string) => void;
   onPrivacySecurity: () => void;
@@ -12017,12 +13137,21 @@ function NovelHubPage({
   followedCreators,
   followedNovels,
   rankingNovels,
+  rankingItems,
+  rankingPeriod,
+  continueReadingItems,
   bookmarkedNovels,
   collections,
   matureFilter,
+  sortMode,
+  activeTag,
   query,
   onMatureFilterChange,
+  onSortModeChange,
+  onTagFilterChange,
+  onRankingPeriodChange,
   onAuthRequired,
+  onWriteNovel,
   onOpenNovel,
   onOpenProfile,
   onPrivacySecurity,
@@ -12045,10 +13174,12 @@ function NovelHubPage({
     following: "Works from creators you already follow.",
     creators: "Authors publishing across NEHub.",
     tags: "Browse the labels shaping the current fiction feed.",
-    novels: "The complete readable shelf currently loaded from NEHub.",
-    rankings: "A quick ranking view built from the current feed.",
-    bookmarks: "Saved fiction will appear here once bookmarks are supported.",
-    collections: "Grouped fiction will appear here once collections are supported.",
+    novels: activeTag
+      ? `Every visible work tagged #${activeTag}.`
+      : "The complete readable shelf currently loaded from NEHub.",
+    rankings: "Daily and weekly novel rankings from recent engagement.",
+    bookmarks: "Saved fiction from your bookmarks.",
+    collections: "Grouped reading shelves for saved novels.",
     terms: "Read the terms without leaving this section.",
     privacy: "Read the privacy policy without leaving this section."
   };
@@ -12085,8 +13216,12 @@ function NovelHubPage({
     section === "collections";
   const showNovelHomeTabs = section === "home" || section === "following";
   const showMatureFilter = section !== "creators" && section !== "tags" && section !== "collections";
+  const showSortControl = section === "home" || section === "novels";
+  const showContinueReading =
+    (section === "home" || section === "following") && continueReadingItems.length > 0;
   const activeSectionLabel = sectionTabs.find((item) => item.section === section)?.label ?? sectionTitleMap[section];
   const prominentNovelTags = data?.tags.slice(0, 12) ?? [];
+  const maxRankingScore = Math.max(1, ...rankingItems.map((item) => item.score));
   const sectionLikeCount = sectionNovels.reduce((sum, novel) => sum + novel.likeCount, 0);
   const sectionViewCount = sectionNovels.reduce((sum, novel) => sum + novel.viewCount, 0);
   const visibleCount =
@@ -12189,6 +13324,10 @@ function NovelHubPage({
           <p>{sectionDescriptionMap[section]}</p>
         </div>
         <div className="feed-controls">
+          <button className="primary-button" type="button" onClick={onWriteNovel}>
+            <NotebookText size={16} />
+            Write
+          </button>
           {showMatureFilter ? (
             <label className="rating-filter novel-rating-filter">
               <Shield size={15} />
@@ -12203,6 +13342,36 @@ function NovelHubPage({
                 ))}
               </select>
             </label>
+          ) : null}
+          {showSortControl ? (
+            <label className="rating-filter novel-rating-filter">
+              <TrendingUp size={15} />
+              <select
+                value={sortMode}
+                onChange={(event) => onSortModeChange(event.target.value as NovelSortMode)}
+              >
+                {novelSortOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          {isRankingsSection ? (
+            <div className="mini-segmented" aria-label="Novel ranking period">
+              {(["daily", "weekly"] as RankingPeriod[]).map((period) => (
+                <button
+                  className={classNames(rankingPeriod === period && "is-active")}
+                  type="button"
+                  key={period}
+                  onClick={() => onRankingPeriodChange(period)}
+                >
+                  <Trophy size={14} />
+                  {period === "daily" ? "Daily" : "Weekly"}
+                </button>
+              ))}
+            </div>
           ) : null}
           {showNovelHomeTabs ? (
             <button className="filter-chip" type="button" onClick={() => onOpenSection("home")}>
@@ -12241,6 +13410,42 @@ function NovelHubPage({
         ))}
       </div>
 
+      {showContinueReading ? (
+        <section className="novel-continue-section" aria-label="Continue reading">
+          <div className="novels-toolbar">
+            <div>
+              <h2>Continue reading</h2>
+              <p>Resume from your latest saved position.</p>
+            </div>
+          </div>
+          <div className="novel-continue-row">
+            {continueReadingItems.slice(0, 4).map((item) => (
+              <button
+                className="novel-progress-card"
+                key={item.novelId}
+                type="button"
+                onClick={() => onOpenNovel(item.novelId)}
+                style={{ "--novel-cover": item.novel.coverColor } as CSSProperties}
+              >
+                <span className="novel-progress-cover" aria-hidden="true">
+                  <NotebookText size={18} />
+                </span>
+                <span className="novel-progress-copy">
+                  <strong>{item.novel.title}</strong>
+                  <small>
+                    {Math.round(item.scrollPercent)}% · {item.novel.readMinutes} min read
+                  </small>
+                  <em>{formatDateTime(item.updatedAt)}</em>
+                </span>
+                <span className="novel-progress-meter" aria-hidden="true">
+                  <span style={{ width: `${Math.max(3, Math.min(100, item.scrollPercent))}%` }} />
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {featuredNovel && (section === "home" || section === "novels") ? (
         <button
           className="novel-featured-row"
@@ -12263,7 +13468,15 @@ function NovelHubPage({
       {prominentNovelTags.length && (section === "home" || section === "following" || section === "novels") ? (
         <div className="tag-row novel-tag-row" aria-label="Popular novel tags">
           {prominentNovelTags.map((tag) => (
-            <button className="tag-pill novel-tag-pill" key={tag.name} type="button" onClick={() => onOpenSection("novels")}>
+            <button
+              className={classNames("tag-pill novel-tag-pill", activeTag === tag.name && "is-active")}
+              key={tag.name}
+              type="button"
+              onClick={() => {
+                onTagFilterChange(activeTag === tag.name ? "" : tag.name);
+                onOpenSection("novels");
+              }}
+            >
               #{tag.name}
               <span>{tag.count}</span>
             </button>
@@ -12303,7 +13516,15 @@ function NovelHubPage({
       ) : section === "tags" ? (
         <div className="tag-row novel-tag-browser" aria-live="polite" aria-label="Novel tags">
           {(data?.tags ?? []).map((tag) => (
-            <button className="tag-pill novel-tag-pill" key={tag.name} type="button" onClick={() => onOpenSection("novels")}>
+            <button
+              className={classNames("tag-pill novel-tag-pill", activeTag === tag.name && "is-active")}
+              key={tag.name}
+              type="button"
+              onClick={() => {
+                onTagFilterChange(activeTag === tag.name ? "" : tag.name);
+                onOpenSection("novels");
+              }}
+            >
               #{tag.name}
               <span>{formatCount(tag.count)}</span>
             </button>
@@ -12331,18 +13552,45 @@ function NovelHubPage({
           ))}
         </div>
       ) : (
-        <div className={classNames("novel-grid", isRankingsSection && "ranking-grid")} aria-live="polite">
-          {sectionNovels.map((novel, index) => (
-            <NovelCard
-              key={novel.id}
-              novel={novel}
-              index={index}
-              rankingPosition={isRankingsSection ? index + 1 : undefined}
-              onOpenNovel={onOpenNovel}
-              onOpenProfile={onOpenProfile}
-            />
-          ))}
-        </div>
+        <>
+          {isRankingsSection && rankingItems.length > 0 ? (
+            <section className="ranking-signal-board" aria-label="Novel ranking signals">
+              <div className="ranking-signal-heading">
+                <span>{rankingPeriod === "daily" ? "Daily" : "Weekly"} signals</span>
+                <strong>{formatCount(rankingItems.length)} ranked works</strong>
+              </div>
+              <div className="ranking-signal-list">
+                {rankingItems.slice(0, 3).map((item, index) => (
+                  <div className="ranking-signal-row" key={item.novel.id}>
+                    <span>#{index + 1} {item.novel.title}</span>
+                    <strong>{formatCount(item.score)}</strong>
+                    <span
+                      className="ranking-signal-meter"
+                      aria-hidden="true"
+                      style={
+                        {
+                          "--ranking-fill": `${Math.max(4, (item.score / maxRankingScore) * 100)}%`
+                        } as CSSProperties
+                      }
+                    />
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          <div className={classNames("novel-grid", isRankingsSection && "ranking-grid")} aria-live="polite">
+            {sectionNovels.map((novel, index) => (
+              <NovelCard
+                key={novel.id}
+                novel={novel}
+                index={index}
+                rankingPosition={isRankingsSection ? index + 1 : undefined}
+                onOpenNovel={onOpenNovel}
+                onOpenProfile={onOpenProfile}
+              />
+            ))}
+          </div>
+        </>
       )}
 
       {!data ? <p className="empty-feed">Loading works.</p> : null}
@@ -12395,9 +13643,11 @@ function NovelCard({ novel, index, rankingPosition, onOpenNovel, onOpenProfile }
       >
         <span className="novel-spine" aria-hidden="true" />
         <span className="novel-card-content">
-          <small>{novel.id}</small>
+          <small>
+            {novel.isDraft ? "Draft" : artworkVisibilityLabel(novel.visibility)} · {novel.id}
+          </small>
           <strong>{novel.title}</strong>
-          <em>{novel.excerpt}</em>
+          <em>{novel.description || novel.excerpt}</em>
         </span>
       </a>
       <div className="novel-card-footer">
@@ -12417,6 +13667,10 @@ function NovelCard({ novel, index, rankingPosition, onOpenNovel, onOpenProfile }
           {formatCount(novel.likeCount)}
         </span>
         <span>
+          <Bookmark size={14} />
+          {formatCount(novel.bookmarkCount)}
+        </span>
+        <span>
           <Eye size={14} />
           {formatCount(novel.viewCount)}
         </span>
@@ -12429,8 +13683,38 @@ function NovelCard({ novel, index, rankingPosition, onOpenNovel, onOpenProfile }
 type NovelDetailPageProps = {
   detail: NovelResponse | null;
   loading: boolean;
+  currentUser: AuthUser | null;
+  siteKey: string;
+  readingLists: ReadingList[];
   onBack: () => void;
   onAuthRequired: () => void;
+  onLikeNovel: (novel: Novel) => void;
+  onBookmarkNovel: (novel: Novel) => void;
+  onExportNovel: (novel: Novel, format: NovelExportFormat) => void;
+  onReportNovel: (
+    novel: Novel,
+    reason: ReportReason,
+    details: string,
+    turnstileToken: string
+  ) => Promise<string>;
+  onEditNovel: (novel: Novel) => void;
+  onDeleteNovel: (novel: Novel) => void;
+  onCreateReadingList: (title: string) => Promise<string>;
+  onToggleReadingListNovel: (readingList: ReadingList, novel: Novel) => Promise<ReadingListNovelResponse>;
+  onCommentNovel: (
+    novel: Novel,
+    body: string,
+    turnstileToken: string,
+    parentId?: string
+  ) => Promise<string>;
+  onUpdateNovelComment: (comment: Comment, body: string) => Promise<string>;
+  onDeleteNovelComment: (comment: Comment) => void;
+  onUpdateReadingProgress: (
+    novel: Novel,
+    lastPosition: number,
+    scrollPercent: number
+  ) => Promise<void>;
+  onOpenArtwork: (artworkId: string) => void;
   onOpenNovel: (novelId: string) => void;
   onOpenProfile: (username: string) => void;
   onPrivacySecurity: () => void;
@@ -12439,12 +13723,85 @@ type NovelDetailPageProps = {
 function NovelDetailPage({
   detail,
   loading,
+  currentUser,
+  siteKey,
+  readingLists,
   onBack,
   onAuthRequired,
+  onLikeNovel,
+  onBookmarkNovel,
+  onExportNovel,
+  onReportNovel,
+  onEditNovel,
+  onDeleteNovel,
+  onCreateReadingList,
+  onToggleReadingListNovel,
+  onCommentNovel,
+  onUpdateNovelComment,
+  onDeleteNovelComment,
+  onUpdateReadingProgress,
+  onOpenArtwork,
   onOpenNovel,
   onOpenProfile,
   onPrivacySecurity
 }: NovelDetailPageProps) {
+  const [fontSize, setFontSize] = useState(18);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [commentBody, setCommentBody] = useState("");
+  const [replyTarget, setReplyTarget] = useState<Comment | null>(null);
+  const [commentTurnstileToken, setCommentTurnstileToken] = useState("");
+  const [commentMessage, setCommentMessage] = useState("");
+  const [commentSubmitting, setCommentSubmitting] = useState(false);
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+  const [editingCommentBody, setEditingCommentBody] = useState("");
+  const [editingCommentSubmitting, setEditingCommentSubmitting] = useState(false);
+  const [readingListTitle, setReadingListTitle] = useState("");
+  const [readingListMessage, setReadingListMessage] = useState("");
+  const [readingListSubmitting, setReadingListSubmitting] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportReason, setReportReason] = useState<ReportReason>("spam");
+  const [reportDetails, setReportDetails] = useState("");
+  const [reportTurnstileToken, setReportTurnstileToken] = useState("");
+  const [reportMessage, setReportMessage] = useState("");
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+  const progressSaveTimerRef = useRef<number | null>(null);
+  const commentGroups = useMemo(() => {
+    const groups = new Map<string | null, Comment[]>();
+    for (const comment of detail?.comments ?? []) {
+      const key = comment.parentId ?? null;
+      groups.set(key, [...(groups.get(key) ?? []), comment]);
+    }
+    return groups;
+  }, [detail?.comments]);
+  useEffect(() => {
+    setReplyTarget(null);
+    setCommentBody("");
+    setCommentTurnstileToken("");
+    setCommentMessage("");
+    setEditingCommentId(null);
+    setEditingCommentBody("");
+    setReadingListMessage("");
+    setReportOpen(false);
+    setReportMessage("");
+    setReportTurnstileToken("");
+  }, [detail?.novel.id]);
+
+  useEffect(
+    () => () => {
+      if (progressSaveTimerRef.current !== null) {
+        window.clearTimeout(progressSaveTimerRef.current);
+      }
+    },
+    []
+  );
+  const markdownHtml = useMemo(
+    () =>
+      detail?.novel.contentFormat === "markdown"
+        ? renderNovelMarkdown(detail.novel.body, detail.linkedArtworks)
+        : "",
+    [detail?.linkedArtworks, detail?.novel.body, detail?.novel.contentFormat]
+  );
+
   if (!detail) {
     return (
       <section className="content-main novel-detail-page">
@@ -12453,8 +13810,231 @@ function NovelDetailPage({
     );
   }
   const novel = detail.novel;
-  const paragraphs = novel.body.split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean);
+  const paragraphs = novel.contentFormat === "markdown"
+    ? []
+    : novel.body.split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean);
   const relatedNovels = detail.relatedNovels;
+  const paragraphsPerPage = 12;
+  const totalPages = novel.contentFormat === "markdown"
+    ? 1
+    : Math.max(1, Math.ceil(paragraphs.length / paragraphsPerPage));
+  const safePageIndex = Math.min(pageIndex, totalPages - 1);
+  const pageParagraphs = paragraphs.slice(
+    safePageIndex * paragraphsPerPage,
+    safePageIndex * paragraphsPerPage + paragraphsPerPage
+  );
+  const saveReadingProgress = (nextPageIndex = safePageIndex) => {
+    if (!currentUser) {
+      return;
+    }
+    const lastPosition =
+      novel.contentFormat === "markdown"
+        ? Math.min(novel.body.length, Math.max(0, Math.round((window.scrollY / Math.max(1, document.body.scrollHeight - window.innerHeight)) * novel.body.length)))
+        : Math.min(
+            novel.body.length,
+            paragraphs.slice(0, nextPageIndex * paragraphsPerPage).join("\n\n").length
+          );
+    const scrollPercent =
+      novel.contentFormat === "markdown"
+        ? Math.max(0, Math.min(100, (window.scrollY / Math.max(1, document.body.scrollHeight - window.innerHeight)) * 100))
+        : Math.max(0, Math.min(100, ((nextPageIndex + 1) / totalPages) * 100));
+    if (progressSaveTimerRef.current !== null) {
+      window.clearTimeout(progressSaveTimerRef.current);
+    }
+    progressSaveTimerRef.current = window.setTimeout(() => {
+      void onUpdateReadingProgress(novel, lastPosition, scrollPercent).catch((error: unknown) => {
+        console.error("Unable to save reading progress", error);
+      });
+    }, 500);
+  };
+  const handleCommentSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (commentSubmitting) {
+      return;
+    }
+    if (!commentTurnstileToken) {
+      setCommentMessage("Complete the check first.");
+      return;
+    }
+    setCommentMessage("");
+    setCommentSubmitting(true);
+    try {
+      const message = await onCommentNovel(
+        novel,
+        commentBody,
+        commentTurnstileToken,
+        replyTarget?.id
+      );
+      setCommentBody("");
+      setReplyTarget(null);
+      setCommentTurnstileToken("");
+      window.turnstile?.reset();
+      setCommentMessage(message);
+    } catch (error) {
+      setCommentTurnstileToken("");
+      window.turnstile?.reset();
+      setCommentMessage(error instanceof Error ? error.message : "Unable to post comment.");
+    } finally {
+      setCommentSubmitting(false);
+    }
+  };
+  const handleNovelReportSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (reportSubmitting) {
+      return;
+    }
+    if (!currentUser) {
+      onAuthRequired();
+      return;
+    }
+    if (!reportTurnstileToken) {
+      setReportMessage("Complete the check first.");
+      return;
+    }
+    setReportSubmitting(true);
+    setReportMessage("");
+    try {
+      const message = await onReportNovel(novel, reportReason, reportDetails, reportTurnstileToken);
+      setReportOpen(false);
+      setReportDetails("");
+      setReportTurnstileToken("");
+      window.turnstile?.reset();
+      setReportMessage(message);
+    } catch (error) {
+      setReportMessage(error instanceof Error ? error.message : "Unable to submit report.");
+      setReportTurnstileToken("");
+      window.turnstile?.reset();
+    } finally {
+      setReportSubmitting(false);
+    }
+  };
+  const handleCreateReadingListSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (readingListSubmitting) {
+      return;
+    }
+    setReadingListSubmitting(true);
+    setReadingListMessage("");
+    try {
+      const message = await onCreateReadingList(readingListTitle);
+      setReadingListTitle("");
+      setReadingListMessage(message);
+    } catch (error) {
+      setReadingListMessage(error instanceof Error ? error.message : "Unable to create reading shelf.");
+    } finally {
+      setReadingListSubmitting(false);
+    }
+  };
+  const handleToggleReadingList = async (readingList: ReadingList) => {
+    if (readingListSubmitting) {
+      return;
+    }
+    setReadingListSubmitting(true);
+    setReadingListMessage("");
+    try {
+      const payload = await onToggleReadingListNovel(readingList, novel);
+      setReadingListMessage(payload.message);
+    } catch (error) {
+      setReadingListMessage(error instanceof Error ? error.message : "Unable to update reading shelf.");
+    } finally {
+      setReadingListSubmitting(false);
+    }
+  };
+  const handleCommentEditSubmit = async (
+    event: FormEvent<HTMLFormElement>,
+    comment: Comment
+  ) => {
+    event.preventDefault();
+    if (editingCommentSubmitting) {
+      return;
+    }
+    setCommentMessage("");
+    setEditingCommentSubmitting(true);
+    try {
+      const message = await onUpdateNovelComment(comment, editingCommentBody);
+      setEditingCommentId(null);
+      setEditingCommentBody("");
+      setCommentMessage(message);
+    } catch (error) {
+      setCommentMessage(error instanceof Error ? error.message : "Unable to update comment.");
+    } finally {
+      setEditingCommentSubmitting(false);
+    }
+  };
+  const renderComment = (comment: Comment, depth = 0): ReactNode => {
+    const children = commentGroups.get(comment.id) ?? [];
+    return (
+      <div className="comment-thread" key={comment.id}>
+        <div className="comment-row" style={{ marginLeft: `${Math.min(depth, 3) * 18}px` }}>
+          <div className="comment-row-heading">
+            <strong>{comment.author}</strong>
+            <div className="comment-row-actions">
+              {comment.updatedAt ? <span className="comment-edited">edited</span> : null}
+              {currentUser ? (
+                <button
+                  className="text-button"
+                  type="button"
+                  onClick={() => {
+                    setReplyTarget(comment);
+                    setEditingCommentId(null);
+                  }}
+                >
+                  Reply
+                </button>
+              ) : null}
+              {currentUser?.id === comment.authorId ? (
+                <button
+                  className="text-button"
+                  type="button"
+                  onClick={() => {
+                    setEditingCommentId(comment.id);
+                    setEditingCommentBody(comment.body);
+                    setReplyTarget(null);
+                  }}
+                >
+                  Edit
+                </button>
+              ) : null}
+              {comment.canManage ? (
+                <button
+                  className="text-button"
+                  type="button"
+                  onClick={() => onDeleteNovelComment(comment)}
+                >
+                  Delete
+                </button>
+              ) : null}
+            </div>
+          </div>
+          {editingCommentId === comment.id ? (
+            <form
+              className="comment-form inline-comment-form"
+              onSubmit={(event) => void handleCommentEditSubmit(event, comment)}
+            >
+              <textarea
+                value={editingCommentBody}
+                maxLength={800}
+                rows={3}
+                onChange={(event) => setEditingCommentBody(event.target.value)}
+                required
+              />
+              <div className="settings-actions">
+                <button className="secondary-button" type="submit" disabled={editingCommentSubmitting}>
+                  {editingCommentSubmitting ? "Saving" : "Save"}
+                </button>
+                <button className="text-button" type="button" onClick={() => setEditingCommentId(null)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <p>{comment.body}</p>
+          )}
+        </div>
+        {children.map((child) => renderComment(child, depth + 1))}
+      </div>
+    );
+  };
 
   return (
     <article className="content-main novel-detail-page">
@@ -12490,14 +14070,193 @@ function NovelDetailPage({
             <strong>{formatCount(novel.viewCount)}</strong>
             views
           </span>
+          <span>
+            <strong>{formatCount(novel.commentCount)}</strong>
+            comments
+          </span>
         </div>
+        <div className="novel-action-row">
+          <button
+            className={classNames("primary-button", novel.liked && "is-active")}
+            type="button"
+            onClick={() => onLikeNovel(novel)}
+          >
+            <Heart size={17} fill={novel.liked ? "currentColor" : "none"} />
+            {formatCount(novel.likeCount)}
+          </button>
+          <button
+            className={classNames("secondary-button", novel.bookmarked && "is-active")}
+            type="button"
+            onClick={() => onBookmarkNovel(novel)}
+          >
+            <Bookmark size={17} fill={novel.bookmarked ? "currentColor" : "none"} />
+            {novel.bookmarked ? "Bookmarked" : "Bookmark"}
+            <span>{formatCount(novel.bookmarkCount)}</span>
+          </button>
+          <div className="novel-export-group" aria-label="Export novel">
+            {(["markdown", "epub", "pdf"] as NovelExportFormat[]).map((format) => (
+              <button
+                className="secondary-button"
+                key={format}
+                type="button"
+                onClick={() => onExportNovel(novel, format)}
+              >
+                <Download size={15} />
+                {format.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          {currentUser?.id !== novel.creator.id ? (
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => {
+                if (!currentUser) {
+                  onAuthRequired();
+                  return;
+                }
+                setReportOpen((value) => !value);
+                setReportMessage("");
+                setReportTurnstileToken("");
+              }}
+            >
+              <Flag size={16} />
+              Report
+            </button>
+          ) : null}
+        </div>
+        {reportMessage ? <p className="auth-inline-message">{reportMessage}</p> : null}
+        {reportOpen ? (
+          <form className="report-form novel-report-form" onSubmit={handleNovelReportSubmit}>
+            <label>
+              Reason
+              <select
+                value={reportReason}
+                onChange={(event) => setReportReason(event.target.value as ReportReason)}
+              >
+                {reportReasonOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Details
+              <textarea
+                value={reportDetails}
+                maxLength={800}
+                rows={3}
+                onChange={(event) => setReportDetails(event.target.value)}
+                placeholder="Optional context for moderators"
+              />
+            </label>
+            <TurnstileWidget siteKey={siteKey} action="report" onToken={setReportTurnstileToken} compact />
+            <div className="settings-actions">
+              <button className="danger-button" type="submit" disabled={reportSubmitting}>
+                <Flag size={15} />
+                {reportSubmitting ? "Submitting" : "Submit report"}
+              </button>
+              <button className="secondary-button" type="button" onClick={() => setReportOpen(false)}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : null}
+        {novel.canManage ? (
+          <div className="novel-manage-actions">
+            <button className="secondary-button" type="button" onClick={() => onEditNovel(novel)}>
+              <Pencil size={15} />
+              Edit
+            </button>
+            <button className="secondary-button" type="button" onClick={() => onDeleteNovel(novel)}>
+              <Trash2 size={15} />
+              Delete
+            </button>
+          </div>
+        ) : null}
       </header>
 
       <div className="novel-reading-layout">
-        <div className="novel-body">
-          {paragraphs.map((paragraph, index) => (
-            <p key={`${novel.id}-${index}`}>{paragraph}</p>
-          ))}
+        <div className="novel-body" style={{ fontSize }}>
+          <div className="novel-reader-controls" aria-label="Reader controls">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => {
+                const nextPageIndex = Math.max(0, safePageIndex - 1);
+                setPageIndex(nextPageIndex);
+                saveReadingProgress(nextPageIndex);
+              }}
+              disabled={safePageIndex === 0}
+            >
+              Previous
+            </button>
+            <span>
+              {novel.contentFormat === "markdown" ? "Markdown" : `Page ${safePageIndex + 1} / ${totalPages}`}
+            </span>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => {
+                const nextPageIndex = Math.min(totalPages - 1, safePageIndex + 1);
+                setPageIndex(nextPageIndex);
+                saveReadingProgress(nextPageIndex);
+              }}
+              disabled={safePageIndex >= totalPages - 1}
+              hidden={novel.contentFormat === "markdown"}
+            >
+              Next
+            </button>
+            <label>
+              Font
+              <input
+                type="range"
+                min={15}
+                max={24}
+                value={fontSize}
+                onChange={(event) => {
+                  setFontSize(Number(event.target.value));
+                  saveReadingProgress();
+                }}
+              />
+            </label>
+            {currentUser ? (
+              <button className="secondary-button" type="button" onClick={() => saveReadingProgress()}>
+                <Bookmark size={15} />
+                Save place
+              </button>
+            ) : null}
+          </div>
+          {novel.contentFormat === "markdown" ? (
+            <div
+              className="novel-markdown-body"
+              onClick={(event) => {
+                const link = (event.target as HTMLElement).closest<HTMLAnchorElement>(
+                  ".novel-artwork-embed[data-artwork-id]"
+                );
+                if (
+                  !link ||
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey ||
+                  event.button !== 0
+                ) {
+                  return;
+                }
+                const artworkId = link.dataset.artworkId;
+                if (!artworkId) {
+                  return;
+                }
+                event.preventDefault();
+                onOpenArtwork(artworkId);
+              }}
+              dangerouslySetInnerHTML={{ __html: markdownHtml }}
+            />
+          ) : (
+            pageParagraphs.map((paragraph, index) => <p key={`${novel.id}-${index}`}>{paragraph}</p>)
+          )}
         </div>
         <aside className="novel-detail-side">
           <section className="side-panel">
@@ -12513,6 +14272,90 @@ function NovelDetailPage({
               ))}
             </div>
           </section>
+          {novel.toc.length > 0 ? (
+            <section className="side-panel">
+              <div className="panel-title">
+                <ListOrdered size={18} />
+                Contents
+              </div>
+              <div className="novel-toc">
+                {novel.toc.map((item) => (
+                  <button
+                    className="novel-toc-item"
+                    key={item.id}
+                    type="button"
+                    style={{ paddingLeft: `${(item.level - 1) * 10 + 12}px` }}
+                    onClick={() => {
+                      document.getElementById(item.id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }}
+                  >
+                    {item.text}
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+          {currentUser ? (
+            <section className="side-panel">
+              <div className="panel-title">
+                <FolderOpen size={18} />
+                Reading shelves
+              </div>
+              <form className="novel-shelf-form" onSubmit={(event) => void handleCreateReadingListSubmit(event)}>
+                <input
+                  value={readingListTitle}
+                  maxLength={80}
+                  onChange={(event) => setReadingListTitle(event.target.value)}
+                  placeholder="New shelf"
+                />
+                <button className="secondary-button" type="submit" disabled={readingListSubmitting}>
+                  Add
+                </button>
+              </form>
+              <div className="novel-shelf-list">
+                {readingLists.map((readingList) => {
+                  const saved = readingList.novelIds.includes(novel.id);
+                  return (
+                    <button
+                      className={classNames("novel-shelf-row", saved && "is-active")}
+                      key={readingList.id}
+                      type="button"
+                      onClick={() => void handleToggleReadingList(readingList)}
+                      disabled={readingListSubmitting}
+                    >
+                      <span>{readingList.title}</span>
+                      <small>{formatCount(readingList.novelCount)}</small>
+                    </button>
+                  );
+                })}
+              </div>
+              {readingListMessage ? <p className="auth-inline-message">{readingListMessage}</p> : null}
+            </section>
+          ) : null}
+          {detail.linkedArtworks.length > 0 ? (
+            <section className="side-panel">
+              <div className="panel-title">
+                <Images size={18} />
+                Illustrations
+              </div>
+              <div className="novel-linked-artworks">
+                {detail.linkedArtworks.map((artwork) => (
+                  <button
+                    className="novel-linked-artwork"
+                    key={artwork.id}
+                    type="button"
+                    onClick={() => onOpenArtwork(artwork.id)}
+                  >
+                    <img src={artwork.thumbnailUrl} alt="" loading="lazy" decoding="async" />
+                    <span>
+                      <strong>{artwork.title}</strong>
+                      <small>@{artwork.creator.handle}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
           {relatedNovels.length ? (
             <section className="side-panel">
               <div className="panel-title">
@@ -12535,6 +14378,52 @@ function NovelDetailPage({
           ) : null}
         </aside>
       </div>
+      <section className="side-panel novel-comment-panel">
+        <div className="panel-title">
+          <MessageCircle size={18} />
+          Comments
+        </div>
+        {currentUser ? (
+          <form className="comment-form" onSubmit={(event) => void handleCommentSubmit(event)}>
+            {replyTarget ? (
+              <div className="reply-target">
+                Replying to {replyTarget.author}
+                <button className="text-button" type="button" onClick={() => setReplyTarget(null)}>
+                  Cancel
+                </button>
+              </div>
+            ) : null}
+            <textarea
+              value={commentBody}
+              maxLength={800}
+              rows={3}
+              onChange={(event) => setCommentBody(event.target.value)}
+              placeholder={replyTarget ? "Add a reply" : "Add a comment"}
+              required
+            />
+            <TurnstileWidget
+              siteKey={siteKey}
+              action="comment"
+              onToken={setCommentTurnstileToken}
+              compact
+            />
+            <button className="secondary-button" type="submit" disabled={commentSubmitting}>
+              <MessageCircle size={16} />
+              {commentSubmitting ? "Posting" : "Post"}
+            </button>
+          </form>
+        ) : (
+          <button className="secondary-button" type="button" onClick={onAuthRequired}>
+            <LogIn size={16} />
+            Sign in to comment
+          </button>
+        )}
+        {commentMessage ? <p className="auth-inline-message">{commentMessage}</p> : null}
+        <div className="comment-list">
+          {(commentGroups.get(null) ?? []).map((comment) => renderComment(comment))}
+          {detail.comments.length === 0 ? <p className="muted">No comments yet.</p> : null}
+        </div>
+      </section>
     </article>
   );
 }
@@ -12565,6 +14454,7 @@ type IllustrationsPageProps = {
   onToggleTagSubscription: (tag: string) => void;
   onOpenArtwork: (artwork: Artwork) => void;
   onOpenArtworkPage: (artwork: Artwork) => void;
+  onOpenNovel: (novelId: string) => void;
   onBookmark: (artwork: Artwork, visibility?: BookmarkVisibility) => void;
   onOpenProfile: (username: string) => void;
   onLoadMore: () => void;
@@ -12597,6 +14487,7 @@ function IllustrationsPage({
   onToggleTagSubscription,
   onOpenArtwork,
   onOpenArtworkPage,
+  onOpenNovel,
   onBookmark,
   onOpenProfile,
   onLoadMore,
@@ -12755,6 +14646,7 @@ function IllustrationsPage({
         <ActivityPanel
           data={activityData}
           onOpenArtwork={onOpenArtwork}
+          onOpenNovel={onOpenNovel}
           onOpenProfile={onOpenProfile}
         />
 
@@ -14242,6 +16134,1297 @@ function TagChipEditor({
           </button>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+type NovelFormDrawerProps = {
+  open: boolean;
+  mode: "create" | "edit";
+  novel: Novel | null;
+  message: string;
+  siteKey: string;
+  matureAccess: MatureAccess | null;
+  seriesList: NovelSeries[];
+  submitting: boolean;
+  onClose: () => void;
+  onOpenPrivacySecurity: () => void;
+  onSubmit: (input: NovelEditInput, turnstileToken: string) => Promise<string>;
+  onImport: (input: NovelImportInput, file: File, turnstileToken: string) => Promise<string>;
+};
+
+function NovelShelfPreview({ count }: { count: number }) {
+  if (count === 0) {
+    return (
+      <span className="collection-folder-icon">
+        <FolderOpen size={22} />
+      </span>
+    );
+  }
+  return (
+    <span className="novel-folder-preview" aria-hidden="true">
+      {[0, 1, 2].map((index) => (
+        <span key={index}>{index < count ? "Aa" : ""}</span>
+      ))}
+    </span>
+  );
+}
+
+type ReadingListsPageProps = {
+  readingLists: ReadingList[];
+  currentUser: AuthUser | null;
+  onAuthRequired: () => void;
+  onCreateReadingList: (title: string) => Promise<string>;
+  onOpenReadingList: (readingListId: string) => void;
+};
+
+function ReadingListsPage({
+  readingLists,
+  currentUser,
+  onAuthRequired,
+  onCreateReadingList,
+  onOpenReadingList
+}: ReadingListsPageProps) {
+  const [title, setTitle] = useState("");
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (submitting) {
+      return;
+    }
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const nextMessage = await onCreateReadingList(title);
+      setTitle("");
+      setMessage(nextMessage);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to create reading shelf.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!currentUser) {
+    return (
+      <section className="content-main collection-page novel-dedicated-page novel-shelves-page">
+        <p className="empty-feed">Sign in to manage reading shelves.</p>
+        <button className="primary-button" type="button" onClick={onAuthRequired}>
+          <LogIn size={17} />
+          Sign in
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="content-main collection-page novel-dedicated-page novel-shelves-page">
+      <div className="settings-heading collection-heading">
+        <div>
+          <p className="eyebrow">Shelves</p>
+          <h1>Reading shelves</h1>
+          <p>Group saved novels into private or public reading lists.</p>
+        </div>
+      </div>
+
+      <form className="collection-page-create" onSubmit={handleSubmit}>
+        <input
+          value={title}
+          minLength={2}
+          maxLength={80}
+          onChange={(event) => setTitle(event.target.value)}
+          placeholder="New shelf name"
+          required
+        />
+        <button className="primary-button" type="submit" disabled={submitting}>
+          <FolderOpen size={17} />
+          {submitting ? "Creating" : "Create"}
+        </button>
+      </form>
+      {message ? <p className="auth-inline-message">{message}</p> : null}
+
+      <div className="collection-folder-grid">
+        {readingLists.map((readingList) => (
+          <button
+            className="collection-folder-card"
+            key={readingList.id}
+            type="button"
+            onClick={() => onOpenReadingList(readingList.id)}
+          >
+            <NovelShelfPreview count={readingList.novelCount} />
+            <span>
+              <strong>{readingList.title}</strong>
+              <small>
+                {formatCount(readingList.novelCount)} entries · {readingList.visibility}
+              </small>
+            </span>
+            {readingList.visibility === "public" ? <Eye size={16} /> : <Lock size={16} />}
+          </button>
+        ))}
+      </div>
+      {readingLists.length === 0 ? (
+        <p className="empty-feed">No shelves yet. Create one, then add novels from a reader page.</p>
+      ) : null}
+    </section>
+  );
+}
+
+type ReadingListPageProps = {
+  readingListId: string;
+  csrfToken: string;
+  currentUser: AuthUser | null;
+  onAuthRequired: () => void;
+  onBack: () => void;
+  onDelete: (readingListId: string) => Promise<string>;
+  onDeleted: () => void;
+  onOpenNovel: (novelId: string) => void;
+  onOpenProfile: (username: string) => void;
+  onOpenPrivacySecurity: () => void;
+  onUpdate: (readingListId: string, input: ReadingListSettingsInput) => Promise<ReadingListResponse>;
+};
+
+function ReadingListPage({
+  readingListId,
+  csrfToken,
+  currentUser,
+  onAuthRequired,
+  onBack,
+  onDelete,
+  onDeleted,
+  onOpenNovel,
+  onOpenProfile,
+  onOpenPrivacySecurity,
+  onUpdate
+}: ReadingListPageProps) {
+  const [detail, setDetail] = useState<ReadingListDetailResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [reordering, setReordering] = useState(false);
+  const [form, setForm] = useState<ReadingListSettingsInput>({
+    title: "",
+    description: "",
+    visibility: "private"
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setMessage("");
+    setDetail(null);
+    if (!readingListId) {
+      setLoading(false);
+      setMessage("Reading shelf not found.");
+      return () => {
+        cancelled = true;
+      };
+    }
+    fetch(`/api/reading-lists/${encodeURIComponent(readingListId)}`, { credentials: "include" })
+      .then(async (response) => {
+        const payload = (await response.json()) as ReadingListDetailResponse | { message?: string };
+        if (!response.ok || !("readingList" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ?? "Reading shelf could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setDetail(payload);
+          setForm({
+            title: payload.readingList.title,
+            description: payload.readingList.description,
+            visibility: payload.readingList.visibility
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setMessage(error instanceof Error ? error.message : "Reading shelf could not be loaded.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id, readingListId]);
+
+  const handleSave = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (saving) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    try {
+      const payload = await onUpdate(readingListId, form);
+      setDetail((current) =>
+        current
+          ? {
+              ...current,
+              readingList: payload.readingList
+            }
+          : current
+      );
+      setEditing(false);
+      setMessage(payload.message);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to update reading shelf.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (deleting || !detail || !window.confirm(`Delete "${detail.readingList.title}"?`)) {
+      return;
+    }
+    setDeleting(true);
+    setMessage("");
+    try {
+      const nextMessage = await onDelete(readingListId);
+      setMessage(nextMessage);
+      onDeleted();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to delete reading shelf.");
+    } finally {
+      setDeleting(false);
+    }
+  };
+  const handleMoveNovel = async (novelId: string, direction: -1 | 1) => {
+    if (!detail || reordering) {
+      return;
+    }
+    const currentIndex = detail.novels.findIndex((novel) => novel.id === novelId);
+    const targetIndex = currentIndex + direction;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= detail.novels.length) {
+      return;
+    }
+    const nextNovels = [...detail.novels];
+    const [moved] = nextNovels.splice(currentIndex, 1);
+    nextNovels.splice(targetIndex, 0, moved);
+    setReordering(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/reading-lists/${readingListId}/novels/order`, {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+        },
+        body: JSON.stringify({ novelIds: nextNovels.map((novel) => novel.id) })
+      });
+      const payload = (await response.json()) as ReadingListResponse | { message?: string };
+      if (!response.ok || !("readingList" in payload)) {
+        throw new Error(payload.message ?? "Unable to reorder reading shelf.");
+      }
+      setDetail((current) =>
+        current
+          ? {
+              ...current,
+              readingList: payload.readingList,
+              novels: nextNovels
+            }
+          : current
+      );
+      setMessage(payload.message);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to reorder reading shelf.");
+    } finally {
+      setReordering(false);
+    }
+  };
+
+  const readingList = detail?.readingList;
+  const owner = detail?.owner;
+
+  return (
+    <section className="content-main collection-page novel-dedicated-page novel-shelves-page">
+      {loading ? <p className="empty-feed">Loading shelf.</p> : null}
+      {message ? <p className="empty-feed">{message}</p> : null}
+      {!loading && !detail && !currentUser ? (
+        <button className="primary-button" type="button" onClick={onAuthRequired}>
+          <LogIn size={17} />
+          Sign in
+        </button>
+      ) : null}
+      {detail && readingList && owner ? (
+        <>
+          <div className="collection-detail-hero">
+            <button className="secondary-button" type="button" onClick={onBack}>
+              <ChevronDown size={17} />
+              Shelves
+            </button>
+            <div>
+              <p className="eyebrow">Reading shelf</p>
+              <h1>{readingList.title}</h1>
+              <p>{readingList.description || "No description."}</p>
+              <div className="profile-meta">
+                <button className="text-button" type="button" onClick={() => onOpenProfile(owner.handle)}>
+                  @{owner.handle}
+                </button>
+                <span>{formatCount(detail.novels.length)} visible entries</span>
+                <span>{readingList.visibility}</span>
+                <span>Updated {fullDateFormat.format(new Date(readingList.updatedAt))}</span>
+              </div>
+            </div>
+            {detail.canManage ? (
+              <div className="collection-detail-actions">
+                <button className="secondary-button" type="button" onClick={() => setEditing((value) => !value)}>
+                  <Pencil size={16} />
+                  Edit
+                </button>
+                <button className="danger-button" type="button" onClick={handleDelete} disabled={deleting}>
+                  <Trash2 size={16} />
+                  {deleting ? "Deleting" : "Delete"}
+                </button>
+              </div>
+            ) : null}
+          </div>
+
+          <MatureAccessNotice
+            matureAccess={detail.matureAccess}
+            onLogin={onAuthRequired}
+            onPrivacySecurity={onOpenPrivacySecurity}
+          />
+
+          {editing ? (
+            <form className="settings-form collection-settings-form" onSubmit={handleSave}>
+              <label>
+                Title
+                <input
+                  value={form.title}
+                  minLength={2}
+                  maxLength={80}
+                  onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
+                  required
+                />
+              </label>
+              <label>
+                Description
+                <textarea
+                  value={form.description}
+                  maxLength={1000}
+                  rows={3}
+                  onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+                />
+              </label>
+              <label>
+                Visibility
+                <select
+                  value={form.visibility}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      visibility: event.target.value as CollectionVisibility
+                    }))
+                  }
+                >
+                  <option value="private">Private</option>
+                  <option value="public">Public</option>
+                </select>
+              </label>
+              <div className="settings-actions">
+                <button className="primary-button" type="submit" disabled={saving}>
+                  <Pencil size={17} />
+                  {saving ? "Saving" : "Save shelf"}
+                </button>
+                <button className="secondary-button" type="button" onClick={() => setEditing(false)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : null}
+
+          {detail.canManage && detail.novels.length > 1 ? (
+            <div className="novel-order-list">
+              {detail.novels.map((novel, index) => (
+                <span className="novel-order-row" key={novel.id}>
+                  <span>
+                    <strong>{novel.title}</strong>
+                    <small>{formatCount(novel.wordCount)} words</small>
+                  </span>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Move ${novel.title} earlier`}
+                    onClick={() => void handleMoveNovel(novel.id, -1)}
+                    disabled={index === 0 || reordering}
+                  >
+                    <ChevronUp size={15} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Move ${novel.title} later`}
+                    onClick={() => void handleMoveNovel(novel.id, 1)}
+                    disabled={index === detail.novels.length - 1 || reordering}
+                  >
+                    <ChevronDown size={15} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="novel-grid">
+            {detail.novels.map((novel, index) => (
+              <NovelCard
+                key={novel.id}
+                novel={novel}
+                index={index}
+                onOpenNovel={onOpenNovel}
+                onOpenProfile={onOpenProfile}
+              />
+            ))}
+          </div>
+          {detail.novels.length === 0 ? <p className="empty-feed">No visible entries in this shelf.</p> : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function NovelSerialPreview({ count }: { count: number }) {
+  return (
+    <span className="novel-folder-preview novel-serial-preview" aria-hidden="true">
+      {[0, 1, 2].map((index) => (
+        <span key={index}>{index < count ? index + 1 : ""}</span>
+      ))}
+    </span>
+  );
+}
+
+type NovelSeriesListPageProps = {
+  seriesList: NovelSeries[];
+  currentUser: AuthUser | null;
+  onAuthRequired: () => void;
+  onCreateSeries: (title: string) => Promise<string>;
+  onOpenSeries: (seriesId: string) => void;
+};
+
+function NovelSeriesListPage({
+  seriesList,
+  currentUser,
+  onAuthRequired,
+  onCreateSeries,
+  onOpenSeries
+}: NovelSeriesListPageProps) {
+  const [title, setTitle] = useState("");
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (submitting) {
+      return;
+    }
+    setSubmitting(true);
+    setMessage("");
+    try {
+      const nextMessage = await onCreateSeries(title);
+      setTitle("");
+      setMessage(nextMessage);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to create serial.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!currentUser) {
+    return (
+      <section className="content-main collection-page series-page novel-dedicated-page novel-serials-page">
+        <p className="empty-feed">Sign in to manage serials.</p>
+        <button className="primary-button" type="button" onClick={onAuthRequired}>
+          <LogIn size={17} />
+          Sign in
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="content-main collection-page series-page novel-dedicated-page novel-serials-page">
+      <div className="settings-heading collection-heading">
+        <div>
+          <p className="eyebrow">Serials</p>
+          <h1>Serials</h1>
+          <p>Order your own works into chaptered reading sequences.</p>
+        </div>
+      </div>
+
+      <form className="collection-page-create" onSubmit={handleSubmit}>
+        <input
+          value={title}
+          minLength={2}
+          maxLength={160}
+          onChange={(event) => setTitle(event.target.value)}
+          placeholder="New serial title"
+          required
+        />
+        <button className="primary-button" type="submit" disabled={submitting}>
+          <ListOrdered size={17} />
+          {submitting ? "Creating" : "Create"}
+        </button>
+      </form>
+      {message ? <p className="auth-inline-message">{message}</p> : null}
+
+      <div className="collection-folder-grid">
+        {seriesList.map((series) => (
+          <button
+            className="collection-folder-card series-folder-card"
+            key={series.id}
+            type="button"
+            onClick={() => onOpenSeries(series.id)}
+          >
+            <NovelSerialPreview count={series.novelCount} />
+            <span>
+              <strong>{series.title}</strong>
+              <small>{formatCount(series.novelCount)} entries</small>
+            </span>
+            <ListOrdered size={16} />
+          </button>
+        ))}
+      </div>
+      {seriesList.length === 0 ? (
+        <p className="empty-feed">No serials yet. Create one, then assign chapters while writing.</p>
+      ) : null}
+    </section>
+  );
+}
+
+type NovelSeriesPageProps = {
+  seriesId: string;
+  csrfToken: string;
+  currentUser: AuthUser | null;
+  onAuthRequired: () => void;
+  onBack: () => void;
+  onDelete: (seriesId: string) => Promise<string>;
+  onDeleted: () => void;
+  onOpenNovel: (novelId: string) => void;
+  onOpenProfile: (username: string) => void;
+  onOpenPrivacySecurity: () => void;
+  onUpdate: (seriesId: string, input: NovelSeriesSettingsInput) => Promise<NovelSeriesResponse>;
+};
+
+function NovelSeriesPage({
+  seriesId,
+  csrfToken,
+  currentUser,
+  onAuthRequired,
+  onBack,
+  onDelete,
+  onDeleted,
+  onOpenNovel,
+  onOpenProfile,
+  onOpenPrivacySecurity,
+  onUpdate
+}: NovelSeriesPageProps) {
+  const [detail, setDetail] = useState<NovelSeriesDetailResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [reordering, setReordering] = useState(false);
+  const [form, setForm] = useState<NovelSeriesSettingsInput>({
+    title: "",
+    description: ""
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setMessage("");
+    setDetail(null);
+    if (!seriesId) {
+      setLoading(false);
+      setMessage("Serial not found.");
+      return () => {
+        cancelled = true;
+      };
+    }
+    fetch(`/api/novel-series/${encodeURIComponent(seriesId)}`, { credentials: "include" })
+      .then(async (response) => {
+        const payload = (await response.json()) as NovelSeriesDetailResponse | { message?: string };
+        if (!response.ok || !("series" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ?? "Serial could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setDetail(payload);
+          setForm({
+            title: payload.series.title,
+            description: payload.series.description
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setMessage(error instanceof Error ? error.message : "Serial could not be loaded.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id, seriesId]);
+
+  const handleSave = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (saving) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    try {
+      const payload = await onUpdate(seriesId, form);
+      setDetail((current) =>
+        current
+          ? {
+              ...current,
+              series: payload.series
+            }
+          : current
+      );
+      setEditing(false);
+      setMessage(payload.message);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to update serial.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (deleting || !detail || !window.confirm(`Delete "${detail.series.title}"?`)) {
+      return;
+    }
+    setDeleting(true);
+    setMessage("");
+    try {
+      const nextMessage = await onDelete(seriesId);
+      setMessage(nextMessage);
+      onDeleted();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to delete serial.");
+    } finally {
+      setDeleting(false);
+    }
+  };
+  const handleMoveChapter = async (novelId: string, direction: -1 | 1) => {
+    if (!detail || reordering) {
+      return;
+    }
+    const currentIndex = detail.novels.findIndex((novel) => novel.id === novelId);
+    const targetIndex = currentIndex + direction;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= detail.novels.length) {
+      return;
+    }
+    const nextNovels = [...detail.novels];
+    const [moved] = nextNovels.splice(currentIndex, 1);
+    nextNovels.splice(targetIndex, 0, moved);
+    setReordering(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/novel-series/${seriesId}/novels/order`, {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+        },
+        body: JSON.stringify({ novelIds: nextNovels.map((novel) => novel.id) })
+      });
+      const payload = (await response.json()) as NovelSeriesResponse | { message?: string };
+      if (!response.ok || !("series" in payload)) {
+        throw new Error(payload.message ?? "Unable to reorder serial.");
+      }
+      setDetail((current) =>
+        current
+          ? {
+              ...current,
+              series: payload.series,
+              novels: nextNovels.map((novel, index) => ({
+                ...novel,
+                chapterNumber: index + 1
+              }))
+            }
+          : current
+      );
+      setMessage(payload.message);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to reorder serial.");
+    } finally {
+      setReordering(false);
+    }
+  };
+
+  const series = detail?.series;
+  const owner = detail?.owner;
+
+  return (
+    <section className="content-main collection-page series-page novel-dedicated-page novel-serials-page">
+      {loading ? <p className="empty-feed">Loading serial.</p> : null}
+      {message ? <p className="empty-feed">{message}</p> : null}
+      {!loading && !detail && !currentUser ? (
+        <button className="primary-button" type="button" onClick={onAuthRequired}>
+          <LogIn size={17} />
+          Sign in
+        </button>
+      ) : null}
+      {detail && series && owner ? (
+        <>
+          <div className="collection-detail-hero series-detail-hero">
+            <button className="secondary-button" type="button" onClick={onBack}>
+              <ChevronDown size={17} />
+              Serials
+            </button>
+            <div>
+              <p className="eyebrow">Serial</p>
+              <h1>{series.title}</h1>
+              <p>{series.description || "No description."}</p>
+              <div className="profile-meta">
+                <button className="text-button" type="button" onClick={() => onOpenProfile(owner.handle)}>
+                  @{owner.handle}
+                </button>
+                <span>{formatCount(detail.novels.length)} visible entries</span>
+                <span>Updated {fullDateFormat.format(new Date(series.updatedAt))}</span>
+              </div>
+            </div>
+            {detail.canManage ? (
+              <div className="collection-detail-actions">
+                <button className="secondary-button" type="button" onClick={() => setEditing((value) => !value)}>
+                  <Pencil size={16} />
+                  Edit
+                </button>
+                <button className="danger-button" type="button" onClick={handleDelete} disabled={deleting}>
+                  <Trash2 size={16} />
+                  {deleting ? "Deleting" : "Delete"}
+                </button>
+              </div>
+            ) : null}
+          </div>
+
+          <MatureAccessNotice
+            matureAccess={detail.matureAccess}
+            onLogin={onAuthRequired}
+            onPrivacySecurity={onOpenPrivacySecurity}
+          />
+
+          {editing ? (
+            <form className="settings-form collection-settings-form" onSubmit={handleSave}>
+              <label>
+                Title
+                <input
+                  value={form.title}
+                  minLength={2}
+                  maxLength={160}
+                  onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
+                  required
+                />
+              </label>
+              <label>
+                Description
+                <textarea
+                  value={form.description}
+                  maxLength={2000}
+                  rows={3}
+                  onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+                />
+              </label>
+              <div className="settings-actions">
+                <button className="primary-button" type="submit" disabled={saving}>
+                  <Pencil size={17} />
+                  {saving ? "Saving" : "Save serial"}
+                </button>
+                <button className="secondary-button" type="button" onClick={() => setEditing(false)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : null}
+
+          {detail.canManage && detail.novels.length > 1 ? (
+            <div className="novel-order-list">
+              {detail.novels.map((novel, index) => (
+                <span className="novel-order-row" key={novel.id}>
+                  <span>
+                    <strong>{novel.chapterNumber ? `Chapter ${novel.chapterNumber}: ` : ""}{novel.title}</strong>
+                    <small>{novel.readMinutes} min read</small>
+                  </span>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Move ${novel.title} earlier`}
+                    onClick={() => void handleMoveChapter(novel.id, -1)}
+                    disabled={index === 0 || reordering}
+                  >
+                    <ChevronUp size={15} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Move ${novel.title} later`}
+                    onClick={() => void handleMoveChapter(novel.id, 1)}
+                    disabled={index === detail.novels.length - 1 || reordering}
+                  >
+                    <ChevronDown size={15} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="novel-grid">
+            {detail.novels.map((novel, index) => (
+              <NovelCard
+                key={novel.id}
+                novel={novel}
+                index={index}
+                onOpenNovel={onOpenNovel}
+                onOpenProfile={onOpenProfile}
+              />
+            ))}
+          </div>
+          {detail.novels.length === 0 ? <p className="empty-feed">No visible entries in this serial.</p> : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function NovelFormDrawer({
+  open,
+  mode,
+  novel,
+  message,
+  siteKey,
+  matureAccess,
+  seriesList,
+  submitting,
+  onClose,
+  onOpenPrivacySecurity,
+  onSubmit,
+  onImport
+}: NovelFormDrawerProps) {
+  const [input, setInput] = useState<NovelEditInput>({
+    title: "",
+    content: "",
+    description: "",
+    tags: "original",
+    matureRating: "general",
+    visibility: "public",
+    isDraft: false,
+    coverColor: "#fa9ebc",
+    contentFormat: "markdown",
+    seriesId: null,
+    chapterNumber: null
+  });
+  const [turnstileToken, setTurnstileToken] = useState("");
+  const [importInput, setImportInput] = useState<NovelImportInput>({
+    title: "",
+    tags: "imported",
+    matureRating: "general",
+    visibility: "private",
+    coverColor: "#fa9ebc"
+  });
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importTurnstileToken, setImportTurnstileToken] = useState("");
+  const [importMessage, setImportMessage] = useState("");
+  const [localMessage, setLocalMessage] = useState("");
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const matureBlocked = matureAccess ? !matureAccess.allowed : true;
+  const wordCount = input.content.trim().split(/\s+/).filter(Boolean).length;
+  const previewHtml = useMemo(
+    () => (input.contentFormat === "markdown" ? renderNovelMarkdown(input.content) : ""),
+    [input.content, input.contentFormat]
+  );
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setInput(
+      novel
+        ? {
+            title: novel.title,
+            content: novel.body,
+            description: novel.description,
+            tags: novel.tags.join(", "),
+            matureRating: novel.matureRating,
+            visibility: novel.visibility,
+            isDraft: novel.isDraft,
+            coverColor: novel.coverColor,
+            contentFormat: novel.contentFormat,
+            seriesId: novel.seriesId,
+            chapterNumber: novel.chapterNumber
+          }
+        : {
+            title: "",
+            content: "",
+            description: "",
+            tags: "original",
+            matureRating: "general",
+            visibility: "public",
+            isDraft: false,
+            coverColor: "#fa9ebc",
+            contentFormat: "markdown",
+            seriesId: null,
+            chapterNumber: null
+          }
+    );
+    setTurnstileToken("");
+    setImportInput({
+      title: "",
+      tags: "imported",
+      matureRating: "general",
+      visibility: "private",
+      coverColor: "#fa9ebc"
+    });
+    setImportFile(null);
+    setImportTurnstileToken("");
+    setImportMessage("");
+    setLocalMessage("");
+    setPreviewOpen(false);
+  }, [novel, open]);
+
+  const updateInput = <Key extends keyof NovelEditInput>(
+    key: Key,
+    value: NovelEditInput[Key]
+  ) => {
+    setInput((current) => ({ ...current, [key]: value }));
+  };
+
+  const updateImportInput = <Key extends keyof NovelImportInput>(
+    key: Key,
+    value: NovelImportInput[Key]
+  ) => {
+    setImportInput((current) => ({ ...current, [key]: value }));
+  };
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (submitting) {
+      return;
+    }
+    if (mode === "create" && !turnstileToken) {
+      setLocalMessage("Complete the check first.");
+      return;
+    }
+    setLocalMessage("");
+    try {
+      setLocalMessage(await onSubmit(input, turnstileToken));
+      setTurnstileToken("");
+      window.turnstile?.reset();
+    } catch (error) {
+      setLocalMessage(error instanceof Error ? error.message : "Unable to save novel.");
+    }
+  };
+
+  const handleImportSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (submitting) {
+      return;
+    }
+    if (!importFile) {
+      setImportMessage("Choose a TXT, Markdown, or EPUB file.");
+      return;
+    }
+    if (!importTurnstileToken) {
+      setImportMessage("Complete the check first.");
+      return;
+    }
+    setImportMessage("");
+    try {
+      setImportMessage(await onImport(importInput, importFile, importTurnstileToken));
+      setImportFile(null);
+      setImportTurnstileToken("");
+      window.turnstile?.reset();
+    } catch (error) {
+      setImportMessage(error instanceof Error ? error.message : "Unable to import novel.");
+      setImportTurnstileToken("");
+      window.turnstile?.reset();
+    }
+  };
+
+  return (
+    <div className={classNames("drawer-backdrop", open && "is-open")}>
+      <aside className="upload-drawer novel-form-drawer" aria-hidden={!open}>
+        <div className="drawer-header">
+          <div>
+            <p className="eyebrow">Novel studio</p>
+            <h2>{mode === "edit" ? "Edit work" : "New novel"}</h2>
+          </div>
+          <button className="close-button" type="button" onClick={onClose} aria-label="Close">
+            <X size={20} />
+          </button>
+        </div>
+        {mode === "create" ? (
+          <form className="novel-import-panel" onSubmit={handleImportSubmit}>
+            <div className="panel-title">
+              <FileText size={18} />
+              Import manuscript
+            </div>
+            <label>
+              File
+              <input
+                type="file"
+                accept=".txt,.md,.markdown,.epub,text/plain,text/markdown,application/epub+zip"
+                onChange={(event) => setImportFile(event.target.files?.[0] ?? null)}
+              />
+            </label>
+            <div className="form-grid">
+              <label>
+                Draft title
+                <input
+                  value={importInput.title}
+                  maxLength={160}
+                  onChange={(event) => updateImportInput("title", event.target.value)}
+                  placeholder={importFile ? importFile.name.replace(/\.[^.]+$/, "") : "Use filename"}
+                />
+              </label>
+              <label>
+                Tags
+                <input
+                  value={importInput.tags}
+                  maxLength={320}
+                  onChange={(event) => updateImportInput("tags", event.target.value)}
+                />
+              </label>
+            </div>
+            <div className="form-grid">
+              <label>
+                Mature rating
+                <select
+                  value={importInput.matureRating}
+                  disabled={matureBlocked}
+                  onChange={(event) => updateImportInput("matureRating", event.target.value as MatureRating)}
+                >
+                  <option value="general">General</option>
+                  <option value="restricted">Restricted</option>
+                  <option value="adult">Adult</option>
+                </select>
+              </label>
+              <label>
+                Visibility
+                <select
+                  value={importInput.visibility}
+                  onChange={(event) => updateImportInput("visibility", event.target.value as ArtworkVisibility)}
+                >
+                  {artworkVisibilityOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label>
+              Cover color
+              <input
+                type="color"
+                value={importInput.coverColor}
+                onChange={(event) => updateImportInput("coverColor", event.target.value)}
+              />
+            </label>
+            <TurnstileWidget siteKey={siteKey} action="upload" onToken={setImportTurnstileToken} compact />
+            <button className="secondary-button" type="submit" disabled={submitting}>
+              <Download size={16} />
+              {submitting ? "Importing" : "Import as draft"}
+            </button>
+            {importMessage ? <p className="upload-message">{importMessage}</p> : null}
+          </form>
+        ) : null}
+        <form className="upload-form novel-form" onSubmit={handleSubmit}>
+          <label>
+            Title
+            <input
+              value={input.title}
+              minLength={2}
+              maxLength={160}
+              required
+              onChange={(event) => updateInput("title", event.target.value)}
+            />
+          </label>
+          <label>
+            Description
+            <textarea
+              value={input.description}
+              rows={3}
+              maxLength={1200}
+              onChange={(event) => updateInput("description", event.target.value)}
+            />
+          </label>
+          <label>
+            Tags
+            <input
+              value={input.tags}
+              maxLength={320}
+              onChange={(event) => updateInput("tags", event.target.value)}
+            />
+          </label>
+          <div className="novel-editor-toolbar">
+            <label>
+              Format
+              <select
+                value={input.contentFormat}
+                onChange={(event) => updateInput("contentFormat", event.target.value as NovelContentFormat)}
+              >
+                <option value="markdown">Markdown</option>
+                <option value="plain">Plain text</option>
+              </select>
+            </label>
+            <button
+              className={classNames("secondary-button", previewOpen && "is-active")}
+              type="button"
+              onClick={() => setPreviewOpen((value) => !value)}
+              disabled={input.contentFormat !== "markdown"}
+            >
+              <Eye size={16} />
+              Preview
+            </button>
+          </div>
+          <label>
+            Content
+            <textarea
+              className="novel-content-input"
+              value={input.content}
+              minLength={1}
+              maxLength={500000}
+              rows={18}
+              required
+              onChange={(event) => updateInput("content", event.target.value)}
+            />
+          </label>
+          {previewOpen && input.contentFormat === "markdown" ? (
+            <section className="novel-markdown-preview" aria-label="Markdown preview">
+              {previewHtml ? (
+                <div dangerouslySetInnerHTML={{ __html: previewHtml }} />
+              ) : (
+                <p className="muted">Preview appears as you write.</p>
+              )}
+            </section>
+          ) : null}
+          <div className="novel-form-meta">
+            <span>{formatCount(wordCount)} words</span>
+            <span>{estimateReadMinutes(wordCount)} min read</span>
+          </div>
+          <div className="form-grid">
+            <label>
+              Mature rating
+              <select
+                value={input.matureRating}
+                disabled={matureBlocked}
+                onChange={(event) => updateInput("matureRating", event.target.value as MatureRating)}
+              >
+                <option value="general">General</option>
+                <option value="restricted">Restricted</option>
+                <option value="adult">Adult</option>
+              </select>
+            </label>
+            <label>
+              Visibility
+              <select
+                value={input.visibility}
+                onChange={(event) => updateInput("visibility", event.target.value as ArtworkVisibility)}
+              >
+                {artworkVisibilityOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={input.isDraft}
+              onChange={(event) => updateInput("isDraft", event.target.checked)}
+            />
+            Save as draft
+          </label>
+          <label>
+            Cover color
+            <input
+              type="color"
+              value={input.coverColor}
+              onChange={(event) => updateInput("coverColor", event.target.value)}
+            />
+          </label>
+          <div className="form-grid">
+            <label>
+              Serial
+              <select
+                value={input.seriesId ?? ""}
+                onChange={(event) => updateInput("seriesId", event.target.value || null)}
+              >
+                <option value="">Standalone</option>
+                {seriesList.map((series) => (
+                  <option key={series.id} value={series.id}>
+                    {series.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Chapter
+              <input
+                type="number"
+                min={1}
+                max={9999}
+                value={input.chapterNumber ?? ""}
+                onChange={(event) =>
+                  updateInput(
+                    "chapterNumber",
+                    event.target.value ? Number(event.target.value) : null
+                  )
+                }
+                disabled={!input.seriesId}
+              />
+            </label>
+          </div>
+          {matureBlocked ? (
+            <div className="inline-alert">
+              <EyeOff size={16} />
+              <span>{matureAccessLabel(matureAccess)}</span>
+              <button className="text-button" type="button" onClick={onOpenPrivacySecurity}>
+                Settings
+              </button>
+            </div>
+          ) : null}
+          {mode === "create" ? (
+            <TurnstileWidget siteKey={siteKey} action="upload" onToken={setTurnstileToken} compact />
+          ) : null}
+          <button className="primary-button" type="submit" disabled={submitting}>
+            <NotebookText size={18} />
+            {submitting ? "Saving" : input.isDraft ? "Save draft" : "Publish"}
+          </button>
+          {localMessage || message ? (
+            <p className="upload-message">{localMessage || message}</p>
+          ) : null}
+        </form>
+      </aside>
     </div>
   );
 }

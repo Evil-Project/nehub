@@ -74,6 +74,8 @@ import type {
   GalleryResponse,
   FollowResponse,
   DeleteCommentResponse,
+  DeleteNovelCommentResponse,
+  DeleteNovelResponse,
   MatureAccess,
   MatureFilter,
   MatureRating,
@@ -81,8 +83,21 @@ import type {
   ModerationReport,
   MfaMethod,
   Novel,
+  NovelContentFormat,
+  NovelExportFormat,
+  NovelImportResponse,
+  NovelTocItem,
   NovelListResponse,
+  NovelCommentResponse,
+  NovelMutationResponse,
+  NovelRankingResponse,
   NovelResponse,
+  NovelSortMode,
+  NovelSeries,
+  NovelSeriesListResponse,
+  NovelSeriesResponse,
+  NovelSeriesDetailResponse,
+  NovelSeriesItemResponse,
   NotificationPreferences,
   NotificationPreferencesResponse,
   NotificationType,
@@ -111,6 +126,15 @@ import type {
   ReplaceArtworkImageResponse,
   ReorderArtworkImagesResponse,
   RevokeSessionsResponse,
+  ReadingList,
+  ReadingListsResponse,
+  ReadingListResponse,
+  ReadingListDetailResponse,
+  ReadingListNovelResponse,
+  ReadingProgressResponse,
+  ReadingProgressUpdateResponse,
+  DeleteNovelSeriesResponse,
+  DeleteReadingListResponse,
   SearchSuggestionsResponse,
   SecurityApprovalAction,
   SecurityApprovalCodeResponse,
@@ -510,6 +534,40 @@ const artworkUpdateSchema = z.object({
   visibility: z.enum(["public", "unlisted", "private"]).default("public")
 });
 
+const novelContentMaxLength = 500_000;
+
+const novelBaseSchema = z.object({
+  title: z.string().trim().min(2).max(160),
+  content: z.string().min(1).max(novelContentMaxLength),
+  description: z.string().trim().max(1200).optional().default(""),
+  tags: z.string().trim().max(320).optional().default("original"),
+  matureRating: z.enum(["general", "restricted", "adult"]).default("general"),
+  visibility: z.enum(["public", "unlisted", "private"]).default("public"),
+  isDraft: z.boolean().optional().default(false),
+  coverColor: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/).optional().default("#fa9ebc"),
+  coverImageUrl: z.string().trim().max(500).nullable().optional().default(null),
+  seriesId: z.string().trim().min(1).max(80).nullable().optional().default(null),
+  chapterNumber: z.number().int().positive().nullable().optional().default(null),
+  contentFormat: z.enum(["plain", "markdown"]).default("markdown")
+});
+
+const novelCreateSchema = novelBaseSchema.extend({
+  turnstileToken: z.string().min(1).max(4096)
+});
+
+const novelUpdateSchema = novelBaseSchema.partial();
+
+const novelImportFormSchema = z.object({
+  title: z.string().trim().min(2).max(160).optional(),
+  tags: z.string().trim().max(320).optional().default("imported"),
+  matureRating: z.enum(["general", "restricted", "adult"]).default("general"),
+  visibility: z.enum(["public", "unlisted", "private"]).default("private"),
+  coverColor: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/).optional().default("#fa9ebc"),
+  turnstileToken: z.string().min(1).max(4096)
+});
+
+const novelExportFormatSchema = z.enum(["markdown", "epub", "pdf"]);
+
 const artworkImageOrderSchema = z.object({
   imageIds: z.array(z.string().trim().min(1).max(80)).min(1).max(maxUploadFiles)
 });
@@ -714,9 +772,11 @@ const resolveReportSchema = z.object({
   status: z.enum(["resolved", "dismissed"])
 });
 
-const artworkModerationSchema = z.object({
+const contentModerationSchema = z.object({
   action: z.enum(["hide", "restore"])
 });
+const artworkModerationSchema = contentModerationSchema;
+const novelModerationSchema = contentModerationSchema;
 
 const userRoleSchema = z.object({
   role: z.enum(["member", "moderator", "admin"])
@@ -764,6 +824,31 @@ const seriesUpdateSchema = seriesSchema.extend({
 
 const seriesItemSchema = z.object({
   artworkId: z.string().trim().min(1).max(80),
+  position: z.number().int().min(0).max(9999).optional()
+});
+
+const novelSeriesSchema = z.object({
+  title: z.string().trim().min(2).max(120),
+  description: z.string().trim().max(1200).optional().default("")
+});
+
+const novelSeriesChapterSchema = z.object({
+  novelId: z.string().trim().min(1).max(80),
+  chapterNumber: z.number().int().positive().max(9999).optional()
+});
+
+const novelSeriesOrderSchema = z.object({
+  novelIds: z.array(z.string().trim().min(1).max(80)).min(1).max(9999)
+});
+
+const readingListSchema = z.object({
+  title: z.string().trim().min(2).max(120),
+  description: z.string().trim().max(1200).optional().default(""),
+  visibility: collectionVisibilitySchema.optional().default("private")
+});
+
+const readingListNovelSchema = z.object({
+  novelId: z.string().trim().min(1).max(80),
   position: z.number().int().min(0).max(9999).optional()
 });
 
@@ -1972,6 +2057,20 @@ const artworkTagInsertStatements = (db: D1Database, artworkId: string, tags: str
       .bind(artworkId, tag)
   );
 
+const novelTagInsertStatements = (db: D1Database, novelId: string, tags: string[]) =>
+  tags.map((tag) =>
+    db
+      .prepare("INSERT OR IGNORE INTO novel_tags (novel_id, tag) VALUES (?, ?)")
+      .bind(novelId, tag)
+  );
+
+const replaceNovelTags = async (db: D1Database, novelId: string, tags: string[]) => {
+  await db.batch([
+    db.prepare("DELETE FROM novel_tags WHERE novel_id = ?").bind(novelId),
+    ...novelTagInsertStatements(db, novelId, tags)
+  ]);
+};
+
 const replaceArtworkTags = async (db: D1Database, artworkId: string, tags: string[]) => {
   await db.batch([
     db.prepare("DELETE FROM artwork_tags WHERE artwork_id = ?").bind(artworkId),
@@ -2396,18 +2495,28 @@ type NovelRow = {
   id: string;
   creator_id: string;
   title: string;
+  description?: string | null;
   excerpt: string | null;
   body: string;
+  cover_image_url?: string | null;
   cover_color: string | null;
   tags_json: string;
   word_count: number | null;
   read_minutes: number | null;
   like_count: number | null;
+  bookmark_count?: number | null;
   view_count: number | null;
+  series_id?: string | null;
+  chapter_number?: number | null;
+  content_format?: string | null;
+  toc_json?: string | null;
   created_at: string;
+  updated_at?: string | null;
   mature: number | null;
   mature_rating: string | null;
   visibility: string | null;
+  is_draft?: number | null;
+  deleted_at?: string | null;
   creator_handle: string;
   creator_display_name: string;
   creator_avatar_url: string | null;
@@ -2415,6 +2524,52 @@ type NovelRow = {
   creator_follower_count: number | null;
   creator_following: number | null;
   creator_profile_visibility: string;
+};
+
+type NovelSeriesRow = {
+  id: string;
+  user_id: string;
+  title: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  novel_count: number;
+  novel_ids: string | null;
+  user_handle: string;
+  user_display_name: string;
+  user_avatar_url: string | null;
+  user_bio: string | null;
+  user_follower_count: number | null;
+  user_following: number | null;
+  user_profile_visibility: string;
+};
+
+type ReadingListRow = {
+  id: string;
+  user_id: string;
+  title: string;
+  description: string | null;
+  visibility: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  novel_count: number;
+  novel_ids: string | null;
+  user_handle: string;
+  user_display_name: string;
+  user_avatar_url: string | null;
+  user_bio: string | null;
+  user_follower_count: number | null;
+  user_following: number | null;
+  user_profile_visibility: string;
+};
+
+type ReadingProgressRow = {
+  novel_id: string;
+  last_position: number;
+  scroll_percent: number;
+  updated_at: string;
 };
 
 type ArtworkImageRow = {
@@ -2435,6 +2590,17 @@ type CommentRow = {
   author: string;
   body: string;
   parent_id: string | null;
+  created_at: string;
+  updated_at: string | null;
+};
+
+type NovelCommentRow = {
+  id: string;
+  novel_id: string;
+  user_id: string | null;
+  author: string;
+  content: string;
+  parent_comment_id: string | null;
   created_at: string;
   updated_at: string | null;
 };
@@ -2475,6 +2641,7 @@ type NotificationRow = {
   actor_display_name: string | null;
   actor_avatar_url: string | null;
   artwork_id: string | null;
+  novel_id: string | null;
   comment_id: string | null;
   read_at: string | null;
   created_at: string;
@@ -2562,6 +2729,7 @@ type ActivityEventRow = {
   actor_profile_visibility: string;
   type: string;
   artwork_id: string | null;
+  novel_id: string | null;
   comment_id: string | null;
   target_user_id: string | null;
   target_username: string | null;
@@ -2813,7 +2981,7 @@ const asReportReason = (value: string | null | undefined): ReportReason => {
 };
 
 const asReportTargetType = (value: string | null | undefined): ReportTargetType => {
-  if (value === "comment" || value === "user") {
+  if (value === "comment" || value === "user" || value === "novel") {
     return value;
   }
   return "artwork";
@@ -2822,7 +2990,7 @@ const asReportTargetType = (value: string | null | undefined): ReportTargetType 
 const asAdminReportTargetFilter = (
   value: string | null | undefined
 ): AdminReportTargetFilter =>
-  value === "artwork" || value === "comment" || value === "user" ? value : "all";
+  value === "artwork" || value === "comment" || value === "user" || value === "novel" ? value : "all";
 
 const asAdminReportReasonFilter = (
   value: string | null | undefined
@@ -2918,6 +3086,7 @@ const notificationFromRow = (row: NotificationRow): UserNotification => ({
       }
     : null,
   artworkId: row.artwork_id,
+  novelId: row.novel_id,
   commentId: row.comment_id,
   readAt: row.read_at,
   createdAt: row.created_at
@@ -3324,13 +3493,75 @@ const excerptFromBody = (body: string) => {
 const estimateWordCount = (body: string) =>
   body.trim().split(/\s+/).filter(Boolean).length;
 
-const novelFromRow = (row: NovelRow): Novel => {
+const slugifyTocId = (value: string, fallbackIndex: number) =>
+  `sec_${value
+    .trim()
+    .toLowerCase()
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40) || `section_${fallbackIndex + 1}`}`;
+
+const parseNovelToc = (value: string | null | undefined) => {
+  if (!value) {
+    return [] as NovelTocItem[];
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (
+      Array.isArray(parsed) &&
+      parsed.every(
+        (item) =>
+          item &&
+          typeof item === "object" &&
+          typeof (item as { id?: unknown }).id === "string" &&
+          typeof (item as { text?: unknown }).text === "string" &&
+          typeof (item as { level?: unknown }).level === "number"
+      )
+    ) {
+      return parsed.map((item) => ({
+        id: (item as { id: string }).id,
+        text: (item as { text: string }).text,
+        level: (item as { level: number }).level
+      })) as NovelTocItem[];
+    }
+  } catch {
+    return [];
+  }
+  return [];
+};
+
+const extractNovelToc = (content: string, format: NovelContentFormat) => {
+  if (format !== "markdown") {
+    return [] as NovelTocItem[];
+  }
+  return content
+    .split(/\r?\n/)
+    .map((line, index) => {
+      const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+      if (!match) {
+        return null;
+      }
+      return {
+        id: slugifyTocId(match[2], index),
+        text: match[2],
+        level: match[1].length
+      } satisfies NovelTocItem;
+    })
+    .filter((item): item is NovelTocItem => Boolean(item));
+};
+
+const novelFromRow = (row: NovelRow, viewer?: CurrentUser): Novel => {
   const wordCount = row.word_count && row.word_count > 0 ? row.word_count : estimateWordCount(row.body);
+  const excerpt = row.excerpt?.trim() || row.description?.trim() || excerptFromBody(row.body);
+  const contentFormat = row.content_format === "plain" ? "plain" : "markdown";
   return {
     id: row.id,
     title: row.title,
-    excerpt: row.excerpt?.trim() || excerptFromBody(row.body),
+    description: row.description?.trim() || excerpt,
+    excerpt,
     body: row.body,
+    coverImageUrl: row.cover_image_url ?? null,
     coverColor: row.cover_color || "#fa9ebc",
     creator: {
       id: row.creator_id,
@@ -3345,11 +3576,22 @@ const novelFromRow = (row: NovelRow): Novel => {
     wordCount,
     readMinutes: row.read_minutes && row.read_minutes > 0 ? row.read_minutes : Math.max(1, Math.ceil(wordCount / 220)),
     likeCount: row.like_count ?? 0,
+    liked: false,
+    bookmarkCount: row.bookmark_count ?? 0,
+    bookmarked: false,
     viewCount: row.view_count ?? 0,
+    commentCount: 0,
     createdAt: row.created_at,
+    updatedAt: row.updated_at ?? row.created_at,
     mature: Boolean(row.mature) || asMatureRating(row.mature_rating) !== "general",
     matureRating: asMatureRating(row.mature_rating),
-    visibility: asArtworkVisibility(row.visibility)
+    visibility: asArtworkVisibility(row.visibility),
+    isDraft: Boolean(row.is_draft),
+    canManage: Boolean(viewer && (viewer.id === row.creator_id || viewer.role === "admin")),
+    seriesId: row.series_id ?? null,
+    chapterNumber: row.chapter_number ?? null,
+    contentFormat,
+    toc: parseNovelToc(row.toc_json)
   };
 };
 
@@ -3368,6 +3610,24 @@ const commentFromRow = (
   updatedAt: row.updated_at,
   canManage: Boolean(
     isStaffRole(viewerRole) || (viewerId && (viewerId === row.user_id || viewerId === artworkOwnerId))
+  )
+});
+
+const novelCommentFromRow = (
+  row: NovelCommentRow,
+  viewerId: string | undefined,
+  viewerRole: AuthUser["role"] | undefined,
+  novelOwnerId: string
+): Comment => ({
+  id: row.id,
+  authorId: row.user_id,
+  author: row.author,
+  body: row.content,
+  parentId: row.parent_comment_id,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+  canManage: Boolean(
+    isStaffRole(viewerRole) || (viewerId && (viewerId === row.user_id || viewerId === novelOwnerId))
   )
 });
 
@@ -4900,6 +5160,56 @@ const profileVisibilityBindValues = (viewer: CurrentUser | undefined) => [
   viewer?.role ?? "member"
 ] as const;
 
+const novelVisibleWhereSql = (
+  viewer: CurrentUser | undefined,
+  options: { includeOwnDrafts?: boolean; followedOnly?: boolean; userId?: string } = {}
+) => {
+  const clauses = ["novels.deleted_at IS NULL", profileVisibilitySql("creator_user")];
+  const bindings: Array<string | number | null> = [...profileVisibilityBindValues(viewer)];
+
+  if (options.userId) {
+    clauses.push("novels.creator_id = ?");
+    bindings.push(options.userId);
+  }
+
+  if (options.followedOnly) {
+    clauses.push(
+      `EXISTS (
+        SELECT 1
+        FROM follows
+        WHERE follows.follower_creator_id = ?
+          AND follows.followed_creator_id = novels.creator_id
+      )`
+    );
+    bindings.push(viewer?.id ?? "");
+  }
+
+  if (options.includeOwnDrafts && viewer) {
+    clauses.push(
+      `(COALESCE(novels.is_draft, 0) = 0
+        OR novels.creator_id = ?
+        OR ? IN ('admin', 'moderator'))`
+    );
+    bindings.push(viewer.id, viewer.role);
+  } else {
+    clauses.push("COALESCE(novels.is_draft, 0) = 0");
+  }
+
+  if (viewer) {
+    clauses.push(
+      `NOT EXISTS (
+        SELECT 1
+        FROM user_blocks
+        WHERE (blocker_user_id = ? AND blocked_user_id = novels.creator_id)
+           OR (blocker_user_id = novels.creator_id AND blocked_user_id = ?)
+      )`
+    );
+    bindings.push(viewer.id, viewer.id);
+  }
+
+  return { clauses, bindings };
+};
+
 const publicArtworkVisibilitySql = "COALESCE(artworks.visibility, 'public') = 'public'";
 
 const ownerAwareArtworkVisibilitySql = () =>
@@ -5608,18 +5918,28 @@ const novelSelect = `
     novels.id,
     novels.creator_id,
     novels.title,
+    novels.description,
     novels.excerpt,
     novels.body,
+    novels.cover_image_url,
     novels.cover_color,
     novels.tags_json,
     novels.word_count,
     novels.read_minutes,
     novels.like_count,
+    novels.bookmark_count,
     novels.view_count,
+    novels.series_id,
+    novels.chapter_number,
+    novels.content_format,
+    novels.toc_json,
     novels.created_at,
+    novels.updated_at,
     novels.mature,
     novels.mature_rating,
     novels.visibility,
+    novels.is_draft,
+    novels.deleted_at,
     creators.handle AS creator_handle,
     creators.display_name AS creator_display_name,
     creators.avatar_url AS creator_avatar_url,
@@ -5644,12 +5964,67 @@ const novelTagCounts = (novels: Novel[]) => {
     .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
 };
 
+const parseIdList = (value: string | null | undefined) =>
+  value ? value.split(",").map((item) => item.trim()).filter(Boolean) : [];
+
+const asNovelSortMode = (value: string | null | undefined): NovelSortMode => {
+  if (
+    value === "most_liked" ||
+    value === "most_bookmarked" ||
+    value === "most_viewed" ||
+    value === "word_count"
+  ) {
+    return value;
+  }
+  return "newest";
+};
+
+const novelSortOrderSql = (sort: NovelSortMode) => {
+  if (sort === "most_liked") {
+    return "COALESCE(novels.like_count, 0) DESC, datetime(novels.created_at) DESC, novels.id DESC";
+  }
+  if (sort === "most_bookmarked") {
+    return "COALESCE(novels.bookmark_count, 0) DESC, datetime(novels.created_at) DESC, novels.id DESC";
+  }
+  if (sort === "most_viewed") {
+    return "COALESCE(novels.view_count, 0) DESC, datetime(novels.created_at) DESC, novels.id DESC";
+  }
+  if (sort === "word_count") {
+    return "COALESCE(novels.word_count, 0) DESC, datetime(novels.created_at) DESC, novels.id DESC";
+  }
+  return "datetime(novels.created_at) DESC, novels.id DESC";
+};
+
+const novelSeriesFromRow = (row: NovelSeriesRow): NovelSeries => ({
+  id: row.id,
+  userId: row.user_id,
+  title: row.title,
+  description: row.description ?? "",
+  novelCount: row.novel_count ?? 0,
+  novelIds: parseIdList(row.novel_ids),
+  createdAt: row.created_at,
+  updatedAt: row.updated_at
+});
+
+const readingListFromRow = (row: ReadingListRow): ReadingList => ({
+  id: row.id,
+  userId: row.user_id,
+  title: row.title,
+  description: row.description ?? "",
+  visibility: asCollectionVisibility(row.visibility),
+  novelCount: row.novel_count ?? 0,
+  novelIds: parseIdList(row.novel_ids),
+  createdAt: row.created_at,
+  updatedAt: row.updated_at
+});
+
 const filterNovels = (
   novels: Novel[],
   matureAccess: MatureAccess,
   search: string,
   tag: string,
-  rating: MatureFilter
+  rating: MatureFilter,
+  sort: NovelSortMode = "newest"
 ) => {
   const normalizedSearch = search.trim().toLowerCase();
   const normalizedTag = tag.trim().toLowerCase();
@@ -5668,6 +6043,7 @@ const filterNovels = (
       }
       const haystack = [
         novel.title,
+        novel.description,
         novel.excerpt,
         novel.body,
         novel.creator.displayName,
@@ -5678,7 +6054,95 @@ const filterNovels = (
         .toLowerCase();
       return haystack.includes(normalizedSearch);
     })
-    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+    .sort((left, right) => {
+      if (sort === "most_liked") {
+        return right.likeCount - left.likeCount || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+      }
+      if (sort === "most_bookmarked") {
+        return right.bookmarkCount - left.bookmarkCount || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+      }
+      if (sort === "most_viewed") {
+        return right.viewCount - left.viewCount || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+      }
+      if (sort === "word_count") {
+        return right.wordCount - left.wordCount || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+      }
+      return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+    });
+};
+
+const withViewerNovelInteractions = async (
+  db: D1Database,
+  viewerId: string | undefined,
+  novels: Novel[]
+) => {
+  if (novels.length === 0) {
+    return novels;
+  }
+  const placeholders = novels.map(() => "?").join(", ");
+  const [likeRows, bookmarkRows, commentRows] = await Promise.all([
+    viewerId
+      ? db
+          .prepare(`SELECT novel_id FROM novel_likes WHERE user_id = ? AND novel_id IN (${placeholders})`)
+          .bind(viewerId, ...novels.map((novel) => novel.id))
+          .all<{ novel_id: string }>()
+      : Promise.resolve({ results: [] as { novel_id: string }[] }),
+    viewerId
+      ? db
+          .prepare(`SELECT novel_id FROM favorite_novels WHERE user_id = ? AND novel_id IN (${placeholders})`)
+          .bind(viewerId, ...novels.map((novel) => novel.id))
+          .all<{ novel_id: string }>()
+      : Promise.resolve({ results: [] as { novel_id: string }[] }),
+    db
+      .prepare(
+        `SELECT novel_id, COUNT(*) AS count
+         FROM novel_comments
+         WHERE deleted_at IS NULL
+           AND novel_id IN (${placeholders})
+         GROUP BY novel_id`
+      )
+      .bind(...novels.map((novel) => novel.id))
+      .all<{ novel_id: string; count: number }>()
+  ]);
+  const likedIds = new Set(likeRows.results.map((row) => row.novel_id));
+  const bookmarkedIds = new Set(bookmarkRows.results.map((row) => row.novel_id));
+  const commentCounts = new Map(commentRows.results.map((row) => [row.novel_id, row.count]));
+  return novels.map((novel) => ({
+    ...novel,
+    liked: likedIds.has(novel.id),
+    bookmarked: bookmarkedIds.has(novel.id),
+    commentCount: commentCounts.get(novel.id) ?? novel.commentCount
+  }));
+};
+
+const getNovelComments = async (
+  db: D1Database,
+  novelId: string,
+  viewer: CurrentUser | undefined,
+  novelOwnerId: string
+) => {
+  const result = await db
+    .prepare(
+      `SELECT
+        novel_comments.id,
+        novel_comments.novel_id,
+        novel_comments.user_id,
+        COALESCE(comment_user.display_name, 'Deleted user') AS author,
+        novel_comments.content,
+        novel_comments.parent_comment_id,
+        novel_comments.created_at,
+        novel_comments.updated_at
+       FROM novel_comments
+       LEFT JOIN users AS comment_user ON comment_user.id = novel_comments.user_id
+       WHERE novel_comments.novel_id = ?
+         AND novel_comments.deleted_at IS NULL
+       ORDER BY datetime(novel_comments.created_at) DESC, novel_comments.id DESC`
+    )
+    .bind(novelId)
+    .all<NovelCommentRow>();
+  return result.results.map((row) =>
+    novelCommentFromRow(row, viewer?.id, viewer?.role, novelOwnerId)
+  );
 };
 
 const getD1Novels = async (
@@ -5688,9 +6152,12 @@ const getD1Novels = async (
   search: string,
   tag: string,
   rating: MatureFilter,
-  limit: number
+  limit: number,
+  sort: NovelSortMode = "newest"
 ) => {
   const clauses = [
+    "novels.deleted_at IS NULL",
+    "COALESCE(novels.is_draft, 0) = 0",
     "COALESCE(novels.visibility, 'public') = 'public'",
     profileVisibilitySql("creator_user")
   ];
@@ -5720,26 +6187,87 @@ const getD1Novels = async (
     .prepare(
       `${novelSelect}
        WHERE ${clauses.join("\n         AND ")}
-       ORDER BY datetime(novels.created_at) DESC, novels.id DESC
+       ORDER BY ${novelSortOrderSql(sort)}
        LIMIT ?`
     )
     .bind(...bindings, 120)
     .all<NovelRow>();
   const filtered = filterNovels(
-    result.results.map((row) => novelFromRow(row)),
+    result.results.map((row) => novelFromRow(row, viewer)),
     matureAccess,
     search,
     tag,
-    rating
+    rating,
+    sort
   );
-  return filtered.slice(0, limit);
+  return withViewerNovelInteractions(db, viewer?.id, filtered.slice(0, limit));
+};
+
+const getNovelFeedFromD1 = async (
+  db: D1Database,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess,
+  limit: number
+) => {
+  const { clauses, bindings } = novelVisibleWhereSql(viewer, { followedOnly: true });
+  if (!viewer) {
+    return [];
+  }
+  const result = await db
+    .prepare(
+      `${novelSelect}
+       WHERE ${clauses.join("\n         AND ")}
+       ORDER BY datetime(novels.created_at) DESC, novels.id DESC
+       LIMIT ?`
+    )
+    .bind(...bindings, Math.min(Math.max(limit, 1), 120))
+    .all<NovelRow>();
+  const filtered = filterNovels(
+    result.results.map((row) => novelFromRow(row, viewer)),
+    matureAccess,
+    "",
+    "",
+    "all"
+  ).slice(0, limit);
+  return withViewerNovelInteractions(db, viewer?.id, filtered);
+};
+
+const getUserNovelsFromD1 = async (
+  db: D1Database,
+  userId: string,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess,
+  limit: number
+) => {
+  const { clauses, bindings } = novelVisibleWhereSql(viewer, {
+    includeOwnDrafts: true,
+    userId
+  });
+  const result = await db
+    .prepare(
+      `${novelSelect}
+       WHERE ${clauses.join("\n         AND ")}
+       ORDER BY datetime(novels.created_at) DESC, novels.id DESC
+       LIMIT ?`
+    )
+    .bind(...bindings, Math.min(Math.max(limit, 1), 120))
+    .all<NovelRow>();
+  const filtered = filterNovels(
+    result.results.map((row) => novelFromRow(row, viewer)),
+    matureAccess,
+    "",
+    "",
+    "all"
+  ).slice(0, limit);
+  return withViewerNovelInteractions(db, viewer?.id, filtered);
 };
 
 const getNovelFromD1 = async (
   db: D1Database,
   id: string,
   viewer: CurrentUser | undefined,
-  matureAccess: MatureAccess
+  matureAccess: MatureAccess,
+  recordView = true
 ) => {
   const row = await db
     .prepare(
@@ -5750,16 +6278,29 @@ const getNovelFromD1 = async (
            OR novels.creator_id = ?
            OR ? IN ('admin', 'moderator')
          )
+         AND (
+           COALESCE(novels.is_draft, 0) = 0
+           OR novels.creator_id = ?
+           OR ? IN ('admin', 'moderator')
+         )
+         AND novels.deleted_at IS NULL
          AND ${profileVisibilitySql("creator_user")}
        LIMIT 1`
     )
-    .bind(id, viewer?.id ?? "", viewer?.role ?? "member", ...profileVisibilityBindValues(viewer))
+    .bind(
+      id,
+      viewer?.id ?? "",
+      viewer?.role ?? "member",
+      viewer?.id ?? "",
+      viewer?.role ?? "member",
+      ...profileVisibilityBindValues(viewer)
+    )
     .first<NovelRow>();
   if (!row) {
     return undefined;
   }
 
-  const novel = novelFromRow(row);
+  const novel = novelFromRow(row, viewer);
   if (novel.mature && !matureAccess.allowed) {
     return undefined;
   }
@@ -5767,18 +6308,846 @@ const getNovelFromD1 = async (
     return undefined;
   }
 
-  await db
-    .prepare("UPDATE novels SET view_count = COALESCE(view_count, 0) + 1 WHERE id = ?")
-    .bind(id)
-    .run()
-    .catch((error: unknown) => {
-      console.warn("Unable to record novel view", error);
-    });
+  if (recordView) {
+    await db
+      .prepare("UPDATE novels SET view_count = COALESCE(view_count, 0) + 1 WHERE id = ?")
+      .bind(id)
+      .run()
+      .catch((error: unknown) => {
+        console.warn("Unable to record novel view", error);
+      });
+  }
 
   return {
-    ...novel,
-    viewCount: novel.viewCount + 1
+    novel: (
+      await withViewerNovelInteractions(db, viewer?.id, [
+        {
+          ...novel,
+          viewCount: recordView ? novel.viewCount + 1 : novel.viewCount
+        }
+      ])
+    )[0],
+    comments: await getNovelComments(db, id, viewer, novel.creator.id)
+	  };
+	};
+
+const novelRankingScore = (novel: Novel) =>
+  novel.likeCount * 8 + novel.bookmarkCount * 5 + novel.viewCount;
+
+const getNovelRankingItems = async (
+  db: D1Database,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess,
+  period: RankingPeriod,
+  limit: number
+) => {
+  const windowDays = period === "daily" ? 1 : 7;
+  const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+  const { clauses, bindings } = novelVisibleWhereSql(viewer);
+  clauses.push("datetime(novels.created_at) >= datetime(?)");
+  bindings.push(since);
+  const result = await db
+    .prepare(
+      `${novelSelect}
+       WHERE ${clauses.join("\n         AND ")}
+       ORDER BY
+         (COALESCE(novels.like_count, 0) * 8 + COALESCE(novels.bookmark_count, 0) * 5 + COALESCE(novels.view_count, 0)) DESC,
+         datetime(novels.created_at) DESC,
+         novels.id DESC
+       LIMIT ?`
+    )
+    .bind(...bindings, Math.min(Math.max(limit, 1), 120))
+    .all<NovelRow>();
+  const novels = filterNovels(
+    result.results.map((row) => novelFromRow(row, viewer)),
+    matureAccess,
+    "",
+    "",
+    matureAccess.allowed ? "all" : "general"
+  );
+  const hydrated = await withViewerNovelInteractions(db, viewer?.id, novels.slice(0, limit));
+  return hydrated.map((novel) => ({ novel, score: novelRankingScore(novel) }));
+};
+
+const readingProgressFromRow = (row: ReadingProgressRow, novel: Novel) => ({
+  novelId: row.novel_id,
+  lastPosition: row.last_position,
+  scrollPercent: row.scroll_percent,
+  updatedAt: row.updated_at,
+  novel
+});
+
+const textDecoderUtf8 = new TextDecoder("utf-8", { fatal: false });
+const novelArtworkEmbedPattern = /!\[([^\]]*)]\(artwork_id:([A-Za-z0-9_-]{1,80})\)/g;
+
+const sanitizeExportFilename = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "novel";
+
+const escapeXml = (value: string) =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+
+const escapePdfText = (value: string) =>
+  value.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+
+const crc32Table = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < 256; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+})();
+
+const crc32 = (bytes: Uint8Array) => {
+  let value = 0xffffffff;
+  for (const byte of bytes) {
+    value = crc32Table[(value ^ byte) & 0xff] ^ (value >>> 8);
+  }
+  return (value ^ 0xffffffff) >>> 0;
+};
+
+const dosDateTime = (date = new Date()) => {
+  const year = Math.max(1980, date.getFullYear());
+  return {
+    time:
+      (date.getHours() << 11) |
+      (date.getMinutes() << 5) |
+      Math.floor(date.getSeconds() / 2),
+    date:
+      ((year - 1980) << 9) |
+      ((date.getMonth() + 1) << 5) |
+      date.getDate()
   };
+};
+
+const createStoredZip = (files: Array<{ name: string; data: Uint8Array }>) => {
+  const now = dosDateTime();
+  const localChunks: Uint8Array[] = [];
+  const centralChunks: Uint8Array[] = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const nameBytes = textEncoder.encode(file.name);
+    const checksum = crc32(file.data);
+    const local = new Uint8Array(30 + nameBytes.length + file.data.length);
+    const localView = new DataView(local.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(6, 0x0800, true);
+    localView.setUint16(8, 0, true);
+    localView.setUint16(10, now.time, true);
+    localView.setUint16(12, now.date, true);
+    localView.setUint32(14, checksum, true);
+    localView.setUint32(18, file.data.length, true);
+    localView.setUint32(22, file.data.length, true);
+    localView.setUint16(26, nameBytes.length, true);
+    local.set(nameBytes, 30);
+    local.set(file.data, 30 + nameBytes.length);
+    localChunks.push(local);
+
+    const central = new Uint8Array(46 + nameBytes.length);
+    const centralView = new DataView(central.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(8, 0x0800, true);
+    centralView.setUint16(10, 0, true);
+    centralView.setUint16(12, now.time, true);
+    centralView.setUint16(14, now.date, true);
+    centralView.setUint32(16, checksum, true);
+    centralView.setUint32(20, file.data.length, true);
+    centralView.setUint32(24, file.data.length, true);
+    centralView.setUint16(28, nameBytes.length, true);
+    centralView.setUint32(42, offset, true);
+    central.set(nameBytes, 46);
+    centralChunks.push(central);
+
+    offset += local.length;
+  }
+
+  const centralDirectory = concatBytes(...centralChunks);
+  const end = new Uint8Array(22);
+  const endView = new DataView(end.buffer);
+  endView.setUint32(0, 0x06054b50, true);
+  endView.setUint16(8, files.length, true);
+  endView.setUint16(10, files.length, true);
+  endView.setUint32(12, centralDirectory.length, true);
+  endView.setUint32(16, offset, true);
+  return concatBytes(...localChunks, centralDirectory, end);
+};
+
+const novelMarkdownExport = (novel: Novel) => {
+  const metadata = [
+    "---",
+    `title: ${novel.title}`,
+    `author: ${novel.creator.displayName}`,
+    `tags: ${novel.tags.join(", ")}`,
+    `rating: ${novel.matureRating}`,
+    `exported: ${new Date().toISOString()}`,
+    "---",
+    ""
+  ].join("\n");
+  const heading = novel.contentFormat === "markdown" && /^#\s+/m.test(novel.body) ? "" : `# ${novel.title}\n\n`;
+  const description = novel.description ? `> ${novel.description.replace(/\n+/g, " ")}\n\n` : "";
+  return `${metadata}${heading}${description}${novel.body.trim()}\n`;
+};
+
+const novelEpubExport = (novel: Novel) => {
+  const contentBlocks = novel.body
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
+    .map((paragraph) => {
+      const heading = /^(#{1,6})\s+(.+)$/.exec(paragraph);
+      if (novel.contentFormat === "markdown" && heading) {
+        const level = Math.min(6, Math.max(1, heading[1].length));
+        return `<h${level}>${escapeXml(heading[2])}</h${level}>`;
+      }
+      const withArtworkNotes = paragraph.replace(
+        novelArtworkEmbedPattern,
+        (_match, alt: string, artworkId: string) =>
+          alt ? `[Illustration: ${alt} (${artworkId})]` : `[Illustration: ${artworkId}]`
+      );
+      return `<p>${escapeXml(withArtworkNotes).replace(/\n/g, "<br />")}</p>`;
+    })
+    .join("\n");
+  const title = escapeXml(novel.title);
+  const author = escapeXml(novel.creator.displayName);
+  const identifier = escapeXml(`urn:nehub:novel:${novel.id}`);
+  const chapter = [
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+    "<!DOCTYPE html>",
+    "<html xmlns=\"http://www.w3.org/1999/xhtml\">",
+    "<head>",
+    `<title>${title}</title>`,
+    "<meta charset=\"utf-8\" />",
+    "</head>",
+    "<body>",
+    `<h1>${title}</h1>`,
+    `<p><strong>Author:</strong> ${author}</p>`,
+    novel.description ? `<blockquote>${escapeXml(novel.description)}</blockquote>` : "",
+    contentBlocks,
+    "</body>",
+    "</html>"
+  ].filter(Boolean).join("\n");
+  const container = [
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+    "<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\">",
+    "  <rootfiles>",
+    "    <rootfile full-path=\"OEBPS/content.opf\" media-type=\"application/oebps-package+xml\" />",
+    "  </rootfiles>",
+    "</container>"
+  ].join("\n");
+  const nav = [
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+    "<!DOCTYPE html>",
+    "<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\">",
+    "<head><title>Navigation</title><meta charset=\"utf-8\" /></head>",
+    "<body>",
+    "<nav epub:type=\"toc\" id=\"toc\">",
+    "<h1>Contents</h1>",
+    "<ol><li><a href=\"chapter.xhtml\">Start</a></li></ol>",
+    "</nav>",
+    "</body>",
+    "</html>"
+  ].join("\n");
+  const opf = [
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+    `<package version=\"3.0\" unique-identifier=\"book-id\" xmlns=\"http://www.idpf.org/2007/opf\">`,
+    "<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">",
+    `<dc:identifier id=\"book-id\">${identifier}</dc:identifier>`,
+    `<dc:title>${title}</dc:title>`,
+    `<dc:creator>${author}</dc:creator>`,
+    "<dc:language>en</dc:language>",
+    `<meta property=\"dcterms:modified\">${new Date().toISOString().replace(/\.\d{3}Z$/, "Z")}</meta>`,
+    "</metadata>",
+    "<manifest>",
+    "<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\" />",
+    "<item id=\"chapter\" href=\"chapter.xhtml\" media-type=\"application/xhtml+xml\" />",
+    "</manifest>",
+    "<spine>",
+    "<itemref idref=\"chapter\" />",
+    "</spine>",
+    "</package>"
+  ].join("\n");
+  return createStoredZip([
+    { name: "mimetype", data: textEncoder.encode("application/epub+zip") },
+    { name: "META-INF/container.xml", data: textEncoder.encode(container) },
+    { name: "OEBPS/content.opf", data: textEncoder.encode(opf) },
+    { name: "OEBPS/nav.xhtml", data: textEncoder.encode(nav) },
+    { name: "OEBPS/chapter.xhtml", data: textEncoder.encode(chapter) }
+  ]);
+};
+
+const pdfTextLines = (novel: Novel) => {
+  const rawLines = [
+    novel.title,
+    `by ${novel.creator.displayName}`,
+    "",
+    ...(novel.description ? [novel.description, ""] : []),
+    ...novel.body.split(/\r?\n/)
+  ];
+  const lines: string[] = [];
+  for (const rawLine of rawLines) {
+    const words = rawLine.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      lines.push("");
+      continue;
+    }
+    let current = "";
+    for (const word of words) {
+      const next = current ? `${current} ${word}` : word;
+      if (next.length > 84) {
+        lines.push(current);
+        current = word;
+      } else {
+        current = next;
+      }
+    }
+    if (current) {
+      lines.push(current);
+    }
+  }
+  return lines.slice(0, 420);
+};
+
+const novelPdfExport = (novel: Novel) => {
+  const lines = pdfTextLines(novel);
+  const content = [
+    "BT",
+    "/F1 12 Tf",
+    "50 790 Td",
+    "14 TL",
+    ...lines.map((line, index) =>
+      index === 0 ? `(${escapePdfText(line)}) Tj` : `T* (${escapePdfText(line)}) Tj`
+    ),
+    "ET"
+  ].join("\n");
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xrefOffset = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return pdf;
+};
+
+const novelExportBody = (novel: Novel, format: NovelExportFormat) => {
+  if (format === "epub") {
+    return {
+      body: novelEpubExport(novel),
+      contentType: "application/epub+zip",
+      extension: "epub"
+    };
+  }
+  if (format === "pdf") {
+    return {
+      body: novelPdfExport(novel),
+      contentType: "application/pdf",
+      extension: "pdf"
+    };
+  }
+  return {
+    body: novelMarkdownExport(novel),
+    contentType: "text/markdown; charset=utf-8",
+    extension: "md"
+  };
+};
+
+const importedNovelTitle = (fileName: string, fallback = "Imported novel") => {
+  const baseName = fileName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
+  return baseName ? baseName.slice(0, 160) : fallback;
+};
+
+const zipUint16 = (bytes: Uint8Array, offset: number) =>
+  bytes[offset] | (bytes[offset + 1] << 8);
+
+const zipUint32 = (bytes: Uint8Array, offset: number) =>
+  (bytes[offset] |
+    (bytes[offset + 1] << 8) |
+    (bytes[offset + 2] << 16) |
+    (bytes[offset + 3] << 24)) >>> 0;
+
+type ZipEntry = {
+  name: string;
+  method: number;
+  compressedSize: number;
+  localOffset: number;
+};
+
+const readZipEntries = (bytes: Uint8Array) => {
+  const minimumEndOffset = Math.max(0, bytes.length - 65557);
+  let endOffset = -1;
+  for (let offset = bytes.length - 22; offset >= minimumEndOffset; offset -= 1) {
+    if (zipUint32(bytes, offset) === 0x06054b50) {
+      endOffset = offset;
+      break;
+    }
+  }
+  if (endOffset < 0) {
+    return [] as ZipEntry[];
+  }
+  const entryCount = zipUint16(bytes, endOffset + 10);
+  let offset = zipUint32(bytes, endOffset + 16);
+  const entries: ZipEntry[] = [];
+  for (let index = 0; index < entryCount && offset + 46 <= bytes.length; index += 1) {
+    if (zipUint32(bytes, offset) !== 0x02014b50) {
+      break;
+    }
+    const method = zipUint16(bytes, offset + 10);
+    const compressedSize = zipUint32(bytes, offset + 20);
+    const nameLength = zipUint16(bytes, offset + 28);
+    const extraLength = zipUint16(bytes, offset + 30);
+    const commentLength = zipUint16(bytes, offset + 32);
+    const localOffset = zipUint32(bytes, offset + 42);
+    const nameStart = offset + 46;
+    const name = textDecoderUtf8.decode(bytes.slice(nameStart, nameStart + nameLength));
+    entries.push({ name, method, compressedSize, localOffset });
+    offset = nameStart + nameLength + extraLength + commentLength;
+  }
+  return entries;
+};
+
+const inflateZipEntry = async (compressed: Uint8Array) => {
+  if (!("DecompressionStream" in globalThis)) {
+    throw new Error("This EPUB uses compressed entries that this runtime cannot import.");
+  }
+  const stream = new Blob([toArrayBuffer(compressed)]).stream().pipeThrough(
+    new DecompressionStream("deflate-raw" as CompressionFormat)
+  );
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+};
+
+const readZipEntryData = async (bytes: Uint8Array, entry: ZipEntry) => {
+  const offset = entry.localOffset;
+  if (zipUint32(bytes, offset) !== 0x04034b50) {
+    throw new Error("EPUB archive is invalid.");
+  }
+  const nameLength = zipUint16(bytes, offset + 26);
+  const extraLength = zipUint16(bytes, offset + 28);
+  const dataStart = offset + 30 + nameLength + extraLength;
+  const compressed = bytes.slice(dataStart, dataStart + entry.compressedSize);
+  if (entry.method === 0) {
+    return compressed;
+  }
+  if (entry.method === 8) {
+    return inflateZipEntry(compressed);
+  }
+  throw new Error("This EPUB compression method is not supported.");
+};
+
+const htmlToNovelText = (html: string) =>
+  html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|section|article|h[1-6]|li)>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+const textFromEpubBytes = async (bytes: Uint8Array) => {
+  const entries = readZipEntries(bytes);
+  if (entries.length === 0) {
+    return htmlToNovelText(textDecoderUtf8.decode(bytes));
+  }
+  const contentEntries = entries
+    .filter((entry) => /\.(xhtml|html|htm)$/i.test(entry.name))
+    .filter((entry) => !/(^|\/)(nav|toc)\.(xhtml|html|htm)$/i.test(entry.name))
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .slice(0, 80);
+  const parts: string[] = [];
+  for (const entry of contentEntries) {
+    const html = textDecoderUtf8.decode(await readZipEntryData(bytes, entry));
+    const bodyMatches = [...html.matchAll(/<body[^>]*>([\s\S]*?)<\/body>/gi)];
+    const text = htmlToNovelText(bodyMatches.map((match) => match[1]).join("\n\n") || html);
+    if (text) {
+      parts.push(text);
+    }
+  }
+  return parts.join("\n\n").trim();
+};
+
+const textFromImportedNovelFile = async (file: File) => {
+  if (file.size > 2_000_000) {
+    throw new Error("Novel import files must be 2 MB or smaller.");
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const fileName = file.name.toLowerCase();
+  if (fileName.endsWith(".epub") || file.type === "application/epub+zip") {
+    return textFromEpubBytes(bytes);
+  }
+  return textDecoderUtf8.decode(bytes).trim();
+};
+
+const getReadingProgressList = async (
+  db: D1Database,
+  user: CurrentUser,
+  matureAccess: MatureAccess,
+  limit: number
+) => {
+  const rows = await db
+    .prepare(
+      `SELECT novel_id, last_position, scroll_percent, updated_at
+       FROM reading_progress
+       WHERE user_id = ?
+       ORDER BY datetime(updated_at) DESC
+       LIMIT ?`
+    )
+    .bind(user.id, Math.min(Math.max(limit, 1), 40))
+    .all<ReadingProgressRow>();
+  const progress = [];
+  for (const row of rows.results) {
+    const detail = await getNovelFromD1(db, row.novel_id, user, matureAccess, false);
+    if (detail) {
+      progress.push(readingProgressFromRow(row, detail.novel));
+    }
+  }
+  return progress;
+};
+
+const artworkIdsFromNovelContent = (content: string) =>
+  Array.from(
+    new Set(
+      [...content.matchAll(/!\[[^\]]*]\(artwork_id:([A-Za-z0-9_-]{1,80})\)/g)]
+        .map((match) => match[1])
+        .filter(Boolean)
+    )
+  ).slice(0, 24);
+
+const syncNovelPublishActivity = async (
+  db: D1Database,
+  novel: {
+    id: string;
+    creatorId: string;
+    creatorDisplayName: string;
+    title: string;
+    isDraft: boolean;
+    visibility: ArtworkVisibility;
+  }
+) => {
+  if (!novel.isDraft && novel.visibility === "public") {
+    await db
+      .prepare(
+        `INSERT INTO activity_events (id, actor_user_id, type, novel_id, message, created_at)
+         SELECT ?, ?, 'publish', ?, ?, CURRENT_TIMESTAMP
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM activity_events
+           WHERE novel_id = ?
+             AND type = 'publish'
+         )`
+      )
+      .bind(
+        `act_${crypto.randomUUID().replaceAll("-", "")}`,
+        novel.creatorId,
+        novel.id,
+        `${novel.creatorDisplayName} published "${novel.title}".`,
+        novel.id
+      )
+      .run();
+    return;
+  }
+
+  await db
+    .prepare("DELETE FROM activity_events WHERE novel_id = ? AND type = 'publish'")
+    .bind(novel.id)
+    .run();
+};
+
+const createNovelInD1 = async (
+  db: D1Database,
+  user: CurrentUser,
+  matureAccess: MatureAccess,
+  input: z.infer<typeof novelBaseSchema>
+) => {
+  if (input.seriesId) {
+    const series = await db.prepare(
+      "SELECT id FROM novel_series WHERE id = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1"
+    )
+      .bind(input.seriesId, user.id)
+      .first<{ id: string }>();
+    if (!series) {
+      throw new Error("Choose one of your own novel series.");
+    }
+  }
+
+  const id = `nov_${crypto.randomUUID().replaceAll("-", "")}`;
+  const body = input.content.trim();
+  const contentFormat = input.contentFormat ?? "markdown";
+  const tags = await canonicalizeArtworkTags(db, parseTagInput(input.tags));
+  const wordCount = estimateWordCount(body);
+  const readMinutes = Math.max(1, Math.ceil(wordCount / 220));
+  const description = input.description || excerptFromBody(body);
+  const excerpt = excerptFromBody(description || body);
+  const toc = extractNovelToc(body, contentFormat);
+  const now = new Date().toISOString();
+  const isDraft = input.isDraft || input.visibility === "private";
+
+  await db.batch([
+    db.prepare(
+      `INSERT INTO creators (id, handle, display_name, avatar_url, bio)
+       VALUES (?, ?, ?, '', '')
+       ON CONFLICT(id) DO UPDATE SET
+         handle = excluded.handle,
+         display_name = excluded.display_name`
+    ).bind(user.id, user.username, user.displayName),
+    db.prepare(
+      `INSERT INTO novels
+        (id, creator_id, title, description, excerpt, body, cover_image_url, cover_color,
+         tags_json, word_count, read_minutes, mature, mature_rating, visibility,
+         is_draft, series_id, chapter_number, content_format, toc_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      id,
+      user.id,
+      input.title,
+      description,
+      excerpt,
+      body,
+      input.coverImageUrl || null,
+      input.coverColor,
+      JSON.stringify(tags),
+      wordCount,
+      readMinutes,
+      input.matureRating === "general" ? 0 : 1,
+      input.matureRating,
+      input.visibility,
+      isDraft ? 1 : 0,
+      input.seriesId ?? null,
+      input.chapterNumber ?? null,
+      contentFormat,
+      JSON.stringify(toc),
+      now,
+      now
+    ),
+    ...novelTagInsertStatements(db, id, tags)
+  ]);
+
+  const detail = await getNovelFromD1(db, id, user, matureAccess, false);
+  if (!detail) {
+    throw new Error("Novel created, but could not be loaded.");
+  }
+  await syncNovelPublishActivity(db, {
+    id,
+    creatorId: user.id,
+    creatorDisplayName: user.displayName,
+    title: input.title,
+    isDraft,
+    visibility: input.visibility
+  });
+  return { novel: detail.novel, isDraft };
+};
+
+const novelSeriesOwnerFromRow = (row: NovelSeriesRow): Creator => ({
+  id: row.user_id,
+  handle: row.user_handle,
+  displayName: row.user_display_name,
+  avatarUrl: row.user_avatar_url ?? "",
+  bio: row.user_bio ?? "",
+  followerCount: row.user_follower_count ?? 0,
+  following: Boolean(row.user_following)
+});
+
+const readingListOwnerFromRow = (row: ReadingListRow): Creator => ({
+  id: row.user_id,
+  handle: row.user_handle,
+  displayName: row.user_display_name,
+  avatarUrl: row.user_avatar_url ?? "",
+  bio: row.user_bio ?? "",
+  followerCount: row.user_follower_count ?? 0,
+  following: Boolean(row.user_following)
+});
+
+const novelSeriesSummarySelect = `
+  SELECT
+    novel_series.id,
+    novel_series.user_id,
+    novel_series.title,
+    novel_series.description,
+    novel_series.created_at,
+    novel_series.updated_at,
+    novel_series.deleted_at,
+    COUNT(novels.id) AS novel_count,
+    GROUP_CONCAT(novels.id) AS novel_ids,
+    users.username AS user_handle,
+    users.display_name AS user_display_name,
+    creators.avatar_url AS user_avatar_url,
+    creators.bio AS user_bio,
+    creators.follower_count AS user_follower_count,
+    creators.following AS user_following,
+    users.profile_visibility AS user_profile_visibility
+  FROM novel_series
+  JOIN users ON users.id = novel_series.user_id
+  JOIN creators ON creators.id = novel_series.user_id
+  LEFT JOIN novels ON novels.series_id = novel_series.id
+    AND novels.deleted_at IS NULL
+`;
+
+const readingListSummarySelect = `
+  SELECT
+    reading_lists.id,
+    reading_lists.user_id,
+    reading_lists.title,
+    reading_lists.description,
+    reading_lists.visibility,
+    reading_lists.created_at,
+    reading_lists.updated_at,
+    reading_lists.deleted_at,
+    COUNT(reading_list_novels.novel_id) AS novel_count,
+    GROUP_CONCAT(reading_list_novels.novel_id) AS novel_ids,
+    users.username AS user_handle,
+    users.display_name AS user_display_name,
+    creators.avatar_url AS user_avatar_url,
+    creators.bio AS user_bio,
+    creators.follower_count AS user_follower_count,
+    creators.following AS user_following,
+    users.profile_visibility AS user_profile_visibility
+  FROM reading_lists
+  JOIN users ON users.id = reading_lists.user_id
+  JOIN creators ON creators.id = reading_lists.user_id
+  LEFT JOIN reading_list_novels ON reading_list_novels.reading_list_id = reading_lists.id
+`;
+
+const getUserNovelSeries = async (db: D1Database, userId: string) => {
+  const rows = await db
+    .prepare(
+      `${novelSeriesSummarySelect}
+       WHERE novel_series.user_id = ?
+         AND novel_series.deleted_at IS NULL
+       GROUP BY novel_series.id
+       ORDER BY datetime(novel_series.created_at) DESC, novel_series.id DESC`
+    )
+    .bind(userId)
+    .all<NovelSeriesRow>();
+  return rows.results.map(novelSeriesFromRow);
+};
+
+const getNovelSeriesSummaryById = async (db: D1Database, seriesId: string) =>
+  db
+    .prepare(
+      `${novelSeriesSummarySelect}
+       WHERE novel_series.id = ?
+         AND novel_series.deleted_at IS NULL
+       GROUP BY novel_series.id
+       LIMIT 1`
+    )
+    .bind(seriesId)
+    .first<NovelSeriesRow>();
+
+const getNovelsForSeries = async (
+  db: D1Database,
+  seriesId: string,
+  ownerId: string,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess
+) => {
+  const baseWhere = novelVisibleWhereSql(viewer, {
+    includeOwnDrafts: true,
+    userId: ownerId
+  });
+  const rows = await db
+    .prepare(
+      `${novelSelect}
+       WHERE ${baseWhere.clauses.join("\n         AND ")}
+         AND novels.series_id = ?
+       ORDER BY COALESCE(novels.chapter_number, 999999), datetime(novels.created_at), novels.id`
+    )
+    .bind(...baseWhere.bindings, seriesId)
+    .all<NovelRow>();
+  const novels = filterNovels(
+    rows.results.map((row) => novelFromRow(row, viewer)),
+    matureAccess,
+    "",
+    "",
+    "all"
+  );
+  return withViewerNovelInteractions(db, viewer?.id, novels);
+};
+
+const getUserReadingLists = async (db: D1Database, userId: string) => {
+  const rows = await db
+    .prepare(
+      `${readingListSummarySelect}
+       WHERE reading_lists.user_id = ?
+         AND reading_lists.deleted_at IS NULL
+       GROUP BY reading_lists.id
+       ORDER BY datetime(reading_lists.created_at) DESC, reading_lists.id DESC`
+    )
+    .bind(userId)
+    .all<ReadingListRow>();
+  return rows.results.map(readingListFromRow);
+};
+
+const getReadingListSummaryById = async (db: D1Database, readingListId: string) =>
+  db
+    .prepare(
+      `${readingListSummarySelect}
+       WHERE reading_lists.id = ?
+         AND reading_lists.deleted_at IS NULL
+       GROUP BY reading_lists.id
+       LIMIT 1`
+    )
+    .bind(readingListId)
+    .first<ReadingListRow>();
+
+const getNovelsForReadingList = async (
+  db: D1Database,
+  readingListId: string,
+  ownerId: string,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess
+) => {
+  const baseWhere = novelVisibleWhereSql(viewer, { includeOwnDrafts: viewer?.id === ownerId });
+  const rows = await db
+    .prepare(
+      `${novelSelect}
+       JOIN reading_list_novels ON reading_list_novels.novel_id = novels.id
+       WHERE ${baseWhere.clauses.join("\n         AND ")}
+         AND reading_list_novels.reading_list_id = ?
+       ORDER BY reading_list_novels.position ASC, datetime(reading_list_novels.added_at), novels.id`
+    )
+    .bind(...baseWhere.bindings, readingListId)
+    .all<NovelRow>();
+  const novels = filterNovels(
+    rows.results.map((row) => novelFromRow(row, viewer)),
+    matureAccess,
+    "",
+    "",
+    "all"
+  );
+  return withViewerNovelInteractions(db, viewer?.id, novels);
 };
 
 const getArtworkFromD1 = async (
@@ -7289,6 +8658,40 @@ const getArtworksByIds = async (
   return new Map(bookmarkedArtworks.map((artwork) => [artwork.id, artwork]));
 };
 
+const getNovelsByIds = async (
+  db: D1Database,
+  ids: string[],
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess
+) => {
+  const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+  if (uniqueIds.length === 0) {
+    return new Map<string, Novel>();
+  }
+
+  const placeholders = uniqueIds.map(() => "?").join(", ");
+  const { clauses, bindings } = novelVisibleWhereSql(viewer);
+  clauses.push("COALESCE(novels.visibility, 'public') = 'public'");
+  clauses.push(`novels.id IN (${placeholders})`);
+  bindings.push(...uniqueIds);
+  const result = await db
+    .prepare(
+      `${novelSelect}
+       WHERE ${clauses.join("\n         AND ")}`
+    )
+    .bind(...bindings)
+    .all<NovelRow>();
+  const novels = filterNovels(
+    result.results.map((row) => novelFromRow(row, viewer)),
+    matureAccess,
+    "",
+    "",
+    matureAccess.allowed ? "all" : "general"
+  );
+  const hydrated = await withViewerNovelInteractions(db, viewer?.id, novels);
+  return new Map(hydrated.map((novel) => [novel.id, novel]));
+};
+
 const ensureCreatorProfile = async (
   db: D1Database,
   user: CurrentUser,
@@ -7397,6 +8800,7 @@ const createNotification = async (
     actorUserId?: string | null;
     type: NotificationType;
     artworkId?: string | null;
+    novelId?: string | null;
     commentId?: string | null;
     message: string;
   }
@@ -7412,8 +8816,8 @@ const createNotification = async (
     await db
       .prepare(
         `INSERT INTO notifications
-          (id, user_id, actor_user_id, type, artwork_id, comment_id, message)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+          (id, user_id, actor_user_id, type, artwork_id, novel_id, comment_id, message)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         `ntf_${crypto.randomUUID().replaceAll("-", "")}`,
@@ -7421,6 +8825,7 @@ const createNotification = async (
         params.actorUserId ?? null,
         params.type,
         params.artworkId ?? null,
+        params.novelId ?? null,
         params.commentId ?? null,
         params.message
       )
@@ -7436,6 +8841,7 @@ const createActivityEvent = async (
     actorUserId: string;
     type: ActivityType;
     artworkId?: string | null;
+    novelId?: string | null;
     commentId?: string | null;
     targetUserId?: string | null;
     message: string;
@@ -7445,14 +8851,15 @@ const createActivityEvent = async (
     await db
       .prepare(
         `INSERT INTO activity_events
-          (id, actor_user_id, type, artwork_id, comment_id, target_user_id, message)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+          (id, actor_user_id, type, artwork_id, novel_id, comment_id, target_user_id, message)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         `act_${crypto.randomUUID().replaceAll("-", "")}`,
         params.actorUserId,
         params.type,
         params.artworkId ?? null,
+        params.novelId ?? null,
         params.commentId ?? null,
         params.targetUserId ?? null,
         params.message
@@ -8977,6 +10384,7 @@ app.get("/api/notifications", async (context) => {
         actor.display_name AS actor_display_name,
         actor_creator.avatar_url AS actor_avatar_url,
         notifications.artwork_id,
+        notifications.novel_id,
         notifications.comment_id,
         notifications.read_at,
         notifications.created_at
@@ -9111,6 +10519,7 @@ app.get("/api/activity", async (context) => {
       actor.profile_visibility AS actor_profile_visibility,
       activity_events.type,
       activity_events.artwork_id,
+      activity_events.novel_id,
       activity_events.comment_id,
       activity_events.target_user_id,
       target.username AS target_username,
@@ -9137,7 +10546,13 @@ app.get("/api/activity", async (context) => {
   const artworkIds = rows.results
     .map((row) => row.artwork_id)
     .filter((id): id is string => Boolean(id));
-  const artworkMap = await getArtworksByIds(context.env.DB, artworkIds, viewer);
+  const novelIds = rows.results
+    .map((row) => row.novel_id)
+    .filter((id): id is string => Boolean(id));
+  const [artworkMap, novelMap] = await Promise.all([
+    getArtworksByIds(context.env.DB, artworkIds, viewer),
+    getNovelsByIds(context.env.DB, novelIds, viewer, matureAccess)
+  ]);
   const activities: ActivityItem[] = [];
 
   for (const row of rows.results) {
@@ -9167,6 +10582,10 @@ app.get("/api/activity", async (context) => {
     if (row.artwork_id && !artwork) {
       continue;
     }
+    const novel = row.novel_id ? novelMap.get(row.novel_id) ?? null : null;
+    if (row.novel_id && !novel) {
+      continue;
+    }
     if (artwork && artworkIsMature(artwork) && !matureAccess.allowed) {
       continue;
     }
@@ -9176,6 +10595,7 @@ app.get("/api/activity", async (context) => {
       actor: activityActorFromRow(row),
       targetUser: activityTargetUserFromRow(row),
       artwork,
+      novel,
       commentId: row.comment_id,
       message: row.message,
       createdAt: row.created_at
@@ -12024,6 +13444,7 @@ app.get("/api/admin/reports", async (context) => {
           moderation_reports.target_id,
           CASE
             WHEN moderation_reports.target_type = 'artwork' THEN artworks.title
+            WHEN moderation_reports.target_type = 'novel' THEN novels.title
             WHEN moderation_reports.target_type = 'comment' THEN substr(comments.body, 1, 80)
             WHEN moderation_reports.target_type = 'user' THEN target_user.display_name || ' (@' || target_user.username || ')'
             ELSE moderation_reports.target_id
@@ -12037,6 +13458,8 @@ app.get("/api/admin/reports", async (context) => {
          LEFT JOIN users AS reporter ON reporter.id = moderation_reports.reporter_user_id
          LEFT JOIN artworks ON moderation_reports.target_type = 'artwork'
            AND artworks.id = moderation_reports.target_id
+         LEFT JOIN novels ON moderation_reports.target_type = 'novel'
+           AND novels.id = moderation_reports.target_id
          LEFT JOIN comments ON moderation_reports.target_type = 'comment'
            AND comments.id = moderation_reports.target_id
          LEFT JOIN users AS target_user ON moderation_reports.target_type = 'user'
@@ -12112,6 +13535,7 @@ app.post("/api/admin/reports/:id/resolve", async (context) => {
         moderation_reports.target_id,
         CASE
           WHEN moderation_reports.target_type = 'artwork' THEN artworks.title
+          WHEN moderation_reports.target_type = 'novel' THEN novels.title
           WHEN moderation_reports.target_type = 'comment' THEN substr(comments.body, 1, 80)
           WHEN moderation_reports.target_type = 'user' THEN target_user.display_name || ' (@' || target_user.username || ')'
           ELSE moderation_reports.target_id
@@ -12125,6 +13549,8 @@ app.post("/api/admin/reports/:id/resolve", async (context) => {
        LEFT JOIN users AS reporter ON reporter.id = moderation_reports.reporter_user_id
        LEFT JOIN artworks ON moderation_reports.target_type = 'artwork'
          AND artworks.id = moderation_reports.target_id
+       LEFT JOIN novels ON moderation_reports.target_type = 'novel'
+         AND novels.id = moderation_reports.target_id
        LEFT JOIN comments ON moderation_reports.target_type = 'comment'
          AND comments.id = moderation_reports.target_id
        LEFT JOIN users AS target_user ON moderation_reports.target_type = 'user'
@@ -12156,6 +13582,7 @@ app.post("/api/admin/reports/:id/resolve", async (context) => {
     actorUserId: admin.user.id,
     type: "moderation",
     artworkId: row.target_type === "artwork" ? row.target_id : null,
+    novelId: row.target_type === "novel" ? row.target_id : null,
     commentId: row.target_type === "comment" ? row.target_id : null,
     message: `Your report about "${row.target_label ?? row.target_id}" was ${parsed.data.status}.`
   });
@@ -12252,6 +13679,120 @@ app.post("/api/admin/artworks/:id/moderation", async (context) => {
     action: "restore_artwork",
     targetId: id,
     message: "Artwork restored to public feeds."
+  });
+});
+
+app.post("/api/admin/novels/:id/moderation", async (context) => {
+  const admin = await requireStaff(context);
+  if (admin.response) {
+    return admin.response;
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "admin:novel-moderation",
+    userId: admin.user.id,
+    ...rateLimitDefaults.admin
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+
+  const parsed = await parseJson(context, novelModerationSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Moderation action is invalid." }, 400);
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  const id = context.req.param("id");
+  const novel = await admin.db
+    .prepare(
+      `SELECT id, creator_id, title, is_draft
+       FROM novels
+       WHERE id = ?
+         AND deleted_at IS NULL
+       LIMIT 1`
+    )
+    .bind(id)
+    .first<{ id: string; creator_id: string; title: string; is_draft: number | null }>();
+  if (!novel) {
+    return context.json({ message: "Novel not found." }, 404);
+  }
+
+  if (parsed.data.action === "hide") {
+    await admin.db.batch([
+      admin.db.prepare(
+        "UPDATE novels SET is_draft = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+      ).bind(id),
+      admin.db.prepare("DELETE FROM activity_events WHERE novel_id = ? AND type = 'publish'").bind(id)
+    ]);
+    await createAdminAuditLog(admin.db, admin.user, {
+      action: "novel.hide",
+      targetType: "novel",
+      targetId: id,
+      summary: `Unpublished novel "${novel.title}".`,
+      metadata: {
+        creatorId: novel.creator_id,
+        title: novel.title
+      }
+    });
+    await createNotification(admin.db, {
+      userId: novel.creator_id,
+      actorUserId: admin.user.id,
+      type: "moderation",
+      novelId: id,
+      message: `Your novel "${novel.title}" was unpublished by moderation.`
+    });
+    return context.json<AdminModerationActionResponse>({
+      action: "hide_novel",
+      targetId: id,
+      message: "Novel unpublished from public feeds."
+    });
+  }
+
+  await admin.db.batch([
+    admin.db.prepare(
+      "UPDATE novels SET is_draft = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ).bind(id),
+    admin.db.prepare(
+      `INSERT INTO activity_events (id, actor_user_id, type, novel_id, message, created_at)
+       SELECT ?, ?, 'publish', ?, ?, CURRENT_TIMESTAMP
+       WHERE NOT EXISTS (
+         SELECT 1
+         FROM activity_events
+         WHERE novel_id = ?
+           AND type = 'publish'
+       )`
+    ).bind(
+      `act_${crypto.randomUUID().replaceAll("-", "")}`,
+      novel.creator_id,
+      id,
+      `A novel was restored: "${novel.title}".`,
+      id
+    )
+  ]);
+  await createAdminAuditLog(admin.db, admin.user, {
+    action: "novel.restore",
+    targetType: "novel",
+    targetId: id,
+    summary: `Restored novel "${novel.title}".`,
+    metadata: {
+      creatorId: novel.creator_id,
+      title: novel.title
+    }
+  });
+  await createNotification(admin.db, {
+    userId: novel.creator_id,
+    actorUserId: admin.user.id,
+    type: "moderation",
+    novelId: id,
+    message: `Your novel "${novel.title}" was restored by moderation.`
+  });
+  return context.json<AdminModerationActionResponse>({
+    action: "restore_novel",
+    targetId: id,
+    message: "Novel restored to public feeds."
   });
 });
 
@@ -14657,6 +16198,7 @@ app.get("/api/novels", async (context) => {
   const search = context.req.query("q") ?? "";
   const tag = context.req.query("tag") ?? "";
   const rating = asMatureFilter(context.req.query("rating") ?? null);
+  const sort = asNovelSortMode(context.req.query("sort"));
   const limit = Math.min(
     60,
     Math.max(6, Number.parseInt(context.req.query("limit") ?? "24", 10) || 24)
@@ -14670,11 +16212,12 @@ app.get("/api/novels", async (context) => {
         context.env.DB,
         viewer,
         matureAccess,
-        search,
-        tag,
-        rating,
-        limit
-      );
+	        search,
+	        tag,
+	        rating,
+	        limit,
+	        sort
+	      );
       return context.json<NovelListResponse>({
         novels,
         featuredNovel: novels[0] ?? null,
@@ -14690,7 +16233,7 @@ app.get("/api/novels", async (context) => {
     }
   }
 
-  const novels = filterNovels(fallbackNovels, matureAccess, search, tag, rating).slice(0, limit);
+  const novels = filterNovels(fallbackNovels, matureAccess, search, tag, rating, sort).slice(0, limit);
   return context.json<NovelListResponse>({
     novels,
     featuredNovel: novels[0] ?? null,
@@ -14701,6 +16244,424 @@ app.get("/api/novels", async (context) => {
   });
 });
 
+app.get("/api/novels/feed", async (context) => {
+  if (!context.env.DB) {
+    return context.json<NovelListResponse>({
+      novels: [],
+      featuredNovel: null,
+      tags: [],
+      totalCount: 0,
+      source: "d1",
+      matureAccess: matureAccessFor(context, undefined)
+    });
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to view followed novels." }, 401);
+  }
+  const matureAccess = matureAccessFor(context, user);
+  const limit = Math.min(
+    60,
+    Math.max(6, Number.parseInt(context.req.query("limit") ?? "24", 10) || 24)
+  );
+  const novels = await getNovelFeedFromD1(context.env.DB, user, matureAccess, limit);
+  return context.json<NovelListResponse>({
+    novels,
+    featuredNovel: novels[0] ?? null,
+    tags: novelTagCounts(novels),
+    totalCount: novels.length,
+    source: "d1",
+    matureAccess
+  });
+});
+
+app.get("/api/novels/user/:user_id", async (context) => {
+  if (!context.env.DB) {
+    return context.json<NovelListResponse>({
+      novels: [],
+      featuredNovel: null,
+      tags: [],
+      totalCount: 0,
+      source: "d1",
+      matureAccess: matureAccessFor(context, undefined)
+    });
+  }
+  const userId = context.req.param("user_id");
+  const viewer = await getCurrentUser(context.env.DB, context.req.raw);
+  const matureAccess = matureAccessFor(context, viewer);
+  const limit = Math.min(
+    60,
+    Math.max(6, Number.parseInt(context.req.query("limit") ?? "24", 10) || 24)
+  );
+  const novels = await getUserNovelsFromD1(context.env.DB, userId, viewer, matureAccess, limit);
+  return context.json<NovelListResponse>({
+    novels,
+    featuredNovel: novels[0] ?? null,
+    tags: novelTagCounts(novels),
+    totalCount: novels.length,
+    source: "d1",
+    matureAccess
+	  });
+	});
+
+app.get("/api/novels/rankings", async (context) => {
+  if (!context.env.DB) {
+    return context.json<NovelRankingResponse>({
+      period: asRankingPeriod(context.req.query("period")),
+      rankings: [],
+      matureAccess: matureAccessFor(context, undefined)
+    });
+  }
+  const period = asRankingPeriod(context.req.query("period"));
+  const limit = Math.min(
+    50,
+    Math.max(5, Number.parseInt(context.req.query("limit") ?? "10", 10) || 10)
+  );
+  const viewer = await getCurrentUser(context.env.DB, context.req.raw);
+  const matureAccess = matureAccessFor(context, viewer);
+  return context.json<NovelRankingResponse>({
+    period,
+    rankings: await getNovelRankingItems(context.env.DB, viewer, matureAccess, period, limit),
+    matureAccess
+  });
+});
+
+app.get("/api/novels/reading-progress", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to resume reading." }, 401);
+  }
+  const limit = Math.min(
+    20,
+    Math.max(3, Number.parseInt(context.req.query("limit") ?? "6", 10) || 6)
+  );
+  const matureAccess = matureAccessFor(context, user);
+  return context.json<ReadingProgressResponse>({
+    progress: await getReadingProgressList(context.env.DB, user, matureAccess, limit),
+    matureAccess
+  });
+});
+
+app.put("/api/novels/:id/progress", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to save reading progress." }, 401);
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(
+    context,
+    z.object({
+      lastPosition: z.number().int().min(0).max(500000).optional(),
+      scrollPercent: z.number().min(0).max(100).optional()
+    })
+  );
+  if (!parsed.success) {
+    return context.json({ message: "Reading progress is invalid." }, 400);
+  }
+  const id = context.req.param("id");
+  const matureAccess = matureAccessFor(context, user);
+  const detail = await getNovelFromD1(context.env.DB, id, user, matureAccess, false);
+  if (!detail) {
+    return context.json({ message: "Novel not found." }, 404);
+  }
+  const lastPosition = Math.max(0, Math.floor(parsed.data.lastPosition ?? 0));
+  const scrollPercent = Math.max(0, Math.min(100, parsed.data.scrollPercent ?? 0));
+  await context.env.DB.prepare(
+    `INSERT INTO reading_progress (user_id, novel_id, last_position, scroll_percent, updated_at)
+     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(user_id, novel_id) DO UPDATE SET
+       last_position = excluded.last_position,
+       scroll_percent = excluded.scroll_percent,
+       updated_at = CURRENT_TIMESTAMP`
+  )
+    .bind(user.id, id, lastPosition, scrollPercent)
+    .run();
+  const row = await context.env.DB.prepare(
+    `SELECT novel_id, last_position, scroll_percent, updated_at
+     FROM reading_progress
+     WHERE user_id = ? AND novel_id = ?
+     LIMIT 1`
+  )
+    .bind(user.id, id)
+    .first<ReadingProgressRow>();
+  if (!row) {
+    return context.json({ message: "Reading progress could not be saved." }, 500);
+  }
+  return context.json<ReadingProgressUpdateResponse>({
+    progress: readingProgressFromRow(row, detail.novel),
+    message: "Reading progress saved."
+  });
+});
+
+app.post("/api/novels", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to publish novels." }, 401);
+  }
+  if (!user.emailVerified) {
+    return context.json({ message: "Verify your email before publishing novels." }, 403);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novels:create",
+    userId: user.id,
+    ...rateLimitDefaults.uploads
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, novelCreateSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Novel details are invalid." }, 400);
+  }
+  const turnstile = await verifyTurnstile(context, parsed.data.turnstileToken, "upload");
+  if (!turnstile.ok) {
+    return context.json({ message: turnstile.message }, 403);
+  }
+  const matureAccess = matureAccessFor(context, user);
+  if (parsed.data.matureRating !== "general" && !matureAccess.allowed) {
+    return context.json({ message: "Verify your age before publishing mature novels." }, 403);
+  }
+  let created: Awaited<ReturnType<typeof createNovelInD1>>;
+  try {
+    created = await createNovelInD1(context.env.DB, user, matureAccess, parsed.data);
+  } catch (error) {
+    return context.json(
+      { message: error instanceof Error ? error.message : "Novel could not be created." },
+      400
+    );
+  }
+  return context.json<NovelMutationResponse>(
+    {
+      novel: created.novel,
+      message: created.isDraft ? "Draft saved." : "Novel published."
+    },
+    201
+  );
+});
+
+app.post("/api/novels/import", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to import novels." }, 401);
+  }
+  if (!user.emailVerified) {
+    return context.json({ message: "Verify your email before importing novels." }, 403);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novels:import",
+    userId: user.id,
+    ...rateLimitDefaults.uploads
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const body = await context.req.parseBody({ all: true });
+  const files = normalizeUploadFiles(body.file ?? body.files);
+  const parsed = novelImportFormSchema.safeParse({
+    title: body.title,
+    tags: body.tags,
+    matureRating: body.matureRating,
+    visibility: body.visibility,
+    coverColor: body.coverColor,
+    turnstileToken: body.turnstileToken
+  });
+  if (!parsed.success) {
+    return context.json({ message: "Import metadata is invalid." }, 400);
+  }
+  const turnstile = await verifyTurnstile(context, parsed.data.turnstileToken, "upload");
+  if (!turnstile.ok) {
+    return context.json({ message: turnstile.message }, 403);
+  }
+  const matureAccess = matureAccessFor(context, user);
+  if (parsed.data.matureRating !== "general" && !matureAccess.allowed) {
+    return context.json({ message: "Verify your age before importing mature novels." }, 403);
+  }
+  const file = files[0];
+  if (!file) {
+    return context.json({ message: "Choose a TXT, Markdown, or EPUB file." }, 400);
+  }
+  const fileName = file.name.toLowerCase();
+  const allowed =
+    fileName.endsWith(".txt") ||
+    fileName.endsWith(".md") ||
+    fileName.endsWith(".markdown") ||
+    fileName.endsWith(".epub") ||
+    file.type === "text/plain" ||
+    file.type === "text/markdown" ||
+    file.type === "application/epub+zip";
+  if (!allowed) {
+    return context.json({ message: "Novel imports support TXT, Markdown, and EPUB files." }, 415);
+  }
+  let content: string;
+  try {
+    content = await textFromImportedNovelFile(file);
+  } catch (error) {
+    return context.json(
+      { message: error instanceof Error ? error.message : "Import file could not be read." },
+      400
+    );
+  }
+  if (!content) {
+    return context.json({ message: "Import file did not contain readable text." }, 400);
+  }
+  if (content.length > novelContentMaxLength) {
+    return context.json({ message: "Imported novel text must be 500,000 characters or fewer." }, 413);
+  }
+  const contentFormat: NovelContentFormat =
+    fileName.endsWith(".md") || fileName.endsWith(".markdown") ? "markdown" : "plain";
+  let created: Awaited<ReturnType<typeof createNovelInD1>>;
+  try {
+    created = await createNovelInD1(context.env.DB, user, matureAccess, {
+      title: parsed.data.title || importedNovelTitle(file.name),
+      content,
+      description: excerptFromBody(content),
+      tags: parsed.data.tags,
+      matureRating: parsed.data.matureRating,
+      visibility: parsed.data.visibility,
+      isDraft: true,
+      coverColor: parsed.data.coverColor,
+      coverImageUrl: null,
+      seriesId: null,
+      chapterNumber: null,
+      contentFormat
+    });
+  } catch (error) {
+    return context.json(
+      { message: error instanceof Error ? error.message : "Imported novel could not be saved." },
+      400
+    );
+  }
+  return context.json<NovelImportResponse>(
+    {
+      novel: created.novel,
+      message: "Novel imported as a draft."
+    },
+    201
+  );
+});
+
+app.get("/api/novels/:id/export", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+  const format = novelExportFormatSchema.catch("markdown").parse(context.req.query("format"));
+  const viewer = await getCurrentUser(context.env.DB, context.req.raw);
+  const matureAccess = matureAccessFor(context, viewer);
+  const detail = await getNovelFromD1(
+    context.env.DB,
+    context.req.param("id"),
+    viewer,
+    matureAccess,
+    false
+  );
+  if (!detail) {
+    return context.json({ message: "Novel not found." }, 404);
+  }
+  const exported = novelExportBody(detail.novel, format);
+  const filename = `${sanitizeExportFilename(detail.novel.title)}.${exported.extension}`;
+  return new Response(exported.body, {
+    headers: {
+      "content-type": exported.contentType,
+      "content-disposition": `attachment; filename="${escapeHeader(filename)}"`
+    }
+  });
+});
+
+app.post("/api/novels/:id/report", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to report novels." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "reports:novel",
+    userId: user.id,
+    ...rateLimitDefaults.reports
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, protectedReportSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Report details are invalid." }, 400);
+  }
+  const turnstile = await verifyTurnstile(context, parsed.data.turnstileToken, "report");
+  if (!turnstile.ok) {
+    return context.json({ message: turnstile.message }, 403);
+  }
+
+  const detail = await getNovelFromD1(
+    context.env.DB,
+    context.req.param("id"),
+    user,
+    matureAccessFor(context, user),
+    false
+  );
+  if (!detail) {
+    return context.json({ message: "Novel not found." }, 404);
+  }
+  if (detail.novel.creator.id === user.id) {
+    return context.json({ message: "You cannot report your own novel." }, 400);
+  }
+
+  const reportId = `rpt_${crypto.randomUUID().replaceAll("-", "")}`;
+  await context.env.DB.prepare(
+    `INSERT INTO moderation_reports
+      (id, reporter_user_id, target_type, target_id, reason, details)
+     VALUES (?, ?, 'novel', ?, ?, ?)`
+  )
+    .bind(reportId, user.id, detail.novel.id, parsed.data.reason, parsed.data.details)
+    .run();
+
+  return context.json<ReportResponse>(
+    {
+      report: {
+        id: reportId,
+        targetType: "novel",
+        targetId: detail.novel.id,
+        targetLabel: detail.novel.title,
+        reporter: user.displayName,
+        reason: parsed.data.reason,
+        details: parsed.data.details,
+        status: "open",
+        createdAt: new Date().toISOString(),
+        resolvedAt: null
+      },
+      message: "Novel report submitted."
+    },
+    201
+  );
+});
+
 app.get("/api/novels/:id", async (context) => {
   const id = context.req.param("id");
   const viewer = context.env.DB ? await getCurrentUser(context.env.DB, context.req.raw) : undefined;
@@ -14708,8 +16669,9 @@ app.get("/api/novels/:id", async (context) => {
 
   if (context.env.DB) {
     try {
-      const novel = await getNovelFromD1(context.env.DB, id, viewer, matureAccess);
-      if (novel) {
+      const detail = await getNovelFromD1(context.env.DB, id, viewer, matureAccess);
+      if (detail) {
+        const novel = detail.novel;
         const relatedNovels = (await getD1Novels(
           context.env.DB,
           viewer,
@@ -14719,9 +16681,16 @@ app.get("/api/novels/:id", async (context) => {
           matureAccess.allowed ? "all" : "general",
           6
         )).filter((item) => item.id !== novel.id);
+        const linkedArtworkMap = await getArtworksByIds(
+          context.env.DB,
+          artworkIdsFromNovelContent(novel.body),
+          viewer
+        );
         return context.json<NovelResponse>({
           novel,
+          comments: detail.comments,
           relatedNovels,
+          linkedArtworks: Array.from(linkedArtworkMap.values()),
           source: "d1",
           matureAccess
         });
@@ -14746,9 +16715,1250 @@ app.get("/api/novels/:id", async (context) => {
   ).slice(0, 6);
   return context.json<NovelResponse>({
     novel,
+    comments: [],
     relatedNovels,
+    linkedArtworks: [],
     source: "fallback",
     matureAccess
+  });
+});
+
+app.put("/api/novels/:id", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to update novels." }, 401);
+  }
+  if (!user.emailVerified && user.role !== "admin") {
+    return context.json({ message: "Verify your email before updating novels." }, 403);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novels:update",
+    userId: user.id,
+    ...rateLimitDefaults.uploads
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, novelUpdateSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Novel details are invalid." }, 400);
+  }
+  const id = context.req.param("id");
+  const existing = await context.env.DB.prepare(
+    `SELECT id, creator_id, title, description, excerpt, body, cover_image_url, cover_color,
+            tags_json, mature_rating, visibility, is_draft, series_id, chapter_number, content_format
+     FROM novels
+     WHERE id = ?
+       AND deleted_at IS NULL
+     LIMIT 1`
+  )
+    .bind(id)
+    .first<{
+      id: string;
+      creator_id: string;
+      title: string;
+      description: string | null;
+      excerpt: string | null;
+      body: string;
+      cover_image_url: string | null;
+      cover_color: string | null;
+      tags_json: string;
+      mature_rating: string | null;
+      visibility: string | null;
+      is_draft: number | null;
+      series_id: string | null;
+      chapter_number: number | null;
+      content_format: string | null;
+    }>();
+  if (!existing) {
+    return context.json({ message: "Novel not found." }, 404);
+  }
+  if (existing.creator_id !== user.id && user.role !== "admin") {
+    return context.json({ message: "You can only update your own novels." }, 403);
+  }
+
+  const matureRating = parsed.data.matureRating ?? asMatureRating(existing.mature_rating);
+  if (matureRating !== "general" && !matureAccessFor(context, user).allowed) {
+    return context.json({ message: "Verify your age before publishing mature novels." }, 403);
+  }
+  const body = parsed.data.content?.trim() ?? existing.body;
+  const contentFormat = parsed.data.contentFormat ?? (existing.content_format === "plain" ? "plain" : "markdown");
+  const wordCount = estimateWordCount(body);
+  const readMinutes = Math.max(1, Math.ceil(wordCount / 220));
+  const description =
+    parsed.data.description !== undefined
+      ? parsed.data.description
+      : existing.description ?? existing.excerpt ?? excerptFromBody(body);
+  const excerpt = excerptFromBody(description || body);
+  const tags =
+    parsed.data.tags !== undefined
+      ? await canonicalizeArtworkTags(context.env.DB, parseTagInput(parsed.data.tags))
+      : parseTags(existing.tags_json);
+  const visibility = parsed.data.visibility ?? asArtworkVisibility(existing.visibility);
+  const isDraft =
+    parsed.data.isDraft !== undefined
+      ? parsed.data.isDraft
+      : Boolean(existing.is_draft);
+  const seriesId = parsed.data.seriesId !== undefined ? parsed.data.seriesId : existing.series_id;
+  const chapterNumber =
+    parsed.data.chapterNumber !== undefined ? parsed.data.chapterNumber : existing.chapter_number;
+  const toc = extractNovelToc(body, contentFormat);
+  if (seriesId) {
+    const series = await context.env.DB.prepare(
+      "SELECT id FROM novel_series WHERE id = ? AND user_id = ? AND deleted_at IS NULL LIMIT 1"
+    )
+      .bind(seriesId, existing.creator_id)
+      .first<{ id: string }>();
+    if (!series) {
+      return context.json({ message: "Choose a series owned by this novel author." }, 400);
+    }
+  }
+
+  await context.env.DB.prepare(
+    `UPDATE novels
+     SET title = ?,
+         description = ?,
+         excerpt = ?,
+         body = ?,
+         cover_image_url = ?,
+         cover_color = ?,
+         tags_json = ?,
+         word_count = ?,
+         read_minutes = ?,
+         mature = ?,
+         mature_rating = ?,
+         visibility = ?,
+         is_draft = ?,
+         series_id = ?,
+         chapter_number = ?,
+         content_format = ?,
+         toc_json = ?,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  )
+    .bind(
+      parsed.data.title ?? existing.title,
+      description,
+      excerpt,
+      body,
+      parsed.data.coverImageUrl !== undefined ? parsed.data.coverImageUrl || null : existing.cover_image_url,
+      parsed.data.coverColor ?? existing.cover_color ?? "#fa9ebc",
+      JSON.stringify(tags),
+      wordCount,
+      readMinutes,
+      matureRating === "general" ? 0 : 1,
+      matureRating,
+      visibility,
+      isDraft || visibility === "private" ? 1 : 0,
+      seriesId ?? null,
+      chapterNumber ?? null,
+      contentFormat,
+      JSON.stringify(toc),
+      id
+    )
+    .run();
+  if (parsed.data.tags !== undefined) {
+    await replaceNovelTags(context.env.DB, id, tags);
+  }
+  await syncNovelPublishActivity(context.env.DB, {
+    id,
+    creatorId: existing.creator_id,
+    creatorDisplayName: user.displayName,
+    title: parsed.data.title ?? existing.title,
+    isDraft: isDraft || visibility === "private",
+    visibility
+  });
+
+  const detail = await getNovelFromD1(context.env.DB, id, user, matureAccessFor(context, user), false);
+  if (!detail) {
+    return context.json({ message: "Novel updated, but could not be loaded." }, 500);
+  }
+  return context.json<NovelMutationResponse>({
+    novel: detail.novel,
+    message: detail.novel.isDraft ? "Draft updated." : "Novel updated."
+  });
+});
+
+app.delete("/api/novels/:id", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to delete novels." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novels:delete",
+    userId: user.id,
+    ...rateLimitDefaults.social
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const id = context.req.param("id");
+  const novel = await context.env.DB.prepare(
+    "SELECT id, creator_id FROM novels WHERE id = ? AND deleted_at IS NULL LIMIT 1"
+  )
+    .bind(id)
+    .first<{ id: string; creator_id: string }>();
+  if (!novel) {
+    return context.json({ message: "Novel not found." }, 404);
+  }
+  if (novel.creator_id !== user.id && user.role !== "admin") {
+    return context.json({ message: "You can only delete your own novels." }, 403);
+  }
+  await context.env.DB.batch([
+    context.env.DB.prepare(
+      "UPDATE novels SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ).bind(id),
+    context.env.DB.prepare("DELETE FROM activity_events WHERE novel_id = ?").bind(id)
+  ]);
+  return context.json<DeleteNovelResponse>({
+    deleted: true,
+    novelId: id,
+    message: "Novel deleted."
+  });
+});
+
+app.post("/api/novels/:id/like", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to like novels." }, 401);
+  }
+  if (!user.emailVerified) {
+    return context.json({ message: "Verify your email before liking novels." }, 403);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novels:like",
+    userId: user.id,
+    ...rateLimitDefaults.social
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  const id = context.req.param("id");
+  const detail = await getNovelFromD1(context.env.DB, id, user, matureAccessFor(context, user), false);
+  if (!detail) {
+    return context.json({ message: "Novel not found." }, 404);
+  }
+  const existing = await context.env.DB.prepare(
+    "SELECT novel_id FROM novel_likes WHERE user_id = ? AND novel_id = ? LIMIT 1"
+  )
+    .bind(user.id, id)
+    .first<{ novel_id: string }>();
+
+  let likeAdded = false;
+  if (existing) {
+    await context.env.DB.batch([
+      context.env.DB.prepare("DELETE FROM novel_likes WHERE user_id = ? AND novel_id = ?").bind(user.id, id),
+      context.env.DB.prepare("UPDATE novels SET like_count = MAX(like_count - 1, 0) WHERE id = ?").bind(id)
+    ]);
+  } else {
+    const likeResult = await context.env.DB.prepare(
+      "INSERT OR IGNORE INTO novel_likes (user_id, novel_id) VALUES (?, ?)"
+    )
+      .bind(user.id, id)
+      .run();
+    if ((likeResult.meta.changes ?? 0) > 0) {
+      likeAdded = true;
+      await context.env.DB.prepare("UPDATE novels SET like_count = like_count + 1 WHERE id = ?")
+        .bind(id)
+        .run();
+    }
+  }
+  if (likeAdded) {
+    await createNotification(context.env.DB, {
+      userId: detail.novel.creator.id,
+      actorUserId: user.id,
+      type: "like",
+      novelId: detail.novel.id,
+      message: `${user.displayName} liked "${detail.novel.title}".`
+    });
+    await createActivityEvent(context.env.DB, {
+      actorUserId: user.id,
+      type: "like",
+      novelId: detail.novel.id,
+      message: `${user.displayName} liked "${detail.novel.title}".`
+    });
+  }
+
+  const updated = await getNovelFromD1(context.env.DB, id, user, matureAccessFor(context, user), false);
+  if (!updated) {
+    return context.json({ message: "Novel not found." }, 404);
+  }
+  return context.json<NovelMutationResponse>({
+    novel: updated.novel,
+    message: existing ? "Like removed." : "Novel liked."
+  });
+});
+
+app.post("/api/novels/:id/bookmark", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to bookmark novels." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novels:bookmark",
+    userId: user.id,
+    ...rateLimitDefaults.social
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  const id = context.req.param("id");
+  const detail = await getNovelFromD1(context.env.DB, id, user, matureAccessFor(context, user), false);
+  if (!detail) {
+    return context.json({ message: "Novel not found." }, 404);
+  }
+  const existing = await context.env.DB.prepare(
+    "SELECT novel_id FROM favorite_novels WHERE user_id = ? AND novel_id = ? LIMIT 1"
+  )
+    .bind(user.id, id)
+    .first<{ novel_id: string }>();
+
+  if (existing) {
+    await context.env.DB.batch([
+      context.env.DB.prepare("DELETE FROM favorite_novels WHERE user_id = ? AND novel_id = ?").bind(user.id, id),
+      context.env.DB.prepare("UPDATE novels SET bookmark_count = MAX(bookmark_count - 1, 0) WHERE id = ?").bind(id)
+    ]);
+  } else {
+    await context.env.DB.batch([
+      context.env.DB.prepare("INSERT OR IGNORE INTO favorite_novels (user_id, novel_id) VALUES (?, ?)").bind(user.id, id),
+      context.env.DB.prepare("UPDATE novels SET bookmark_count = bookmark_count + 1 WHERE id = ?").bind(id)
+    ]);
+  }
+
+  const updated = await getNovelFromD1(context.env.DB, id, user, matureAccessFor(context, user), false);
+  if (!updated) {
+    return context.json({ message: "Novel not found." }, 404);
+  }
+  return context.json<NovelMutationResponse>({
+    novel: updated.novel,
+    message: existing ? "Bookmark removed." : "Novel bookmarked."
+  });
+});
+
+app.post("/api/novels/:id/comments", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to comment on novels." }, 401);
+  }
+  if (!user.emailVerified) {
+    return context.json({ message: "Verify your email before commenting." }, 403);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novels:comment",
+    userId: user.id,
+    ...rateLimitDefaults.comments
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, protectedCommentSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Comment is invalid." }, 400);
+  }
+  const turnstile = await verifyTurnstile(context, parsed.data.turnstileToken, "comment");
+  if (!turnstile.ok) {
+    return context.json({ message: turnstile.message }, 403);
+  }
+
+  const novelId = context.req.param("id");
+  const detail = await getNovelFromD1(context.env.DB, novelId, user, matureAccessFor(context, user), false);
+  if (!detail) {
+    return context.json({ message: "Novel not found." }, 404);
+  }
+  let parentComment: { id: string; user_id: string | null } | null = null;
+  if (parsed.data.parentId) {
+    parentComment = await context.env.DB.prepare(
+      `SELECT id, user_id
+       FROM novel_comments
+       WHERE id = ?
+         AND novel_id = ?
+         AND deleted_at IS NULL
+       LIMIT 1`
+    )
+      .bind(parsed.data.parentId, novelId)
+      .first<{ id: string; user_id: string | null }>();
+    if (!parentComment) {
+      return context.json({ message: "Parent comment not found." }, 404);
+    }
+  }
+
+  const commentId = `nvc_${crypto.randomUUID().replaceAll("-", "")}`;
+  await context.env.DB.prepare(
+    `INSERT INTO novel_comments (id, novel_id, user_id, content, parent_comment_id)
+     VALUES (?, ?, ?, ?, ?)`
+  )
+    .bind(commentId, novelId, user.id, parsed.data.body, parsed.data.parentId ?? null)
+    .run();
+  await createNotification(context.env.DB, {
+    userId: detail.novel.creator.id,
+    actorUserId: user.id,
+    type: "comment",
+    novelId: detail.novel.id,
+    commentId,
+    message: `${user.displayName} commented on "${detail.novel.title}".`
+  });
+  if (parentComment?.user_id && parentComment.user_id !== detail.novel.creator.id) {
+    await createNotification(context.env.DB, {
+      userId: parentComment.user_id,
+      actorUserId: user.id,
+      type: "comment",
+      novelId: detail.novel.id,
+      commentId,
+      message: `${user.displayName} replied to your comment on "${detail.novel.title}".`
+    });
+  }
+  await createActivityEvent(context.env.DB, {
+    actorUserId: user.id,
+    type: "comment",
+    novelId: detail.novel.id,
+    commentId,
+    message: parsed.data.parentId
+      ? `${user.displayName} replied on "${detail.novel.title}".`
+      : `${user.displayName} commented on "${detail.novel.title}".`
+  });
+  const updated = await getNovelFromD1(context.env.DB, novelId, user, matureAccessFor(context, user), false);
+  const comment = updated?.comments.find((item) => item.id === commentId);
+  if (!updated || !comment) {
+    return context.json({ message: "Comment could not be loaded." }, 500);
+  }
+  return context.json<NovelCommentResponse>(
+    {
+      comment,
+      novel: updated.novel,
+      message: parentComment ? "Reply posted." : "Comment posted."
+    },
+    201
+  );
+});
+
+app.put("/api/novel-comments/:id", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to update comments." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novels:comment-update",
+    userId: user.id,
+    ...rateLimitDefaults.comments
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, commentSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Comment is invalid." }, 400);
+  }
+
+  const id = context.req.param("id");
+  const comment = await context.env.DB.prepare(
+    `SELECT novel_comments.id, novel_comments.novel_id, novel_comments.user_id, novels.creator_id, novels.title
+     FROM novel_comments
+     JOIN novels ON novels.id = novel_comments.novel_id
+     WHERE novel_comments.id = ?
+       AND novel_comments.deleted_at IS NULL
+       AND novels.deleted_at IS NULL
+     LIMIT 1`
+  )
+    .bind(id)
+    .first<{ id: string; novel_id: string; user_id: string | null; creator_id: string; title: string }>();
+  if (!comment) {
+    return context.json({ message: "Comment not found." }, 404);
+  }
+  const detail = await getNovelFromD1(context.env.DB, comment.novel_id, user, matureAccessFor(context, user), false);
+  if (!detail) {
+    return context.json({ message: "Comment not found." }, 404);
+  }
+  if (comment.user_id !== user.id && user.role !== "admin") {
+    return context.json({ message: "You can only edit your own comments." }, 403);
+  }
+  await context.env.DB.prepare(
+    "UPDATE novel_comments SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+  )
+    .bind(parsed.data.body, id)
+    .run();
+  const updated = await getNovelFromD1(context.env.DB, comment.novel_id, user, matureAccessFor(context, user), false);
+  const updatedComment = updated?.comments.find((item) => item.id === id);
+  if (!updated || !updatedComment) {
+    return context.json({ message: "Comment could not be loaded." }, 500);
+  }
+  return context.json<NovelCommentResponse>({
+    comment: updatedComment,
+    novel: updated.novel,
+    message: "Comment updated."
+  });
+});
+
+app.delete("/api/novel-comments/:id", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to delete comments." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novels:comment-delete",
+    userId: user.id,
+    ...rateLimitDefaults.comments
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+
+  const id = context.req.param("id");
+  const comment = await context.env.DB.prepare(
+    `SELECT novel_comments.id, novel_comments.novel_id, novel_comments.user_id, novels.creator_id, novels.title
+     FROM novel_comments
+     JOIN novels ON novels.id = novel_comments.novel_id
+     WHERE novel_comments.id = ?
+       AND novel_comments.deleted_at IS NULL
+       AND novels.deleted_at IS NULL
+     LIMIT 1`
+  )
+    .bind(id)
+    .first<{ id: string; novel_id: string; user_id: string | null; creator_id: string; title: string }>();
+  if (!comment) {
+    return context.json({ message: "Comment not found." }, 404);
+  }
+  const detail = await getNovelFromD1(context.env.DB, comment.novel_id, user, matureAccessFor(context, user), false);
+  if (!detail) {
+    return context.json({ message: "Comment not found." }, 404);
+  }
+  if (!isStaffRole(user.role) && comment.user_id !== user.id && comment.creator_id !== user.id) {
+    return context.json({ message: "You cannot delete this comment." }, 403);
+  }
+  await context.env.DB.batch([
+    context.env.DB.prepare(
+      "UPDATE novel_comments SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ).bind(id),
+    context.env.DB.prepare("DELETE FROM activity_events WHERE comment_id = ?").bind(id)
+  ]);
+  if (isStaffRole(user.role) && comment.user_id) {
+    await createNotification(context.env.DB, {
+      userId: comment.user_id,
+      actorUserId: user.id,
+      type: "moderation",
+      novelId: comment.novel_id,
+      commentId: id,
+      message: `Your comment on "${comment.title}" was removed by moderation.`
+    });
+  }
+  const updated = await getNovelFromD1(context.env.DB, comment.novel_id, user, matureAccessFor(context, user), false);
+  if (!updated) {
+    return context.json({ message: "Comment deleted." });
+  }
+  return context.json<DeleteNovelCommentResponse>({
+    deleted: true,
+    commentId: id,
+    novel: updated.novel,
+    message: "Comment deleted."
+  });
+});
+
+app.get("/api/novel-series", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to view novel series." }, 401);
+  }
+  return context.json<NovelSeriesListResponse>({
+    series: await getUserNovelSeries(context.env.DB, user.id)
+  });
+});
+
+app.post("/api/novel-series", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to create novel series." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novel-series:create",
+    userId: user.id,
+    ...rateLimitDefaults.collections
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, novelSeriesSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Series details are invalid." }, 400);
+  }
+  await ensureCreatorIdentity(context.env.DB, user);
+  const id = `nvs_${crypto.randomUUID().replaceAll("-", "")}`;
+  await context.env.DB.prepare(
+    `INSERT INTO novel_series (id, user_id, title, description, updated_at)
+     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`
+  )
+    .bind(id, user.id, parsed.data.title, parsed.data.description)
+    .run();
+  const series = (await getUserNovelSeries(context.env.DB, user.id)).find((item) => item.id === id);
+  if (!series) {
+    return context.json({ message: "Series could not be loaded." }, 500);
+  }
+  return context.json<NovelSeriesResponse>({ series, message: "Novel series created." }, 201);
+});
+
+app.get("/api/novel-series/:id", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const seriesId = context.req.param("id");
+  const viewer = await getCurrentUser(context.env.DB, context.req.raw);
+  const row = await getNovelSeriesSummaryById(context.env.DB, seriesId);
+  if (!row) {
+    return context.json({ message: "Series not found." }, 404);
+  }
+  const canManage = viewer?.id === row.user_id || viewer?.role === "admin";
+  if (!canManage) {
+    if (
+      !canViewProfileVisibility(
+        asProfileVisibility(row.user_profile_visibility),
+        row.user_id,
+        viewer
+      )
+    ) {
+      return context.json({ message: viewer ? "Series not found." : "Sign in to view this series." }, viewer ? 404 : 401);
+    }
+    if (viewer && (await userBlockedPair(context.env.DB, viewer.id, row.user_id))) {
+      return context.json({ message: "Series not found." }, 404);
+    }
+  }
+  const matureAccess = matureAccessFor(context, viewer);
+  const [novels, following] = await Promise.all([
+    getNovelsForSeries(context.env.DB, seriesId, row.user_id, viewer, matureAccess),
+    viewerFollowsCreator(context.env.DB, viewer?.id, row.user_id)
+  ]);
+  return context.json<NovelSeriesDetailResponse>({
+    series: novelSeriesFromRow(row),
+    owner: { ...novelSeriesOwnerFromRow(row), following },
+    novels,
+    canManage,
+    matureAccess
+  });
+});
+
+app.put("/api/novel-series/:id", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to update novel series." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novel-series:update",
+    userId: user.id,
+    ...rateLimitDefaults.collections
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, novelSeriesSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Series details are invalid." }, 400);
+  }
+  const seriesId = context.req.param("id");
+  const row = await getNovelSeriesSummaryById(context.env.DB, seriesId);
+  if (!row) {
+    return context.json({ message: "Series not found." }, 404);
+  }
+  if (row.user_id !== user.id && user.role !== "admin") {
+    return context.json({ message: "You can only update your own novel series." }, 403);
+  }
+  await context.env.DB.prepare(
+    `UPDATE novel_series
+     SET title = ?,
+         description = ?,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  )
+    .bind(parsed.data.title, parsed.data.description, seriesId)
+    .run();
+  const updated = await getNovelSeriesSummaryById(context.env.DB, seriesId);
+  if (!updated) {
+    return context.json({ message: "Series could not be loaded." }, 500);
+  }
+  return context.json<NovelSeriesResponse>({
+    series: novelSeriesFromRow(updated),
+    message: "Novel series updated."
+  });
+});
+
+app.delete("/api/novel-series/:id", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to delete novel series." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novel-series:delete",
+    userId: user.id,
+    ...rateLimitDefaults.collections
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const seriesId = context.req.param("id");
+  const row = await getNovelSeriesSummaryById(context.env.DB, seriesId);
+  if (!row) {
+    return context.json({ message: "Series not found." }, 404);
+  }
+  if (row.user_id !== user.id && user.role !== "admin") {
+    return context.json({ message: "You can only delete your own novel series." }, 403);
+  }
+  await context.env.DB.batch([
+    context.env.DB.prepare(
+      "UPDATE novel_series SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ).bind(seriesId),
+    context.env.DB.prepare(
+      "UPDATE novels SET series_id = NULL, chapter_number = NULL, updated_at = CURRENT_TIMESTAMP WHERE series_id = ?"
+    ).bind(seriesId)
+  ]);
+  return context.json<DeleteNovelSeriesResponse>({
+    deleted: true,
+    seriesId,
+    message: "Novel series deleted."
+  });
+});
+
+app.post("/api/novel-series/:id/novels", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to update novel series." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novel-series:chapters",
+    userId: user.id,
+    ...rateLimitDefaults.collections
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, novelSeriesChapterSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Chapter details are invalid." }, 400);
+  }
+  const seriesId = context.req.param("id");
+  const row = await getNovelSeriesSummaryById(context.env.DB, seriesId);
+  if (!row) {
+    return context.json({ message: "Series not found." }, 404);
+  }
+  if (row.user_id !== user.id && user.role !== "admin") {
+    return context.json({ message: "You can only update your own novel series." }, 403);
+  }
+  const novel = await context.env.DB.prepare(
+    "SELECT id, creator_id, series_id FROM novels WHERE id = ? AND deleted_at IS NULL LIMIT 1"
+  )
+    .bind(parsed.data.novelId)
+    .first<{ id: string; creator_id: string; series_id: string | null }>();
+  if (!novel || novel.creator_id !== row.user_id) {
+    return context.json({ message: "Choose a novel owned by this series author." }, 404);
+  }
+  const added = novel.series_id !== seriesId;
+  if (added) {
+    const nextChapter =
+      parsed.data.chapterNumber ??
+      ((await context.env.DB.prepare(
+        "SELECT COALESCE(MAX(chapter_number), 0) + 1 AS next_chapter FROM novels WHERE series_id = ? AND deleted_at IS NULL"
+      )
+        .bind(seriesId)
+        .first<{ next_chapter: number }>())?.next_chapter ?? 1);
+    await context.env.DB.prepare(
+      "UPDATE novels SET series_id = ?, chapter_number = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    )
+      .bind(seriesId, nextChapter, novel.id)
+      .run();
+  } else {
+    await context.env.DB.prepare(
+      "UPDATE novels SET series_id = NULL, chapter_number = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    )
+      .bind(novel.id)
+      .run();
+  }
+  await context.env.DB.prepare("UPDATE novel_series SET updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .bind(seriesId)
+    .run();
+  const [updatedSeriesRow, updatedNovel] = await Promise.all([
+    getNovelSeriesSummaryById(context.env.DB, seriesId),
+    getNovelFromD1(context.env.DB, novel.id, user, matureAccessFor(context, user), false)
+  ]);
+  if (!updatedSeriesRow || !updatedNovel) {
+    return context.json({ message: "Series could not be loaded." }, 500);
+  }
+  return context.json<NovelSeriesItemResponse>({
+    series: novelSeriesFromRow(updatedSeriesRow),
+    novel: updatedNovel.novel,
+    added,
+    message: added ? "Novel added as a chapter." : "Novel removed from series."
+  });
+});
+
+app.put("/api/novel-series/:id/novels/order", async (context) => {
+  const db = context.env.DB;
+  if (!db) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(db, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to reorder chapters." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "novel-series:chapter-order",
+    userId: user.id,
+    ...rateLimitDefaults.collections
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, novelSeriesOrderSchema);
+  if (!parsed.success || new Set(parsed.data.novelIds).size !== parsed.data.novelIds.length) {
+    return context.json({ message: "Chapter order is invalid." }, 400);
+  }
+  const seriesId = context.req.param("id");
+  const row = await getNovelSeriesSummaryById(db, seriesId);
+  if (!row) {
+    return context.json({ message: "Series not found." }, 404);
+  }
+  if (row.user_id !== user.id && user.role !== "admin") {
+    return context.json({ message: "You can only reorder your own novel series." }, 403);
+  }
+  const currentRows = await db.prepare(
+    "SELECT id FROM novels WHERE series_id = ? AND creator_id = ? AND deleted_at IS NULL"
+  )
+    .bind(seriesId, row.user_id)
+    .all<{ id: string }>();
+  const currentIds = new Set(currentRows.results.map((item) => item.id));
+  if (
+    currentIds.size !== parsed.data.novelIds.length ||
+    !parsed.data.novelIds.every((novelId) => currentIds.has(novelId))
+  ) {
+    return context.json({ message: "Include every chapter exactly once." }, 400);
+  }
+  await db.batch([
+    ...parsed.data.novelIds.map((novelId, index) =>
+      db.prepare(
+        "UPDATE novels SET chapter_number = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND series_id = ?"
+      ).bind(index + 1, novelId, seriesId)
+    ),
+    db.prepare("UPDATE novel_series SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(seriesId)
+  ]);
+  const updated = await getNovelSeriesSummaryById(db, seriesId);
+  if (!updated) {
+    return context.json({ message: "Series could not be loaded." }, 500);
+  }
+  return context.json<NovelSeriesResponse>({
+    series: novelSeriesFromRow(updated),
+    message: "Chapter order updated."
+  });
+});
+
+app.get("/api/reading-lists", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to view reading lists." }, 401);
+  }
+  return context.json<ReadingListsResponse>({
+    readingLists: await getUserReadingLists(context.env.DB, user.id)
+  });
+});
+
+app.post("/api/reading-lists", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to create reading lists." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "reading-lists:create",
+    userId: user.id,
+    ...rateLimitDefaults.collections
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, readingListSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Reading list details are invalid." }, 400);
+  }
+  await ensureCreatorIdentity(context.env.DB, user);
+  const id = `rdl_${crypto.randomUUID().replaceAll("-", "")}`;
+  await context.env.DB.prepare(
+    `INSERT INTO reading_lists (id, user_id, title, description, visibility, updated_at)
+     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+  )
+    .bind(id, user.id, parsed.data.title, parsed.data.description, parsed.data.visibility)
+    .run();
+  const readingList = (await getUserReadingLists(context.env.DB, user.id)).find((item) => item.id === id);
+  if (!readingList) {
+    return context.json({ message: "Reading list could not be loaded." }, 500);
+  }
+  return context.json<ReadingListResponse>({ readingList, message: "Reading list created." }, 201);
+});
+
+app.get("/api/reading-lists/:id", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const readingListId = context.req.param("id");
+  const viewer = await getCurrentUser(context.env.DB, context.req.raw);
+  const row = await getReadingListSummaryById(context.env.DB, readingListId);
+  if (!row) {
+    return context.json({ message: "Reading list not found." }, 404);
+  }
+  const canManage = viewer?.id === row.user_id || viewer?.role === "admin";
+  if (!canManage) {
+    if (asCollectionVisibility(row.visibility) !== "public") {
+      return context.json({ message: "Reading list not found." }, viewer ? 404 : 401);
+    }
+    if (
+      !canViewProfileVisibility(
+        asProfileVisibility(row.user_profile_visibility),
+        row.user_id,
+        viewer
+      )
+    ) {
+      return context.json({ message: viewer ? "Reading list not found." : "Sign in to view this reading list." }, viewer ? 404 : 401);
+    }
+    if (viewer && (await userBlockedPair(context.env.DB, viewer.id, row.user_id))) {
+      return context.json({ message: "Reading list not found." }, 404);
+    }
+  }
+  const matureAccess = matureAccessFor(context, viewer);
+  const [novels, following] = await Promise.all([
+    getNovelsForReadingList(context.env.DB, readingListId, row.user_id, viewer, matureAccess),
+    viewerFollowsCreator(context.env.DB, viewer?.id, row.user_id)
+  ]);
+  return context.json<ReadingListDetailResponse>({
+    readingList: readingListFromRow(row),
+    owner: { ...readingListOwnerFromRow(row), following },
+    novels,
+    canManage,
+    matureAccess
+  });
+});
+
+app.put("/api/reading-lists/:id", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to update reading lists." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "reading-lists:update",
+    userId: user.id,
+    ...rateLimitDefaults.collections
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, readingListSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Reading list details are invalid." }, 400);
+  }
+  const readingListId = context.req.param("id");
+  const row = await getReadingListSummaryById(context.env.DB, readingListId);
+  if (!row) {
+    return context.json({ message: "Reading list not found." }, 404);
+  }
+  if (row.user_id !== user.id && user.role !== "admin") {
+    return context.json({ message: "You can only update your own reading lists." }, 403);
+  }
+  await context.env.DB.prepare(
+    `UPDATE reading_lists
+     SET title = ?,
+         description = ?,
+         visibility = ?,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`
+  )
+    .bind(parsed.data.title, parsed.data.description, parsed.data.visibility, readingListId)
+    .run();
+  const updated = await getReadingListSummaryById(context.env.DB, readingListId);
+  if (!updated) {
+    return context.json({ message: "Reading list could not be loaded." }, 500);
+  }
+  return context.json<ReadingListResponse>({
+    readingList: readingListFromRow(updated),
+    message: "Reading list updated."
+  });
+});
+
+app.delete("/api/reading-lists/:id", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to delete reading lists." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "reading-lists:delete",
+    userId: user.id,
+    ...rateLimitDefaults.collections
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const readingListId = context.req.param("id");
+  const row = await getReadingListSummaryById(context.env.DB, readingListId);
+  if (!row) {
+    return context.json({ message: "Reading list not found." }, 404);
+  }
+  if (row.user_id !== user.id && user.role !== "admin") {
+    return context.json({ message: "You can only delete your own reading lists." }, 403);
+  }
+  await context.env.DB.prepare(
+    "UPDATE reading_lists SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+  )
+    .bind(readingListId)
+    .run();
+  return context.json<DeleteReadingListResponse>({
+    deleted: true,
+    readingListId,
+    message: "Reading list deleted."
+  });
+});
+
+app.post("/api/reading-lists/:id/novels", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to update reading lists." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "reading-lists:novels",
+    userId: user.id,
+    ...rateLimitDefaults.collections
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, readingListNovelSchema);
+  if (!parsed.success) {
+    return context.json({ message: "Reading list item is invalid." }, 400);
+  }
+  const readingListId = context.req.param("id");
+  const row = await getReadingListSummaryById(context.env.DB, readingListId);
+  if (!row) {
+    return context.json({ message: "Reading list not found." }, 404);
+  }
+  if (row.user_id !== user.id && user.role !== "admin") {
+    return context.json({ message: "You can only update your own reading lists." }, 403);
+  }
+  const detail = await getNovelFromD1(
+    context.env.DB,
+    parsed.data.novelId,
+    user,
+    matureAccessFor(context, user),
+    false
+  );
+  if (!detail) {
+    return context.json({ message: "Novel not found." }, 404);
+  }
+  const existing = await context.env.DB.prepare(
+    "SELECT novel_id FROM reading_list_novels WHERE reading_list_id = ? AND novel_id = ? LIMIT 1"
+  )
+    .bind(readingListId, parsed.data.novelId)
+    .first<{ novel_id: string }>();
+  const added = !existing;
+  if (existing) {
+    await context.env.DB.prepare(
+      "DELETE FROM reading_list_novels WHERE reading_list_id = ? AND novel_id = ?"
+    )
+      .bind(readingListId, parsed.data.novelId)
+      .run();
+  } else {
+    const position =
+      parsed.data.position ??
+      ((await context.env.DB.prepare(
+        "SELECT COALESCE(MAX(position), -1) + 1 AS next_position FROM reading_list_novels WHERE reading_list_id = ?"
+      )
+        .bind(readingListId)
+        .first<{ next_position: number }>())?.next_position ?? 0);
+    await context.env.DB.prepare(
+      "INSERT OR IGNORE INTO reading_list_novels (reading_list_id, novel_id, position) VALUES (?, ?, ?)"
+    )
+      .bind(readingListId, parsed.data.novelId, position)
+      .run();
+  }
+  await context.env.DB.prepare("UPDATE reading_lists SET updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .bind(readingListId)
+    .run();
+  const updated = await getReadingListSummaryById(context.env.DB, readingListId);
+  if (!updated) {
+    return context.json({ message: "Reading list could not be loaded." }, 500);
+  }
+  return context.json<ReadingListNovelResponse>({
+    readingList: readingListFromRow(updated),
+    novel: detail.novel,
+    added,
+    message: added ? "Novel added to reading list." : "Novel removed from reading list."
+  });
+});
+
+app.put("/api/reading-lists/:id/novels/order", async (context) => {
+  const db = context.env.DB;
+  if (!db) {
+    return authUnavailable(context);
+  }
+  const user = await getCurrentUser(db, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to reorder reading lists." }, 401);
+  }
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "reading-lists:novel-order",
+    userId: user.id,
+    ...rateLimitDefaults.collections
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+  const csrfError = await validateCsrf(context);
+  if (csrfError) {
+    return csrfError;
+  }
+  const parsed = await parseJson(context, novelSeriesOrderSchema);
+  if (!parsed.success || new Set(parsed.data.novelIds).size !== parsed.data.novelIds.length) {
+    return context.json({ message: "Reading list order is invalid." }, 400);
+  }
+  const readingListId = context.req.param("id");
+  const row = await getReadingListSummaryById(db, readingListId);
+  if (!row) {
+    return context.json({ message: "Reading list not found." }, 404);
+  }
+  if (row.user_id !== user.id && user.role !== "admin") {
+    return context.json({ message: "You can only reorder your own reading lists." }, 403);
+  }
+  const currentRows = await db.prepare(
+    "SELECT novel_id FROM reading_list_novels WHERE reading_list_id = ?"
+  )
+    .bind(readingListId)
+    .all<{ novel_id: string }>();
+  const currentIds = new Set(currentRows.results.map((item) => item.novel_id));
+  if (
+    currentIds.size !== parsed.data.novelIds.length ||
+    !parsed.data.novelIds.every((novelId) => currentIds.has(novelId))
+  ) {
+    return context.json({ message: "Include every reading-list novel exactly once." }, 400);
+  }
+  await db.batch([
+    ...parsed.data.novelIds.map((novelId, index) =>
+      db.prepare(
+        "UPDATE reading_list_novels SET position = ? WHERE reading_list_id = ? AND novel_id = ?"
+      ).bind(index, readingListId, novelId)
+    ),
+    db.prepare("UPDATE reading_lists SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(readingListId)
+  ]);
+  const updated = await getReadingListSummaryById(db, readingListId);
+  if (!updated) {
+    return context.json({ message: "Reading list could not be loaded." }, 500);
+  }
+  return context.json<ReadingListResponse>({
+    readingList: readingListFromRow(updated),
+    message: "Reading list order updated."
   });
 });
 

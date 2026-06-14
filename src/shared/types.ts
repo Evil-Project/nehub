@@ -16,8 +16,10 @@ export type MatureRating = "general" | "restricted" | "adult";
 export type MatureFilter = "all" | MatureRating;
 export type ArtworkVisibility = "public" | "unlisted" | "private";
 export type ArtworkReviewStatus = "pending" | "approved" | "rejected";
+export type NovelContentFormat = "plain" | "markdown";
+export type NovelSortMode = "newest" | "most_liked" | "most_bookmarked" | "most_viewed" | "word_count";
 export type UserRole = "member" | "moderator" | "admin";
-export type ReportTargetType = "artwork" | "comment" | "user";
+export type ReportTargetType = "artwork" | "comment" | "user" | "novel";
 export type ReportStatus = "open" | "resolved" | "dismissed";
 export type ReportReason = "spam" | "abuse" | "illegal" | "copyright" | "other";
 export type AdminReportTargetFilter = ReportTargetType | "all";
@@ -104,19 +106,121 @@ export type ArtworkResponse = {
 export type Novel = {
   id: string;
   title: string;
+  description: string;
   excerpt: string;
   body: string;
+  coverImageUrl: string | null;
   coverColor: string;
   creator: Creator;
   tags: string[];
   wordCount: number;
   readMinutes: number;
   likeCount: number;
+  liked: boolean;
+  bookmarkCount: number;
+  bookmarked: boolean;
   viewCount: number;
+  commentCount: number;
   createdAt: string;
+  updatedAt: string;
   mature: boolean;
   matureRating: MatureRating;
   visibility: ArtworkVisibility;
+  isDraft: boolean;
+  canManage: boolean;
+  seriesId: string | null;
+  chapterNumber: number | null;
+  contentFormat: NovelContentFormat;
+  toc: NovelTocItem[];
+};
+
+export type NovelTocItem = {
+  id: string;
+  text: string;
+  level: number;
+};
+
+export type NovelSeries = {
+  id: string;
+  userId: string;
+  title: string;
+  description: string;
+  novelCount: number;
+  novelIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NovelSeriesListResponse = {
+  series: NovelSeries[];
+};
+
+export type NovelSeriesResponse = {
+  series: NovelSeries;
+  message: string;
+};
+
+export type NovelSeriesDetailResponse = {
+  series: NovelSeries;
+  owner: Creator;
+  novels: Novel[];
+  canManage: boolean;
+  matureAccess: MatureAccess;
+};
+
+export type NovelSeriesItemResponse = {
+  series: NovelSeries;
+  novel: Novel;
+  added: boolean;
+  message: string;
+};
+
+export type DeleteNovelSeriesResponse = {
+  deleted: true;
+  seriesId: string;
+  message: string;
+};
+
+export type ReadingList = {
+  id: string;
+  userId: string;
+  title: string;
+  description: string;
+  visibility: CollectionVisibility;
+  novelCount: number;
+  novelIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ReadingListsResponse = {
+  readingLists: ReadingList[];
+};
+
+export type ReadingListResponse = {
+  readingList: ReadingList;
+  message: string;
+};
+
+export type ReadingListDetailResponse = {
+  readingList: ReadingList;
+  owner: Creator;
+  novels: Novel[];
+  canManage: boolean;
+  matureAccess: MatureAccess;
+};
+
+export type ReadingListNovelResponse = {
+  readingList: ReadingList;
+  novel: Novel;
+  added: boolean;
+  message: string;
+};
+
+export type DeleteReadingListResponse = {
+  deleted: true;
+  readingListId: string;
+  message: string;
 };
 
 export type NovelListResponse = {
@@ -128,11 +232,91 @@ export type NovelListResponse = {
   matureAccess: MatureAccess;
 };
 
+export type NovelRankingItem = {
+  novel: Novel;
+  score: number;
+};
+
+export type NovelRankingResponse = {
+  period: RankingPeriod;
+  rankings: NovelRankingItem[];
+  matureAccess: MatureAccess;
+};
+
+export type ReadingProgress = {
+  novelId: string;
+  lastPosition: number;
+  scrollPercent: number;
+  updatedAt: string;
+  novel: Novel;
+};
+
+export type ReadingProgressResponse = {
+  progress: ReadingProgress[];
+  matureAccess: MatureAccess;
+};
+
+export type ReadingProgressUpdateResponse = {
+  progress: ReadingProgress;
+  message: string;
+};
+
 export type NovelResponse = {
   novel: Novel;
+  comments: Comment[];
   relatedNovels: Novel[];
+  linkedArtworks: Artwork[];
   source: "d1" | "fallback";
   matureAccess: MatureAccess;
+};
+
+export type NovelCreateRequest = {
+  title: string;
+  content: string;
+  description?: string;
+  tags?: string;
+  matureRating?: MatureRating;
+  visibility?: ArtworkVisibility;
+  isDraft?: boolean;
+  coverColor?: string;
+  coverImageUrl?: string | null;
+  seriesId?: string | null;
+  chapterNumber?: number | null;
+  contentFormat?: NovelContentFormat;
+  turnstileToken: string;
+};
+
+export type NovelUpdateRequest = Partial<Omit<NovelCreateRequest, "turnstileToken">>;
+
+export type NovelMutationResponse = {
+  novel: Novel;
+  message: string;
+};
+
+export type DeleteNovelResponse = {
+  deleted: true;
+  novelId: string;
+  message: string;
+};
+
+export type NovelImportResponse = {
+  novel: Novel;
+  message: string;
+};
+
+export type NovelExportFormat = "markdown" | "epub" | "pdf";
+
+export type NovelCommentResponse = {
+  comment: Comment;
+  novel: Novel;
+  message: string;
+};
+
+export type DeleteNovelCommentResponse = {
+  deleted: true;
+  commentId: string;
+  novel: Novel;
+  message: string;
 };
 
 export type RankingItem = {
@@ -210,6 +394,7 @@ export type ActivityItem = {
   actor: ActivityActor;
   targetUser: ActivityActor | null;
   artwork: Artwork | null;
+  novel: Novel | null;
   commentId: string | null;
   message: string;
   createdAt: string;
@@ -377,7 +562,12 @@ export type AdminTagRuleResponse = {
   message: string;
 };
 
-export type AdminModerationAction = "hide_artwork" | "restore_artwork" | "delete_comment";
+export type AdminModerationAction =
+  | "hide_artwork"
+  | "restore_artwork"
+  | "hide_novel"
+  | "restore_novel"
+  | "delete_comment";
 
 export type AdminModerationActionResponse = {
   action: AdminModerationAction;
@@ -396,6 +586,7 @@ export type UserNotification = {
     avatarUrl: string;
   } | null;
   artworkId: string | null;
+  novelId: string | null;
   commentId: string | null;
   readAt: string | null;
   createdAt: string;
