@@ -15,6 +15,7 @@ export type CreatorDiscoverySort = "popular" | "active" | "newest";
 export type MatureRating = "general" | "restricted" | "adult";
 export type MatureFilter = "all" | MatureRating;
 export type ArtworkVisibility = "public" | "unlisted" | "private";
+export type NovelVisibility = "public" | "unlisted" | "private";
 export type ArtworkReviewStatus = "pending" | "approved" | "rejected";
 export type NovelContentFormat = "plain" | "markdown";
 export type NovelSortMode = "newest" | "most_liked" | "most_bookmarked" | "most_viewed" | "word_count";
@@ -82,7 +83,7 @@ export type Artwork = {
   createdAt: string;
   mature: boolean;
   matureRating: MatureRating;
-  visibility: ArtworkVisibility;
+  visibility: NovelVisibility;
   reviewStatus: ArtworkReviewStatus;
 };
 
@@ -125,7 +126,7 @@ export type Novel = {
   updatedAt: string;
   mature: boolean;
   matureRating: MatureRating;
-  visibility: ArtworkVisibility;
+  visibility: NovelVisibility;
   isDraft: boolean;
   canManage: boolean;
   seriesId: string | null;
@@ -265,7 +266,6 @@ export type NovelResponse = {
   novel: Novel;
   comments: Comment[];
   relatedNovels: Novel[];
-  linkedArtworks: Artwork[];
   source: "d1" | "fallback";
   matureAccess: MatureAccess;
 };
@@ -276,7 +276,7 @@ export type NovelCreateRequest = {
   description?: string;
   tags?: string;
   matureRating?: MatureRating;
-  visibility?: ArtworkVisibility;
+  visibility?: NovelVisibility;
   isDraft?: boolean;
   coverColor?: string;
   coverImageUrl?: string | null;
@@ -348,6 +348,24 @@ export type SearchSuggestionsResponse = {
   artworks: SearchSuggestionArtwork[];
 };
 
+export type NovelSearchSuggestion = {
+  id: string;
+  title: string;
+  coverColor: string;
+  creator: {
+    username: string;
+    displayName: string;
+  };
+  matureRating: MatureRating;
+};
+
+export type NovelSearchSuggestionsResponse = {
+  query: string;
+  tags: { name: string; count: number }[];
+  creators: Creator[];
+  novels: NovelSearchSuggestion[];
+};
+
 export type CreatorAnalyticsDay = {
   date: string;
   views: number;
@@ -378,6 +396,33 @@ export type CreatorAnalyticsResponse = {
   daily: CreatorAnalyticsDay[];
   topArtworks: CreatorAnalyticsArtwork[];
   recentArtworks: CreatorAnalyticsArtwork[];
+  generatedAt: string;
+};
+
+export type CreatorNovelAnalyticsItem = {
+  novel: Novel;
+  views7d: number;
+  engagementRate: number;
+};
+
+export type CreatorNovelAnalyticsResponse = {
+  summary: {
+    novels: number;
+    publishedNovels: number;
+    draftNovels: number;
+    matureNovels: number;
+    followers: number;
+    totalReads: number;
+    reads7d: number;
+    reads30d: number;
+    likes: number;
+    bookmarks: number;
+    comments: number;
+    words: number;
+  };
+  daily: CreatorAnalyticsDay[];
+  topNovels: CreatorNovelAnalyticsItem[];
+  recentNovels: CreatorNovelAnalyticsItem[];
   generatedAt: string;
 };
 
@@ -1145,6 +1190,35 @@ export type UserProfileResponse = {
     following: number;
     totalLikes: number;
     totalViews: number;
+  };
+  matureAccess: MatureAccess;
+};
+
+export type NovelProfileSection =
+  | "novels"
+  | "publicBookmarks"
+  | "privateBookmarks"
+  | "publicReadingLists"
+  | "publicSeries";
+
+export type NovelProfileResponse = {
+  profile: PublicProfile;
+  novels: Novel[];
+  publicBookmarks: Novel[];
+  privateBookmarks: Novel[];
+  publicReadingLists: ReadingList[];
+  publicSeries: NovelSeries[];
+  nextCursors: Record<NovelProfileSection, string | null>;
+  stats: {
+    novels: number;
+    publicBookmarks: number;
+    privateBookmarks: number;
+    publicReadingLists: number;
+    publicSeries: number;
+    following: number;
+    totalLikes: number;
+    totalReads: number;
+    totalWords: number;
   };
   matureAccess: MatureAccess;
 };

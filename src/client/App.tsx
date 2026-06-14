@@ -103,6 +103,7 @@ import type {
   CollectionsResponse,
   Creator,
   CreatorAnalyticsResponse,
+  CreatorNovelAnalyticsResponse,
   CreatorDiscoveryResponse,
   CreatorDiscoverySort,
   DeleteArtworkSeriesResponse,
@@ -133,8 +134,11 @@ import type {
   NovelImportResponse,
   NovelListResponse,
   NovelMutationResponse,
+  NovelProfileResponse,
+  NovelProfileSection,
   NovelRankingResponse,
   NovelResponse,
+  NovelSearchSuggestionsResponse,
   NovelSortMode,
   NovelSeries,
   NovelSeriesDetailResponse,
@@ -142,6 +146,7 @@ import type {
   NovelSeriesListResponse,
   NovelSeriesResponse,
   NovelTocItem,
+  NovelVisibility,
   ReadingList,
   ReadingListDetailResponse,
   ReadingListNovelResponse,
@@ -262,6 +267,16 @@ const novelSortOptions: { value: NovelSortMode; label: string; icon: typeof Grid
 
 const artworkVisibilityOptions: {
   value: ArtworkVisibility;
+  label: string;
+  icon: typeof Eye;
+}[] = [
+  { value: "public", label: "Public", icon: Eye },
+  { value: "unlisted", label: "Unlisted", icon: EyeOff },
+  { value: "private", label: "Private", icon: Lock }
+];
+
+const novelVisibilityOptions: {
+  value: NovelVisibility;
   label: string;
   icon: typeof Eye;
 }[] = [
@@ -499,6 +514,9 @@ const matureRatingLabel = (rating: MatureRating) => {
 const artworkVisibilityLabel = (visibility: ArtworkVisibility) =>
   artworkVisibilityOptions.find((option) => option.value === visibility)?.label ?? "Public";
 
+const novelVisibilityLabel = (visibility: NovelVisibility) =>
+  novelVisibilityOptions.find((option) => option.value === visibility)?.label ?? "Public";
+
 const slugifyNovelTocId = (value: string, fallbackIndex: number) =>
   `sec_${value
     .trim()
@@ -528,20 +546,9 @@ const extractNovelToc = (content: string, format: NovelContentFormat) => {
     .filter((item): item is NovelTocItem => Boolean(item));
 };
 
-const novelArtworkEmbedPattern = /!\[([^\]]*)]\(artwork_id:([A-Za-z0-9_-]{1,80})\)/g;
-
-const renderNovelMarkdown = (markdown: string, linkedArtworks: Artwork[] = []) => {
+const renderNovelMarkdown = (markdown: string) => {
   const toc = extractNovelToc(markdown, "markdown");
-  const artworkById = new Map(linkedArtworks.map((artwork) => [artwork.id, artwork]));
-  const embeddedArtworks: Array<{ artworkId: string; altText: string }> = [];
-  const markdownWithEmbeds = markdown.replace(
-    novelArtworkEmbedPattern,
-    (_match, altText: string, artworkId: string) => {
-      const index = embeddedArtworks.push({ artworkId, altText }) - 1;
-      return `<div data-novel-artwork-index="${index}"></div>`;
-    }
-  );
-  const rendered = marked.parse(markdownWithEmbeds, { breaks: true, gfm: true }) as string;
+  const rendered = marked.parse(markdown, { breaks: true, gfm: true }) as string;
   if (typeof window === "undefined") {
     return DOMPurify.sanitize(rendered, { USE_PROFILES: { html: true } });
   }
@@ -554,37 +561,7 @@ const renderNovelMarkdown = (markdown: string, linkedArtworks: Artwork[] = []) =
       heading.id = tocItem.id;
     }
   });
-  doc.querySelectorAll("[data-novel-artwork-index]").forEach((element) => {
-    const embedIndex = Number(element.getAttribute("data-novel-artwork-index") ?? "-1");
-    const embed = embeddedArtworks[embedIndex];
-    const artwork = embed ? artworkById.get(embed.artworkId) : undefined;
-    if (!artwork) {
-      element.replaceWith(doc.createTextNode(""));
-      return;
-    }
-    const card = doc.createElement("a");
-    card.className = "novel-artwork-embed";
-    card.href = `/artworks/${encodeURIComponent(artwork.id)}`;
-    card.setAttribute("data-artwork-id", artwork.id);
-    const image = doc.createElement("img");
-    image.src = artwork.thumbnailUrl;
-    image.alt = embed.altText || artwork.title;
-    image.loading = "lazy";
-    const copy = doc.createElement("span");
-    const title = doc.createElement("strong");
-    title.textContent = artwork.title;
-    const meta = doc.createElement("small");
-    meta.textContent = `Illustration by ${artwork.creator.displayName}`;
-    copy.appendChild(title);
-    copy.appendChild(meta);
-    card.appendChild(image);
-    card.appendChild(copy);
-    element.replaceWith(card);
-  });
-  return DOMPurify.sanitize(doc.body.innerHTML, {
-    ADD_ATTR: ["data-artwork-id"],
-    USE_PROFILES: { html: true }
-  });
+  return DOMPurify.sanitize(doc.body.innerHTML, { USE_PROFILES: { html: true } });
 };
 
 const estimateReadMinutes = (wordCount: number) => Math.max(1, Math.ceil(wordCount / 200));
@@ -664,7 +641,7 @@ type NovelEditInput = {
   description: string;
   tags: string;
   matureRating: MatureRating;
-  visibility: ArtworkVisibility;
+  visibility: NovelVisibility;
   isDraft: boolean;
   coverColor: string;
   contentFormat: NovelContentFormat;
@@ -675,7 +652,7 @@ type NovelImportInput = {
   title: string;
   tags: string;
   matureRating: MatureRating;
-  visibility: ArtworkVisibility;
+  visibility: NovelVisibility;
   coverColor: string;
 };
 type ReadingListSettingsInput = {
@@ -1045,6 +1022,10 @@ function App() {
   }, [contentAccessRevision, currentUser?.id, illustrationQuery, isIllustrationsSection]);
 
   useEffect(() => {
+    if (!isIllustrationsSection) {
+      return;
+    }
+
     let cancelled = false;
 
     fetch(galleryUrl)
@@ -1061,7 +1042,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [contentAccessRevision, currentUser?.id, galleryUrl]);
+  }, [contentAccessRevision, currentUser?.id, galleryUrl, isIllustrationsSection]);
 
   useEffect(() => {
     if (view !== "novels") {
@@ -1097,6 +1078,10 @@ function App() {
   }, [contentAccessRevision, currentUser?.id, novelsUrl, view]);
 
   useEffect(() => {
+    if (!isIllustrationsSection && view !== "rankings") {
+      return;
+    }
+
     let cancelled = false;
 
     fetch(`/api/rankings?period=${rankingPeriod}&limit=8`, { credentials: "include" })
@@ -1113,9 +1098,13 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [contentAccessRevision, currentUser?.id, rankingPeriod]);
+  }, [contentAccessRevision, currentUser?.id, isIllustrationsSection, rankingPeriod, view]);
 
   useEffect(() => {
+    if (!isNovelSection) {
+      return;
+    }
+
     let cancelled = false;
 
     fetch(`/api/novels/rankings?period=${novelRankingPeriod}&limit=12`, {
@@ -1146,10 +1135,10 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [contentAccessRevision, currentUser?.id, novelRankingPeriod]);
+  }, [contentAccessRevision, currentUser?.id, isNovelSection, novelRankingPeriod]);
 
   useEffect(() => {
-    if (!currentUser) {
+    if (!currentUser || !isNovelSection) {
       setReadingProgressData(null);
       return;
     }
@@ -1181,7 +1170,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [contentAccessRevision, currentUser?.id]);
+  }, [contentAccessRevision, currentUser?.id, isNovelSection]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1523,6 +1512,14 @@ function App() {
   }, [canModerate]);
 
   useEffect(() => {
+    if (!isIllustrationsSection) {
+      setSearchSuggestions(null);
+      setSearchSuggestionsLoading(false);
+      setSearchSuggestionsOpen(false);
+    }
+  }, [isIllustrationsSection]);
+
+  useEffect(() => {
     if (!authReady || !currentUser) {
       setNotifications(null);
       setNotificationsOpen(false);
@@ -1541,6 +1538,22 @@ function App() {
     loadNotifications().catch((error: unknown) => {
       console.error("Unable to load notifications", error);
     });
+
+    if (isNovelSection) {
+      setTagSubscriptions(null);
+      setCollections(null);
+      setSeriesList(null);
+      loadReadingLists().catch((error: unknown) => {
+        console.error("Unable to load reading lists", error);
+      });
+      loadNovelSeries().catch((error: unknown) => {
+        console.error("Unable to load novel series", error);
+      });
+      return;
+    }
+
+    setReadingLists(null);
+    setNovelSeriesList(null);
     loadTagSubscriptions().catch((error: unknown) => {
       console.error("Unable to load tag subscriptions", error);
     });
@@ -1550,15 +1563,10 @@ function App() {
     loadSeries().catch((error: unknown) => {
       console.error("Unable to load series", error);
     });
-    loadReadingLists().catch((error: unknown) => {
-      console.error("Unable to load reading lists", error);
-    });
-    loadNovelSeries().catch((error: unknown) => {
-      console.error("Unable to load novel series", error);
-    });
   }, [
     authReady,
     currentUser,
+    isNovelSection,
     loadCollections,
     loadNotifications,
     loadNovelSeries,
@@ -1946,7 +1954,18 @@ function App() {
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setNovelDetail(null);
-    pushRoute(section === "home" ? "/novels" : `/novels/${section}`, "novels", "", section);
+    if (section !== "novels") {
+      setActiveNovelTag("");
+    }
+    if (section !== "home" && section !== "novels") {
+      setNovelQuery("");
+    }
+    pushRoute(
+      section === "home" ? "/novels" : `/novels/${section}`,
+      "novels",
+      "",
+      section
+    );
   };
 
   const showNovels = (section: NovelSection = "home") => {
@@ -2087,6 +2106,7 @@ function App() {
 
   const showDashboard = () => {
     const openDashboard = () => {
+      setAdminReportTarget(isNovelSection ? "novel" : "all");
       pushRoute(isNovelSection ? "/novels/dashboard" : "/#dashboard", "dashboard");
     };
     if (!currentUser) {
@@ -4844,7 +4864,6 @@ function App() {
             onUpdateNovelComment={handleUpdateNovelComment}
             onDeleteNovelComment={handleDeleteNovelComment}
             onUpdateReadingProgress={handleUpdateReadingProgress}
-            onOpenArtwork={openArtworkById}
             onOpenNovel={openNovel}
             onOpenProfile={showProfile}
             onPrivacySecurity={showPrivacySecurity}
@@ -4859,6 +4878,7 @@ function App() {
             onAuthRequired={() => openAuth("login")}
             onBookmark={handleBookmark}
             onOpenCollection={showCollection}
+            onOpenNovel={openNovel}
             onOpenProfile={showProfile}
             onOpenPrivacySecurity={showPrivacySecurity}
             onOpenProfileSettings={showProfileSettings}
@@ -6622,6 +6642,16 @@ type CreatorAnalyticsPageProps = {
 
 function CreatorAnalyticsPage({
   context,
+  ...props
+}: CreatorAnalyticsPageProps) {
+  if (context === "novels") {
+    return <NovelAnalyticsPage {...props} />;
+  }
+  return <IllustrationAnalyticsPage context={context} {...props} />;
+}
+
+function IllustrationAnalyticsPage({
+  context,
   currentUser,
   onAuthRequired,
   onOpenArtwork
@@ -6829,6 +6859,211 @@ function AnalyticsArtworkRow({ item, onOpen }: AnalyticsArtworkRowProps) {
   );
 }
 
+function NovelAnalyticsPage({
+  currentUser,
+  onAuthRequired
+}: Omit<CreatorAnalyticsPageProps, "context" | "onOpenArtwork">) {
+  const [data, setData] = useState<CreatorNovelAnalyticsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (!currentUser) {
+      setData(null);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setMessage("");
+    fetch("/api/analytics/novels", { credentials: "include" })
+      .then(async (response) => {
+        const payload = (await response.json()) as CreatorNovelAnalyticsResponse | { message?: string };
+        if (!response.ok || !("summary" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ?? "Novel analytics could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setData(payload);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setMessage(error instanceof Error ? error.message : "Novel analytics could not be loaded.");
+          setData(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  if (!currentUser) {
+    return (
+      <section className="content-main analytics-page novel-dedicated-page novel-analytics-page">
+        <p className="empty-feed">Sign in to view novel stats.</p>
+        <button className="primary-button" type="button" onClick={onAuthRequired}>
+          <LogIn size={17} />
+          Sign in
+        </button>
+      </section>
+    );
+  }
+
+  const summary = data?.summary;
+  const showInitialLoading = loading && !data;
+  const showContent = Boolean(data && !message);
+  const maxDailyInteractions = Math.max(
+    1,
+    ...(data?.daily ?? []).map((day) => day.likes + day.bookmarks + day.comments)
+  );
+  const totalInteractions =
+    (summary?.likes ?? 0) + (summary?.bookmarks ?? 0) + (summary?.comments ?? 0);
+  const overallEngagement =
+    Math.round((totalInteractions / Math.max(1, summary?.totalReads ?? 0)) * 1000) / 10;
+
+  return (
+    <section className="content-main analytics-page novel-dedicated-page novel-analytics-page">
+      <div className="settings-heading analytics-heading">
+        <div>
+          <p className="eyebrow">Novel studio</p>
+          <h1>Novel performance</h1>
+          <p>
+            {data
+              ? `${formatCount(summary?.totalReads ?? 0)} lifetime reads across ${formatCount(summary?.publishedNovels ?? 0)} published works.`
+              : "Loading performance signals for your novels."}
+          </p>
+        </div>
+        <button className="secondary-button" type="button" onClick={() => window.location.reload()}>
+          <Activity size={16} />
+          Refresh
+        </button>
+      </div>
+
+      {showInitialLoading ? <p className="empty-feed">Loading novel analytics.</p> : null}
+      {message ? <p className="empty-feed">{message}</p> : null}
+
+      {showContent ? (
+        <>
+          <div className="analytics-summary-grid">
+            <MetricTile label="Total reads" value={formatCount(summary?.totalReads ?? 0)} />
+            <MetricTile label="Words" value={formatCount(summary?.words ?? 0)} />
+            <MetricTile label="Followers" value={formatCount(summary?.followers ?? 0)} />
+            <MetricTile label="Engagement" value={`${overallEngagement}%`} />
+            <MetricTile label="Published novels" value={formatCount(summary?.publishedNovels ?? 0)} />
+            <MetricTile label="Drafts" value={formatCount(summary?.draftNovels ?? 0)} />
+          </div>
+
+          <div className="analytics-grid">
+            <section className="dashboard-panel analytics-trend-panel">
+              <div className="panel-title">
+                <BarChart3 size={18} />
+                30-day interactions
+              </div>
+              <div className="analytics-bars" aria-label="Novel interactions by day">
+                {(data?.daily ?? []).map((day) => {
+                  const interactions = day.likes + day.bookmarks + day.comments;
+                  const height = Math.max(4, Math.round((interactions / maxDailyInteractions) * 100));
+                  return (
+                    <span className="analytics-bar-wrap" key={day.date}>
+                      <span
+                        className="analytics-bar"
+                        style={{ height: `${height}%` }}
+                        title={`${day.date}: ${formatCount(interactions)} interactions`}
+                      />
+                      <small>{new Date(`${day.date}T00:00:00.000Z`).getUTCDate()}</small>
+                    </span>
+                  );
+                })}
+              </div>
+              <div className="analytics-day-totals">
+                <span>
+                  <Heart size={14} />
+                  {formatCount((data?.daily ?? []).reduce((total, day) => total + day.likes, 0))} likes
+                </span>
+                <span>
+                  <Bookmark size={14} />
+                  {formatCount((data?.daily ?? []).reduce((total, day) => total + day.bookmarks, 0))} bookmarks
+                </span>
+                <span>
+                  <MessageCircle size={14} />
+                  {formatCount((data?.daily ?? []).reduce((total, day) => total + day.comments, 0))} comments
+                </span>
+              </div>
+            </section>
+
+            <section className="dashboard-panel analytics-list-panel">
+              <div className="panel-title">
+                <TrendingUp size={18} />
+                Top novels
+              </div>
+              {(data?.topNovels ?? []).map((item) => (
+                <AnalyticsNovelRow item={item} key={item.novel.id} />
+              ))}
+              {data && data.topNovels.length === 0 ? (
+                <p className="muted">Post a novel to start collecting analytics.</p>
+              ) : null}
+            </section>
+
+            <section className="dashboard-panel analytics-list-panel">
+              <div className="panel-title">
+                <Calendar size={18} />
+                Recent novels
+              </div>
+              {(data?.recentNovels ?? []).map((item) => (
+                <AnalyticsNovelRow item={item} key={item.novel.id} />
+              ))}
+              {data && data.recentNovels.length === 0 ? (
+                <p className="muted">No recent novels yet.</p>
+              ) : null}
+            </section>
+          </div>
+        </>
+      ) : null}
+
+      {data ? (
+        <p className="analytics-footnote">
+          Updated {fullDateFormat.format(new Date(data.generatedAt))}. Daily trend tracks likes,
+          bookmarks, and comments; read totals are lifetime aggregate counts.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+type AnalyticsNovelRowProps = {
+  item: CreatorNovelAnalyticsResponse["topNovels"][number];
+};
+
+function AnalyticsNovelRow({ item }: AnalyticsNovelRowProps) {
+  const novel = item.novel;
+  return (
+    <a className="analytics-artwork-row analytics-novel-row" href={`/novels/${encodeURIComponent(novel.id)}`}>
+      <span className="recent-novel-mark" style={{ background: novel.coverColor }}>
+        {novel.title.slice(0, 1).toUpperCase()}
+      </span>
+      <span>
+        <strong>{novel.title}</strong>
+        <small>
+          {formatCount(novel.viewCount)} reads · {formatCount(novel.wordCount)} words
+        </small>
+      </span>
+      <span className="analytics-artwork-score">
+        <strong>{item.engagementRate}%</strong>
+        <small>engaged</small>
+      </span>
+    </a>
+  );
+}
+
 type ActivityPanelProps = {
   data: ActivityResponse | null;
   onOpenArtwork: (artwork: Artwork) => void;
@@ -6993,8 +7228,14 @@ type DashboardProps = {
   onDeleteTagImplication: (implication: TagImplication) => Promise<string>;
 };
 
-function Dashboard({
-  context,
+function Dashboard(props: DashboardProps) {
+  if (props.context === "novels") {
+    return <NovelDashboard {...props} />;
+  }
+  return <IllustrationDashboard {...props} />;
+}
+
+function IllustrationDashboard({
   artworks,
   health,
   adminStats,
@@ -7044,7 +7285,6 @@ function Dashboard({
   );
   const contentStats = adminStats?.content;
   const accountStats = adminStats?.accounts;
-  const recentNovels = adminStats?.recentNovels ?? [];
   const reports = adminReports?.reports ?? [];
   const auditEntries = adminAuditLog?.entries ?? [];
   const pendingReviewArtworks = adminArtworkReviews?.artworks ?? [];
@@ -7057,28 +7297,23 @@ function Dashboard({
     adminUserStatusFilterOptions.find((option) => option.value === userStatus)?.label ??
     "All accounts";
   const [userSearchDraft, setUserSearchDraft] = useState(userQuery);
-  const novelContext = context === "novels";
 
   useEffect(() => {
     setUserSearchDraft(userQuery);
   }, [userQuery]);
 
   return (
-    <section className={classNames("dashboard-main", novelContext && "novel-dedicated-page novel-dashboard-main")} aria-label="Operations dashboard">
+    <section className="dashboard-main" aria-label="Operations dashboard">
       <div className="dashboard-heading">
         <div>
           <p className="eyebrow">Operations</p>
-          <h1>{novelContext ? "Dashboard" : "Cloudflare dashboard"}</h1>
-          <p>
-            {novelContext
-              ? "Site-wide operations with reader routes, review queues, and safety in focus."
-              : "Worker, D1, R2, and content pipeline status for NEHub."}
-          </p>
+          <h1>Cloudflare dashboard</h1>
+          <p>Worker, D1, R2, and illustration pipeline status for NEHub.</p>
           {message ? <p className="dashboard-message">{message}</p> : null}
         </div>
         <button className="primary-button" type="button" onClick={onUpload}>
-          {novelContext ? <NotebookText size={17} /> : <ImageUp size={17} />}
-          {novelContext ? "Post novel" : "Post artwork"}
+          <ImageUp size={17} />
+          Post artwork
         </button>
       </div>
 
@@ -7102,7 +7337,7 @@ function Dashboard({
           label="R2 originals"
           value={health?.storage.r2 ? "Bound" : "Demo assets"}
           active={Boolean(health?.storage.r2)}
-          detail={novelContext ? "Media file storage" : "Artwork file storage"}
+          detail="Artwork file storage"
         />
         <StatusCard
           icon={<Cloud size={22} />}
@@ -7169,52 +7404,11 @@ function Dashboard({
             Content metrics
           </div>
           <div className="metric-grid">
-            {novelContext ? (
-              <>
-                <MetricTile label="Novels" value={formatCount(contentStats?.novels ?? 0)} />
-                <MetricTile
-                  label="Published"
-                  value={formatCount(contentStats?.publishedNovels ?? 0)}
-                />
-                <MetricTile
-                  label="Novelists"
-                  value={formatCount(contentStats?.novelCreators ?? 0)}
-                />
-                <MetricTile
-                  label="Words"
-                  value={formatCount(contentStats?.novelWords ?? 0)}
-                />
-                <MetricTile
-                  label="Reads"
-                  value={formatCount(contentStats?.novelViews ?? 0)}
-                />
-                <MetricTile
-                  label="Bookmarks"
-                  value={formatCount(contentStats?.novelBookmarks ?? 0)}
-                />
-                <MetricTile
-                  label="Likes"
-                  value={formatCount(contentStats?.novelLikes ?? 0)}
-                />
-                <MetricTile
-                  label="Comments"
-                  value={formatCount(contentStats?.novelComments ?? 0)}
-                />
-              </>
-            ) : (
-              <>
-                <MetricTile label="Artworks" value={formatCount(contentStats?.artworks ?? artworks.length)} />
-                <MetricTile label="Creators" value={formatCount(contentStats?.creators ?? creatorsCount)} />
-                <MetricTile label="Tags" value={formatCount(tagsCount)} />
-                <MetricTile label="Likes" value={formatCount(contentStats?.likes ?? totalLikes)} />
-                <MetricTile label="Views" value={formatCount(contentStats?.views ?? totalViews)} />
-                <MetricTile label="Novels" value={formatCount(contentStats?.novels ?? 0)} />
-                <MetricTile
-                  label="Novel reads"
-                  value={formatCount(contentStats?.novelViews ?? 0)}
-                />
-              </>
-            )}
+            <MetricTile label="Artworks" value={formatCount(contentStats?.artworks ?? artworks.length)} />
+            <MetricTile label="Creators" value={formatCount(contentStats?.creators ?? creatorsCount)} />
+            <MetricTile label="Tags" value={formatCount(tagsCount)} />
+            <MetricTile label="Likes" value={formatCount(contentStats?.likes ?? totalLikes)} />
+            <MetricTile label="Views" value={formatCount(contentStats?.views ?? totalViews)} />
             <MetricTile label={`${reportStatusLabel} reports`} value={formatCount(filteredReportTotal)} />
             <MetricTile label="Source" value={source.toUpperCase()} />
           </div>
@@ -7244,11 +7438,6 @@ function Dashboard({
             label="Gallery data"
             value={source === "d1" ? "Persisted" : "Empty"}
             active={source === "d1"}
-          />
-          <StatusLine
-            label="Novel content"
-            value={`${formatCount(contentStats?.novels ?? 0)} works`}
-            active={Boolean(contentStats?.novels)}
           />
         </section>
 
@@ -7608,70 +7797,338 @@ function Dashboard({
 
         <section className="dashboard-panel recent-panel">
           <div className="panel-title">
-            {novelContext ? <NotebookText size={18} /> : <Grid3X3 size={18} />}
-            {novelContext ? "Recent novels" : "Recent works"}
+            <Grid3X3 size={18} />
+            Recent works
           </div>
-          {novelContext ? (
-            <>
-              {recentNovels.map((novel) => (
-                <div className="recent-row recent-novel-row" key={novel.id}>
-                  <span className="recent-novel-mark" style={{ background: novel.coverColor }}>
-                    {novel.title.slice(0, 1).toUpperCase()}
-                  </span>
-                  <div>
-                    <strong>{novel.title}</strong>
-                    <span>
-                      @{novel.creator.handle} · {formatCount(novel.wordCount)} words ·{" "}
-                      {formatCount(novel.viewCount)} reads
-                      {novel.isDraft ? " · draft" : ""}
-                      {novel.matureRating !== "general" ? ` · ${matureRatingLabel(novel.matureRating)}` : ""}
-                    </span>
-                  </div>
-                </div>
-              ))}
-              {adminStats && recentNovels.length === 0 ? (
-                <p className="muted">No novels have been posted yet.</p>
-              ) : null}
-              {!adminStats ? <p className="muted">Loading novels.</p> : null}
-            </>
+          {recent.slice(0, 6).map((artwork) => (
+            <div className="recent-row" key={artwork.id}>
+              <img
+                src={artwork.thumbnailUrl}
+                alt=""
+                loading="lazy"
+                decoding="async"
+              />
+              <div>
+                <strong>{artwork.title}</strong>
+                <span>
+                  {dateFormat.format(new Date(artwork.createdAt))} · {formatCount(artwork.viewCount)} views
+                </span>
+              </div>
+            </div>
+          ))}
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function NovelDashboard({
+  health,
+  adminStats,
+  adminReports,
+  reportStatus,
+  reportTarget,
+  reportReason,
+  reportLimit,
+  canAdminister,
+  message,
+  onUpload,
+  onResolveReport,
+  onReportStatusChange,
+  onReportTargetChange,
+  onReportReasonChange,
+  onReportLimitChange,
+  onModerateNovel
+}: DashboardProps) {
+  const contentStats = adminStats?.content;
+  const accountStats = adminStats?.accounts;
+  const recentNovels = adminStats?.recentNovels ?? [];
+  const reports = adminReports?.reports ?? [];
+  const novelReports = reports.filter((report) => report.targetType === "novel");
+  const reportStatusLabel =
+    reportStatusFilterOptions.find((option) => option.value === reportStatus)?.label ?? "Open";
+  const filteredReportTotal =
+    adminReports?.targetType === "novel" ? adminReports.totalCount : novelReports.length;
+  const draftCount = Math.max(
+    0,
+    (contentStats?.novels ?? 0) - (contentStats?.publishedNovels ?? 0)
+  );
+
+  useEffect(() => {
+    if (reportTarget !== "novel") {
+      onReportTargetChange("novel");
+    }
+  }, [onReportTargetChange, reportTarget]);
+
+  return (
+    <section
+      className="dashboard-main novel-dedicated-page novel-dashboard-main"
+      aria-label="Novel operations dashboard"
+    >
+      <div className="dashboard-heading">
+        <div>
+          <p className="eyebrow">Novel operations</p>
+          <h1>Novel dashboard</h1>
+          <p>Writing, reading, rankings, and novel moderation without illustration queues.</p>
+          {message ? <p className="dashboard-message">{message}</p> : null}
+        </div>
+        <button className="primary-button" type="button" onClick={onUpload}>
+          <NotebookText size={17} />
+          Post novel
+        </button>
+      </div>
+
+      <div className="status-grid">
+        <StatusCard
+          icon={<NotebookText size={22} />}
+          label="Novel API"
+          value={health?.ok ? "Online" : "Checking"}
+          active={Boolean(health?.ok)}
+          detail="Novel CRUD, rankings, comments, and reading progress"
+        />
+        <StatusCard
+          icon={<Database size={22} />}
+          label="D1 novels"
+          value={health?.storage.d1 ? "Bound" : "Fallback"}
+          active={Boolean(health?.storage.d1)}
+          detail={`${formatCount(contentStats?.novels ?? 0)} stored works`}
+        />
+        <StatusCard
+          icon={<Bookmark size={22} />}
+          label="Reader saves"
+          value={formatCount(contentStats?.novelBookmarks ?? 0)}
+          active={Boolean(contentStats?.novelBookmarks)}
+          detail="Bookmarks, lists, and reading progress"
+        />
+        <StatusCard
+          icon={<Trophy size={22} />}
+          label="Rankings"
+          value={formatCount(contentStats?.novelViews ?? 0)}
+          active={Boolean(contentStats?.novelViews)}
+          detail="Reads and engagement power novel discovery"
+        />
+        <StatusCard
+          icon={<MailCheck size={22} />}
+          label="Email binding"
+          value={adminStats?.storage.email ? "Ready" : "Checking"}
+          active={Boolean(adminStats?.storage.email)}
+          detail="Alerts and account email delivery"
+        />
+      </div>
+
+      <div className="dashboard-grid">
+        <section className="dashboard-panel metric-panel">
+          <div className="panel-title">
+            <Activity size={18} />
+            Novel metrics
+          </div>
+          <div className="metric-grid">
+            <MetricTile label="Novels" value={formatCount(contentStats?.novels ?? 0)} />
+            <MetricTile label="Published" value={formatCount(contentStats?.publishedNovels ?? 0)} />
+            <MetricTile label="Drafts" value={formatCount(draftCount)} />
+            <MetricTile label="Novelists" value={formatCount(contentStats?.novelCreators ?? 0)} />
+            <MetricTile label="Words" value={formatCount(contentStats?.novelWords ?? 0)} />
+            <MetricTile label="Reads" value={formatCount(contentStats?.novelViews ?? 0)} />
+            <MetricTile label="Bookmarks" value={formatCount(contentStats?.novelBookmarks ?? 0)} />
+            <MetricTile label="Likes" value={formatCount(contentStats?.novelLikes ?? 0)} />
+            <MetricTile label="Comments" value={formatCount(contentStats?.novelComments ?? 0)} />
+            <MetricTile label={`${reportStatusLabel} reports`} value={formatCount(filteredReportTotal)} />
+          </div>
+        </section>
+
+        <section className="dashboard-panel">
+          <div className="panel-title">
+            <ListOrdered size={18} />
+            Reading systems
+          </div>
+          <StatusLine
+            label="Serialized chapters"
+            value={contentStats?.novels ? "Available" : "Waiting"}
+            active={Boolean(contentStats?.novels)}
+          />
+          <StatusLine
+            label="Reading progress"
+            value="Tracking"
+            active={Boolean(health?.storage.d1)}
+          />
+          <StatusLine
+            label="Reading lists"
+            value={`${formatCount(contentStats?.novelBookmarks ?? 0)} saved entries`}
+            active={Boolean(contentStats?.novelBookmarks)}
+          />
+          <StatusLine
+            label="Public rankings"
+            value={`${formatCount(contentStats?.novelViews ?? 0)} reads`}
+            active={Boolean(contentStats?.novelViews)}
+          />
+          <StatusLine
+            label="Moderator access"
+            value={canAdminister ? "Admin" : "Moderator"}
+            active
+          />
+        </section>
+
+        <section className="dashboard-panel moderation-panel">
+          <div className="panel-title">
+            <Flag size={18} />
+            Novel moderation queue
+          </div>
+          <div className="report-filter-row novel-report-filter-row" aria-label="Novel report filters">
+            <label>
+              Status
+              <select
+                value={reportStatus}
+                onChange={(event) => onReportStatusChange(event.target.value as ReportStatus)}
+              >
+                {reportStatusFilterOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Reason
+              <select
+                value={reportReason}
+                onChange={(event) =>
+                  onReportReasonChange(event.target.value as AdminReportReasonFilter)
+                }
+              >
+                {reportReasonFilterOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Limit
+              <select
+                value={reportLimit}
+                onChange={(event) => onReportLimitChange(Number(event.target.value))}
+              >
+                {[25, 50, 100].map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {adminReports ? (
+            <p className="muted">
+              Showing {formatCount(novelReports.length)} of {formatCount(filteredReportTotal)}{" "}
+              {reportStatusLabel.toLowerCase()} novel reports.
+            </p>
           ) : (
-            <>
-              {recent.slice(0, 6).map((artwork) => (
-                <div className="recent-row" key={artwork.id}>
-                  <img
-                    src={artwork.thumbnailUrl}
-                    alt=""
-                    loading="lazy"
-                    decoding="async"
-                  />
-                  <div>
-                    <strong>{artwork.title}</strong>
-                    <span>
-                      {dateFormat.format(new Date(artwork.createdAt))} · {formatCount(artwork.viewCount)} views
-                    </span>
-                  </div>
-                </div>
-              ))}
-              <div className="recent-section-title">Recent novels</div>
-              {recentNovels.slice(0, 4).map((novel) => (
-                <div className="recent-row recent-novel-row" key={novel.id}>
-                  <span className="recent-novel-mark" style={{ background: novel.coverColor }}>
-                    {novel.title.slice(0, 1).toUpperCase()}
-                  </span>
-                  <div>
-                    <strong>{novel.title}</strong>
-                    <span>
-                      @{novel.creator.handle} · {formatCount(novel.wordCount)} words ·{" "}
-                      {formatCount(novel.viewCount)} reads
-                    </span>
-                  </div>
-                </div>
-              ))}
-              {adminStats && recentNovels.length === 0 ? (
-                <p className="muted">No novels have been posted yet.</p>
-              ) : null}
-            </>
+            <p className="muted">Loading novel reports.</p>
           )}
+          {novelReports.map((report) => (
+            <article className="report-row" key={report.id}>
+              <div className="report-row-heading">
+                <span className="report-target">novel</span>
+                <span>{dateFormat.format(new Date(report.createdAt))}</span>
+              </div>
+              <strong>{report.targetLabel}</strong>
+              <small>
+                Reported by {report.reporter} · {formatReportReason(report.reason)}
+              </small>
+              {report.details ? <p>{report.details}</p> : null}
+              {report.status === "open" ? (
+                <div className="report-actions">
+                  <button
+                    className="danger-button"
+                    type="button"
+                    onClick={() => onModerateNovel(report, "hide")}
+                  >
+                    <EyeOff size={15} />
+                    Unpublish novel
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => onResolveReport(report, "resolved")}
+                  >
+                    <ShieldCheck size={15} />
+                    Resolve
+                  </button>
+                  <button
+                    className="danger-button"
+                    type="button"
+                    onClick={() => onResolveReport(report, "dismissed")}
+                  >
+                    <X size={15} />
+                    Dismiss
+                  </button>
+                </div>
+              ) : (
+                <span className="report-status-pill">{report.status}</span>
+              )}
+            </article>
+          ))}
+          {adminReports && novelReports.length === 0 ? (
+            <p className="muted">No novel reports match these filters.</p>
+          ) : null}
+        </section>
+
+        <section className="dashboard-panel recent-panel">
+          <div className="panel-title">
+            <NotebookText size={18} />
+            Recent novels
+          </div>
+          {recentNovels.map((novel) => (
+            <div className="recent-row recent-novel-row" key={novel.id}>
+              <span className="recent-novel-mark" style={{ background: novel.coverColor }}>
+                {novel.title.slice(0, 1).toUpperCase()}
+              </span>
+              <div>
+                <strong>{novel.title}</strong>
+                <span>
+                  @{novel.creator.handle} · {formatCount(novel.wordCount)} words ·{" "}
+                  {formatCount(novel.viewCount)} reads
+                  {novel.isDraft ? " · draft" : ""}
+                  {novel.matureRating !== "general" ? ` · ${matureRatingLabel(novel.matureRating)}` : ""}
+                </span>
+              </div>
+            </div>
+          ))}
+          {adminStats && recentNovels.length === 0 ? (
+            <p className="muted">No novels have been posted yet.</p>
+          ) : null}
+          {!adminStats ? <p className="muted">Loading novels.</p> : null}
+        </section>
+
+        <section className="dashboard-panel">
+          <div className="panel-title">
+            <UserRound size={18} />
+            Account safety
+          </div>
+          <StatusLine
+            label="Total users"
+            value={formatCount(accountStats?.totalUsers ?? 0)}
+            active={Boolean(accountStats)}
+          />
+          <StatusLine
+            label="Verified users"
+            value={formatCount(accountStats?.verifiedUsers ?? 0)}
+            active={Boolean(accountStats?.verifiedUsers)}
+          />
+          <StatusLine
+            label="Moderators"
+            value={formatCount(accountStats?.moderators ?? 0)}
+            active={Boolean(accountStats?.moderators)}
+          />
+          <StatusLine
+            label="Suspended users"
+            value={formatCount(accountStats?.suspendedUsers ?? 0)}
+            active={Boolean(accountStats?.suspendedUsers)}
+          />
+          <StatusLine
+            label="Active sessions"
+            value={formatCount(accountStats?.activeSessions ?? 0)}
+            active={Boolean(accountStats?.activeSessions)}
+          />
         </section>
       </div>
     </section>
@@ -7875,6 +8332,7 @@ type ProfilePageProps = {
   onAuthRequired: () => void;
   onBookmark: (artwork: Artwork, visibility?: BookmarkVisibility) => void;
   onOpenCollection: (collectionId: string) => void;
+  onOpenNovel: (novelId: string) => void;
   onOpenProfile: (username: string) => void;
   onOpenPrivacySecurity: () => void;
   onOpenProfileSettings: () => void;
@@ -9799,8 +10257,19 @@ function SeriesPage({
 }
 
 type ProfileTab = "works" | "public" | "private" | "collections" | "series";
+type NovelProfileTab = "novels" | "public" | "private" | "readingLists" | "series";
 
 function ProfilePage({
+  context,
+  ...props
+}: ProfilePageProps) {
+  if (context === "novels") {
+    return <NovelProfilePage {...props} />;
+  }
+  return <IllustrationProfilePage context={context} {...props} />;
+}
+
+function IllustrationProfilePage({
   context,
   username,
   csrfToken,
@@ -10786,6 +11255,890 @@ function ProfilePage({
                 onClick={handleLoadMoreProfile}
                 disabled={profilePageLoading}
               >
+                {profilePageLoading ? "Loading" : "Load more"}
+              </button>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function NovelProfilePage({
+  username,
+  csrfToken,
+  siteKey,
+  currentUser,
+  onAuthRequired,
+  onOpenCollection,
+  onOpenNovel,
+  onOpenProfile,
+  onOpenPrivacySecurity,
+  onOpenProfileSettings,
+  onOpenSeries
+}: Omit<ProfilePageProps, "context" | "onBookmark" | "onSelectArtwork">) {
+  const [profileData, setProfileData] = useState<NovelProfileResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
+  const [activeTab, setActiveTab] = useState<NovelProfileTab>("novels");
+  const [followingBusy, setFollowingBusy] = useState(false);
+  const [blockingBusy, setBlockingBusy] = useState(false);
+  const [profilePageLoading, setProfilePageLoading] = useState(false);
+  const [profileRevision, setProfileRevision] = useState(0);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportReason, setReportReason] = useState<ReportReason>("spam");
+  const [reportDetails, setReportDetails] = useState("");
+  const [reportTurnstileToken, setReportTurnstileToken] = useState("");
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+  const [followListMode, setFollowListMode] = useState<FollowListMode | null>(null);
+  const [followListData, setFollowListData] = useState<ProfileFollowListResponse | null>(null);
+  const [followListLoading, setFollowListLoading] = useState(false);
+  const [followListLoadingMore, setFollowListLoadingMore] = useState(false);
+  const [followListMessage, setFollowListMessage] = useState("");
+  const [followListBusyUser, setFollowListBusyUser] = useState("");
+  const [copiedUsername, setCopiedUsername] = useState(false);
+  const copiedUsernameTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setMessage("");
+    setProfileData(null);
+    setActiveTab("novels");
+    setFollowListMode(null);
+    setFollowListData(null);
+    setFollowListMessage("");
+    if (copiedUsernameTimer.current !== null) {
+      window.clearTimeout(copiedUsernameTimer.current);
+      copiedUsernameTimer.current = null;
+    }
+    setCopiedUsername(false);
+
+    if (!username) {
+      setLoading(false);
+      setMessage("User not found.");
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    fetch(`/api/users/${encodeURIComponent(username)}/novel-profile`, { credentials: "include" })
+      .then(async (response) => {
+        const payload = (await response.json()) as NovelProfileResponse | { message?: string };
+        if (!response.ok || !("profile" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ?? "Novel profile could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setProfileData(payload);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setMessage(error instanceof Error ? error.message : "Novel profile could not be loaded.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id, profileRevision, username]);
+
+  useEffect(
+    () => () => {
+      if (copiedUsernameTimer.current !== null) {
+        window.clearTimeout(copiedUsernameTimer.current);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!followListMode || !username) {
+      setFollowListData(null);
+      return;
+    }
+
+    let cancelled = false;
+    setFollowListLoading(true);
+    setFollowListMessage("");
+    setFollowListData(null);
+    const params = new URLSearchParams({ mode: followListMode, limit: "24" });
+    fetch(`/api/users/${encodeURIComponent(username)}/follows?${params.toString()}`, {
+      credentials: "include"
+    })
+      .then(async (response) => {
+        const payload = (await response.json()) as ProfileFollowListResponse | { message?: string };
+        if (!response.ok || !("users" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ?? "Follow list could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setFollowListData(payload);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setFollowListMessage(
+            error instanceof Error ? error.message : "Follow list could not be loaded."
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setFollowListLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id, followListMode, username]);
+
+  const profile = profileData?.profile;
+  const ownProfile = Boolean(profile?.ownProfile);
+  const profileVisibilityMeta = profile
+    ? profile.profileVisibility === "members"
+      ? { label: "Members only", icon: UserRound, tone: "members" }
+      : profile.profileVisibility === "private"
+        ? { label: "Private", icon: Lock, tone: "private" }
+        : { label: "Public", icon: Eye, tone: "public" }
+    : null;
+  const ProfileVisibilityIcon = profileVisibilityMeta?.icon;
+  const tabs: Array<{ id: NovelProfileTab; label: string; count: number; icon: typeof NotebookText }> = profileData
+    ? [
+        { id: "novels", label: "Novels", count: profileData.stats.novels, icon: NotebookText },
+        { id: "public", label: "Public reads", count: profileData.stats.publicBookmarks, icon: Bookmark },
+        { id: "readingLists", label: "Shelves", count: profileData.stats.publicReadingLists, icon: FolderOpen },
+        { id: "series", label: "Serials", count: profileData.stats.publicSeries, icon: ListOrdered },
+        ...(ownProfile
+          ? [
+              {
+                id: "private" as const,
+                label: "Private reads",
+                count: profileData.stats.privateBookmarks,
+                icon: Lock
+              }
+            ]
+          : [])
+      ]
+    : [];
+  const visibleNovels =
+    activeTab === "public"
+      ? profileData?.publicBookmarks ?? []
+      : activeTab === "private"
+        ? profileData?.privateBookmarks ?? []
+        : profileData?.novels ?? [];
+  const visibleReadingLists = activeTab === "readingLists" ? profileData?.publicReadingLists ?? [] : [];
+  const visibleSeries = activeTab === "series" ? profileData?.publicSeries ?? [] : [];
+  const activeSection: NovelProfileSection =
+    activeTab === "public"
+      ? "publicBookmarks"
+      : activeTab === "private"
+        ? "privateBookmarks"
+        : activeTab === "readingLists"
+          ? "publicReadingLists"
+          : activeTab === "series"
+            ? "publicSeries"
+            : "novels";
+  const activeNextCursor = profileData?.nextCursors[activeSection] ?? null;
+
+  const handleCopyUsername = async () => {
+    if (!profile) {
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(profile.username);
+      } else {
+        const input = document.createElement("textarea");
+        input.value = profile.username;
+        input.setAttribute("readonly", "");
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        input.remove();
+      }
+      if (copiedUsernameTimer.current !== null) {
+        window.clearTimeout(copiedUsernameTimer.current);
+      }
+      setCopiedUsername(true);
+      copiedUsernameTimer.current = window.setTimeout(() => {
+        setCopiedUsername(false);
+        copiedUsernameTimer.current = null;
+      }, 1600);
+    } catch {
+      setMessage("Username could not be copied.");
+    }
+  };
+
+  const handleLoadMoreFollowList = async () => {
+    if (!followListMode || !followListData?.nextCursor) {
+      return;
+    }
+    setFollowListLoadingMore(true);
+    setFollowListMessage("");
+    const params = new URLSearchParams({
+      mode: followListMode,
+      cursor: followListData.nextCursor,
+      limit: "24"
+    });
+    try {
+      const response = await fetch(
+        `/api/users/${encodeURIComponent(username)}/follows?${params.toString()}`,
+        { credentials: "include" }
+      );
+      const payload = (await response.json()) as ProfileFollowListResponse | { message?: string };
+      if (!response.ok || !("users" in payload)) {
+        throw new Error(
+          ("message" in payload ? payload.message : undefined) ?? "Follow list could not be loaded."
+        );
+      }
+      setFollowListData((current) =>
+        current
+          ? {
+              ...payload,
+              users: [...current.users, ...payload.users]
+            }
+          : payload
+      );
+    } catch (error) {
+      setFollowListMessage(
+        error instanceof Error ? error.message : "Follow list could not be loaded."
+      );
+    } finally {
+      setFollowListLoadingMore(false);
+    }
+  };
+
+  const handleFollowListToggle = async (creator: Creator) => {
+    if (!currentUser) {
+      onAuthRequired();
+      return;
+    }
+    const ownCreator = currentUser.username.toLowerCase() === creator.handle.toLowerCase();
+    if (ownCreator) {
+      onOpenProfile(creator.handle);
+      return;
+    }
+    setFollowListBusyUser(creator.handle);
+    setFollowListMessage("");
+    try {
+      const response = await fetch(`/api/users/${encodeURIComponent(creator.handle)}/follow`, {
+        method: "POST",
+        credentials: "include",
+        headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
+      });
+      const payload = (await response.json()) as FollowResponse | { message?: string };
+      if (!response.ok || !("following" in payload)) {
+        throw new Error(payload.message ?? "Follow action failed.");
+      }
+      setFollowListData((current) =>
+        current
+          ? {
+              ...current,
+              users:
+                current.profile.ownProfile && current.mode === "following" && !payload.following
+                  ? current.users.filter((item) => item.creator.id !== creator.id)
+                  : current.users.map((item) =>
+                      item.creator.id === creator.id
+                        ? {
+                            ...item,
+                            creator: {
+                              ...item.creator,
+                              following: payload.following,
+                              followerCount: payload.followerCount
+                            }
+                          }
+                        : item
+                    ),
+              totalCount:
+                current.profile.ownProfile && current.mode === "following" && !payload.following
+                  ? Math.max(current.totalCount - 1, 0)
+                  : current.totalCount
+            }
+          : current
+      );
+      setFollowListMessage(payload.message);
+    } catch (error) {
+      setFollowListMessage(error instanceof Error ? error.message : "Follow action failed.");
+    } finally {
+      setFollowListBusyUser("");
+    }
+  };
+
+  const handleLoadMoreProfile = async () => {
+    if (!profileData || !activeNextCursor) {
+      return;
+    }
+    setProfilePageLoading(true);
+    setMessage("");
+    const params = new URLSearchParams({
+      section: activeSection,
+      cursor: activeNextCursor
+    });
+    try {
+      const response = await fetch(
+        `/api/users/${encodeURIComponent(username)}/novel-profile?${params.toString()}`,
+        { credentials: "include" }
+      );
+      const payload = (await response.json()) as NovelProfileResponse | { message?: string };
+      if (!response.ok || !("profile" in payload)) {
+        throw new Error(
+          ("message" in payload ? payload.message : undefined) ?? "Novel profile page could not be loaded."
+        );
+      }
+      setProfileData((current) => {
+        if (!current) {
+          return payload;
+        }
+        return {
+          ...current,
+          profile: payload.profile,
+          matureAccess: payload.matureAccess,
+          stats: payload.stats,
+          novels: activeSection === "novels" ? [...current.novels, ...payload.novels] : current.novels,
+          publicBookmarks:
+            activeSection === "publicBookmarks"
+              ? [...current.publicBookmarks, ...payload.publicBookmarks]
+              : current.publicBookmarks,
+          privateBookmarks:
+            activeSection === "privateBookmarks"
+              ? [...current.privateBookmarks, ...payload.privateBookmarks]
+              : current.privateBookmarks,
+          publicReadingLists:
+            activeSection === "publicReadingLists"
+              ? [...current.publicReadingLists, ...payload.publicReadingLists]
+              : current.publicReadingLists,
+          publicSeries:
+            activeSection === "publicSeries"
+              ? [...current.publicSeries, ...payload.publicSeries]
+              : current.publicSeries,
+          nextCursors: {
+            ...current.nextCursors,
+            [activeSection]: payload.nextCursors[activeSection]
+          }
+        };
+      });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Novel profile page could not be loaded.");
+    } finally {
+      setProfilePageLoading(false);
+    }
+  };
+
+  const handleFollow = async () => {
+    if (!currentUser) {
+      onAuthRequired();
+      return;
+    }
+    if (!profile) {
+      return;
+    }
+    setFollowingBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/users/${encodeURIComponent(profile.username)}/follow`, {
+        method: "POST",
+        credentials: "include",
+        headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
+      });
+      const payload = (await response.json()) as FollowResponse | { message?: string };
+      if (!response.ok || !("following" in payload)) {
+        throw new Error(payload.message ?? "Follow action failed.");
+      }
+      setProfileData((current) =>
+        current
+          ? {
+              ...current,
+              profile: {
+                ...current.profile,
+                following: payload.following,
+                followerCount: payload.followerCount
+              }
+            }
+          : current
+      );
+      setMessage(payload.message);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Follow action failed.");
+    } finally {
+      setFollowingBusy(false);
+    }
+  };
+
+  const handleBlock = async () => {
+    if (!currentUser) {
+      onAuthRequired();
+      return;
+    }
+    if (!profile) {
+      return;
+    }
+    setBlockingBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/users/${encodeURIComponent(profile.username)}/block`, {
+        method: "POST",
+        credentials: "include",
+        headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
+      });
+      const payload = (await response.json()) as BlockResponse | { message?: string };
+      if (!response.ok || !("blocked" in payload)) {
+        throw new Error(payload.message ?? "Block action failed.");
+      }
+      setProfileData((current) =>
+        current
+          ? {
+              ...current,
+              profile: {
+                ...current.profile,
+                blocked: payload.blocked,
+                following: payload.following,
+                followerCount: payload.followerCount
+              },
+              novels: payload.blocked ? [] : current.novels,
+              publicBookmarks: payload.blocked ? [] : current.publicBookmarks,
+              privateBookmarks: payload.blocked ? [] : current.privateBookmarks,
+              publicReadingLists: payload.blocked ? [] : current.publicReadingLists,
+              publicSeries: payload.blocked ? [] : current.publicSeries,
+              nextCursors: payload.blocked
+                ? {
+                    novels: null,
+                    publicBookmarks: null,
+                    privateBookmarks: null,
+                    publicReadingLists: null,
+                    publicSeries: null
+                  }
+                : current.nextCursors
+            }
+          : current
+      );
+      if (!payload.blocked) {
+        setProfileRevision((revision) => revision + 1);
+      }
+      setMessage(payload.message);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Block action failed.");
+    } finally {
+      setBlockingBusy(false);
+    }
+  };
+
+  const handleProfileReport = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!currentUser) {
+      onAuthRequired();
+      return;
+    }
+    if (!profile) {
+      return;
+    }
+    setMessage("");
+    if (!reportTurnstileToken) {
+      setMessage("Complete the check first.");
+      return;
+    }
+    setReportSubmitting(true);
+    try {
+      const response = await fetch(`/api/users/${encodeURIComponent(profile.username)}/report`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          ...(csrfToken ? { [csrfHeaderName]: csrfToken } : {})
+        },
+        body: JSON.stringify({
+          reason: reportReason,
+          details: reportDetails,
+          turnstileToken: reportTurnstileToken
+        })
+      });
+      const payload = (await response.json()) as ReportResponse | { message?: string };
+      if (!response.ok || !("report" in payload)) {
+        throw new Error(payload.message ?? "Profile report failed.");
+      }
+      setReportOpen(false);
+      setReportReason("spam");
+      setReportDetails("");
+      setReportTurnstileToken("");
+      setMessage(payload.message);
+      window.turnstile?.reset();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Profile report failed.");
+      setReportTurnstileToken("");
+      window.turnstile?.reset();
+    } finally {
+      setReportSubmitting(false);
+    }
+  };
+
+  return (
+    <section className="content-main profile-page novel-dedicated-page novel-profile-page">
+      {loading ? <p className="empty-feed">Loading novel profile.</p> : null}
+      {message ? <p className="empty-feed">{message}</p> : null}
+      {profile && profileData ? (
+        <>
+          <div className="profile-hero">
+            {profile.avatarUrl ? (
+              <img className="profile-avatar" src={profile.avatarUrl} alt="" />
+            ) : (
+              <DefaultAvatar className="profile-avatar profile-avatar-fallback" name={profile.displayName} />
+            )}
+            <div className="profile-copy">
+              <p className="eyebrow">Novel profile</p>
+              <h1>{profile.displayName}</h1>
+              <button
+                className={classNames("profile-handle", copiedUsername && "is-copied")}
+                type="button"
+                title={copiedUsername ? "Username copied" : "Copy username"}
+                aria-label={`Copy username ${profile.username}`}
+                onClick={() => void handleCopyUsername()}
+              >
+                <span className="profile-handle-main">
+                  <AtSign size={14} />
+                  <span>{profile.username}</span>
+                </span>
+                <span className="profile-handle-action" aria-hidden="true">
+                  {copiedUsername ? <Check size={14} /> : <Copy size={14} />}
+                </span>
+              </button>
+              {profile.websiteUrl || (ownProfile && profileVisibilityMeta && ProfileVisibilityIcon) ? (
+                <div className="profile-links">
+                  {profile.websiteUrl ? (
+                    <a className="profile-website" href={profile.websiteUrl} target="_blank" rel="noreferrer">
+                      <ExternalLink size={14} />
+                      <span>Website</span>
+                    </a>
+                  ) : null}
+                  {ownProfile && profileVisibilityMeta && ProfileVisibilityIcon ? (
+                    <span className={`profile-visibility-badge is-${profileVisibilityMeta.tone}`}>
+                      <ProfileVisibilityIcon size={14} />
+                      <span>{profileVisibilityMeta.label}</span>
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+              {profile.bio ? <p>{profile.bio}</p> : null}
+              <div className="profile-meta">
+                <button
+                  className={classNames(followListMode === "followers" && "is-active")}
+                  type="button"
+                  onClick={() => setFollowListMode((current) => (current === "followers" ? null : "followers"))}
+                >
+                  {formatCount(profile.followerCount)} followers
+                </button>
+                <button
+                  className={classNames(followListMode === "following" && "is-active")}
+                  type="button"
+                  onClick={() => setFollowListMode((current) => (current === "following" ? null : "following"))}
+                >
+                  {formatCount(profileData.stats.following)} following
+                </button>
+                <span>{formatCount(profileData.stats.totalLikes)} likes</span>
+                <span>{formatCount(profileData.stats.totalReads)} reads</span>
+                <span>{formatCount(profileData.stats.totalWords)} words</span>
+                {ownProfile && currentUser ? (
+                  <span>{formatCount(currentUser.storage.siteCredits)} credits</span>
+                ) : null}
+                <span>Joined {fullDateFormat.format(new Date(profile.joinedAt))}</span>
+              </div>
+            </div>
+            {ownProfile ? (
+              <div className="profile-actions">
+                <button className="secondary-button" type="button" onClick={onOpenProfileSettings}>
+                  <UserCog size={16} />
+                  Edit profile
+                </button>
+                <button className="secondary-button" type="button" onClick={onOpenPrivacySecurity}>
+                  <KeyRound size={16} />
+                  Privacy
+                </button>
+              </div>
+            ) : currentUser ? (
+              <div className="profile-actions">
+                {!profile.blocked ? (
+                  <button
+                    className={classNames("secondary-button profile-follow-button", profile.following && "is-active")}
+                    type="button"
+                    onClick={handleFollow}
+                    disabled={followingBusy}
+                  >
+                    <UserPlus size={16} />
+                    {followingBusy ? "Saving" : profile.following ? "Following" : "Follow"}
+                  </button>
+                ) : null}
+                <button className="danger-button profile-follow-button" type="button" onClick={handleBlock} disabled={blockingBusy}>
+                  <Shield size={16} />
+                  {blockingBusy ? "Saving" : profile.blocked ? "Unblock" : "Block"}
+                </button>
+                {!profile.blocked ? (
+                  <button
+                    className="secondary-button profile-follow-button"
+                    type="button"
+                    onClick={() => {
+                      setReportOpen((value) => !value);
+                      setMessage("");
+                      setReportTurnstileToken("");
+                    }}
+                  >
+                    <Flag size={16} />
+                    Report
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <button className="secondary-button profile-follow-button" type="button" onClick={onAuthRequired}>
+                <LogIn size={16} />
+                Sign in
+              </button>
+            )}
+          </div>
+
+          {reportOpen && currentUser && !ownProfile ? (
+            <form className="report-form profile-report-form" onSubmit={handleProfileReport}>
+              <label>
+                Reason
+                <select value={reportReason} onChange={(event) => setReportReason(event.target.value as ReportReason)}>
+                  {reportReasonOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Details
+                <textarea
+                  value={reportDetails}
+                  maxLength={800}
+                  rows={3}
+                  onChange={(event) => setReportDetails(event.target.value)}
+                  placeholder={`Optional context for @${profile.username}`}
+                />
+              </label>
+              <TurnstileWidget siteKey={siteKey} action="report" onToken={setReportTurnstileToken} compact />
+              <div className="settings-actions">
+                <button className="danger-button" type="submit" disabled={reportSubmitting}>
+                  <Flag size={15} />
+                  {reportSubmitting ? "Submitting" : "Submit report"}
+                </button>
+                <button className="secondary-button" type="button" onClick={() => setReportOpen(false)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : null}
+
+          <MatureAccessNotice
+            matureAccess={profileData.matureAccess}
+            onLogin={onAuthRequired}
+            onPrivacySecurity={onOpenPrivacySecurity}
+          />
+
+          {followListMode && !profile.blocked ? (
+            <section className="profile-follow-panel">
+              <div className="profile-follow-heading">
+                <div>
+                  <p className="eyebrow">{followListMode === "followers" ? "Followers" : "Following"}</p>
+                  <h2>
+                    {followListLoading
+                      ? "Loading"
+                      : `${formatCount(followListData?.totalCount ?? 0)} ${
+                          followListMode === "followers" ? "followers" : "following"
+                        }`}
+                  </h2>
+                </div>
+                <button className="text-button" type="button" onClick={() => setFollowListMode(null)}>
+                  Close
+                </button>
+              </div>
+              {followListMessage ? <p className="auth-inline-message">{followListMessage}</p> : null}
+              {followListLoading ? <p className="muted">Loading social list.</p> : null}
+              <div className="profile-follow-grid">
+                {(followListData?.users ?? []).map(({ creator, followedAt }) => {
+                  const ownCreator = currentUser?.username.toLowerCase() === creator.handle.toLowerCase();
+                  return (
+                    <article className="profile-follow-card" key={creator.id}>
+                      <button className="profile-follow-main" type="button" onClick={() => onOpenProfile(creator.handle)}>
+                        {creator.avatarUrl ? (
+                          <img src={creator.avatarUrl} alt="" />
+                        ) : (
+                          <DefaultAvatar className="profile-follow-avatar-fallback" name={creator.displayName} />
+                        )}
+                        <span>
+                          <strong>{creator.displayName}</strong>
+                          <small>@{creator.handle}</small>
+                          {creator.bio ? <em>{creator.bio}</em> : null}
+                        </span>
+                      </button>
+                      <div className="profile-follow-meta">
+                        <span>{formatCount(creator.followerCount)} followers</span>
+                        <span>Since {dateFormat.format(new Date(followedAt))}</span>
+                      </div>
+                      <div className="profile-follow-actions">
+                        <button className="secondary-button" type="button" onClick={() => onOpenProfile(creator.handle)}>
+                          <UserRound size={15} />
+                          Profile
+                        </button>
+                        <button
+                          className={classNames("secondary-button", creator.following && "is-active")}
+                          type="button"
+                          onClick={() => void handleFollowListToggle(creator)}
+                          disabled={followListBusyUser === creator.handle}
+                        >
+                          <UserPlus size={15} />
+                          {ownCreator
+                            ? "You"
+                            : followListBusyUser === creator.handle
+                              ? "Saving"
+                              : creator.following
+                                ? "Following"
+                                : "Follow"}
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+              {!followListLoading && followListData?.users.length === 0 ? (
+                <p className="empty-feed">No visible users in this list.</p>
+              ) : null}
+              {followListData?.nextCursor ? (
+                <div className="load-more-row">
+                  <button className="secondary-button" type="button" onClick={handleLoadMoreFollowList} disabled={followListLoadingMore}>
+                    {followListLoadingMore ? "Loading" : "Load more"}
+                    <span>
+                      {formatCount(followListData.users.length)} / {formatCount(followListData.totalCount)}
+                    </span>
+                  </button>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          {profile.blocked ? (
+            <p className="empty-feed">This user is blocked. Unblock them to view their novels again.</p>
+          ) : null}
+
+          {!profile.blocked ? (
+            <div className="profile-tabs" aria-label="Novel profile sections">
+              {tabs.map((tab) => {
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.id}
+                    className={classNames(activeTab === tab.id && "is-active")}
+                    type="button"
+                    onClick={() => setActiveTab(tab.id)}
+                  >
+                    <Icon size={16} />
+                    {tab.label}
+                    <span>{formatCount(tab.count)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+
+          {!profile.blocked && activeTab === "readingLists" ? (
+            <div className="collection-folder-grid profile-collection-grid">
+              {visibleReadingLists.map((readingList) => (
+                <button
+                  className="collection-folder-card"
+                  key={readingList.id}
+                  type="button"
+                  onClick={() => onOpenCollection(readingList.id)}
+                >
+                  <span className="collection-folder-icon">
+                    <FolderOpen size={20} />
+                  </span>
+                  <span>
+                    <strong>{readingList.title}</strong>
+                    <small>
+                      {formatCount(readingList.novelCount)} reads · Updated{" "}
+                      {dateFormat.format(new Date(readingList.updatedAt))}
+                    </small>
+                  </span>
+                  <Eye size={16} />
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {!profile.blocked && activeTab === "series" ? (
+            <div className="collection-folder-grid profile-collection-grid">
+              {visibleSeries.map((series) => (
+                <button
+                  className="collection-folder-card series-folder-card"
+                  key={series.id}
+                  type="button"
+                  onClick={() => onOpenSeries(series.id)}
+                >
+                  <span className="collection-folder-icon">
+                    <ListOrdered size={20} />
+                  </span>
+                  <span>
+                    <strong>{series.title}</strong>
+                    <small>
+                      {formatCount(series.novelCount)} entries · Updated{" "}
+                      {dateFormat.format(new Date(series.updatedAt))}
+                    </small>
+                  </span>
+                  <Eye size={16} />
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {!profile.blocked && activeTab !== "readingLists" && activeTab !== "series" ? (
+            <div className="novel-grid profile-novel-grid">
+              {visibleNovels.map((novel, index) => (
+                <NovelCard
+                  key={novel.id}
+                  novel={novel}
+                  index={index}
+                  onOpenNovel={onOpenNovel}
+                  onOpenProfile={onOpenProfile}
+                />
+              ))}
+            </div>
+          ) : null}
+
+          {!profile.blocked &&
+          (activeTab === "readingLists"
+            ? visibleReadingLists.length === 0
+            : activeTab === "series"
+              ? visibleSeries.length === 0
+              : visibleNovels.length === 0) ? (
+            <p className="empty-feed">
+              {activeTab === "readingLists"
+                ? "No public reading shelves yet."
+                : activeTab === "series"
+                  ? "No public serials yet."
+                  : "No readable novels in this section."}
+            </p>
+          ) : null}
+
+          {!profile.blocked && activeNextCursor ? (
+            <div className="load-more-row profile-load-more-row">
+              <button className="secondary-button" type="button" onClick={handleLoadMoreProfile} disabled={profilePageLoading}>
                 {profilePageLoading ? "Loading" : "Load more"}
               </button>
             </div>
@@ -13736,7 +15089,7 @@ function NovelCard({ novel, index, rankingPosition, onOpenNovel, onOpenProfile }
         <span className="novel-spine" aria-hidden="true" />
         <span className="novel-card-content">
           <small>
-            {novel.isDraft ? "Draft" : artworkVisibilityLabel(novel.visibility)} · {novel.id}
+            {novel.isDraft ? "Draft" : novelVisibilityLabel(novel.visibility)} · {novel.id}
           </small>
           <strong>{novel.title}</strong>
           <em>{novel.description || novel.excerpt}</em>
@@ -13806,7 +15159,6 @@ type NovelDetailPageProps = {
     lastPosition: number,
     scrollPercent: number
   ) => Promise<void>;
-  onOpenArtwork: (artworkId: string) => void;
   onOpenNovel: (novelId: string) => void;
   onOpenProfile: (username: string) => void;
   onPrivacySecurity: () => void;
@@ -13832,7 +15184,6 @@ function NovelDetailPage({
   onUpdateNovelComment,
   onDeleteNovelComment,
   onUpdateReadingProgress,
-  onOpenArtwork,
   onOpenNovel,
   onOpenProfile,
   onPrivacySecurity
@@ -13889,9 +15240,9 @@ function NovelDetailPage({
   const markdownHtml = useMemo(
     () =>
       detail?.novel.contentFormat === "markdown"
-        ? renderNovelMarkdown(detail.novel.body, detail.linkedArtworks)
+        ? renderNovelMarkdown(detail.novel.body)
         : "",
-    [detail?.linkedArtworks, detail?.novel.body, detail?.novel.contentFormat]
+    [detail?.novel.body, detail?.novel.contentFormat]
   );
 
   if (!detail) {
@@ -14323,27 +15674,6 @@ function NovelDetailPage({
           {novel.contentFormat === "markdown" ? (
             <div
               className="novel-markdown-body"
-              onClick={(event) => {
-                const link = (event.target as HTMLElement).closest<HTMLAnchorElement>(
-                  ".novel-artwork-embed[data-artwork-id]"
-                );
-                if (
-                  !link ||
-                  event.metaKey ||
-                  event.ctrlKey ||
-                  event.shiftKey ||
-                  event.altKey ||
-                  event.button !== 0
-                ) {
-                  return;
-                }
-                const artworkId = link.dataset.artworkId;
-                if (!artworkId) {
-                  return;
-                }
-                event.preventDefault();
-                onOpenArtwork(artworkId);
-              }}
               dangerouslySetInnerHTML={{ __html: markdownHtml }}
             />
           ) : (
@@ -14422,30 +15752,6 @@ function NovelDetailPage({
                 })}
               </div>
               {readingListMessage ? <p className="auth-inline-message">{readingListMessage}</p> : null}
-            </section>
-          ) : null}
-          {detail.linkedArtworks.length > 0 ? (
-            <section className="side-panel">
-              <div className="panel-title">
-                <Images size={18} />
-                Illustrations
-              </div>
-              <div className="novel-linked-artworks">
-                {detail.linkedArtworks.map((artwork) => (
-                  <button
-                    className="novel-linked-artwork"
-                    key={artwork.id}
-                    type="button"
-                    onClick={() => onOpenArtwork(artwork.id)}
-                  >
-                    <img src={artwork.thumbnailUrl} alt="" loading="lazy" decoding="async" />
-                    <span>
-                      <strong>{artwork.title}</strong>
-                      <small>@{artwork.creator.handle}</small>
-                    </span>
-                  </button>
-                ))}
-              </div>
             </section>
           ) : null}
           {relatedNovels.length ? (
@@ -15861,7 +17167,7 @@ function ArtworkDialog({
                     }))
                   }
                 >
-                  {artworkVisibilityOptions.map((option) => (
+                  {novelVisibilityOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -16099,6 +17405,7 @@ type TagChipEditorProps = {
   tags: string[];
   hiddenName?: string;
   placeholder?: string;
+  suggestionContext?: RouteContext;
   onTagsChange: (tags: string[]) => void;
 };
 
@@ -16108,10 +17415,11 @@ function TagChipEditor({
   tags,
   hiddenName,
   placeholder = "landscape, fanart, original",
+  suggestionContext = "illustrations",
   onTagsChange
 }: TagChipEditorProps) {
   const [tagDraft, setTagDraft] = useState("");
-  const [tagSuggestions, setTagSuggestions] = useState<SearchSuggestionsResponse["tags"]>([]);
+  const [tagSuggestions, setTagSuggestions] = useState<Array<{ name: string; count: number }>>([]);
   const [tagSuggestionsLoading, setTagSuggestionsLoading] = useState(false);
 
   useEffect(() => {
@@ -16124,12 +17432,19 @@ function TagChipEditor({
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setTagSuggestionsLoading(true);
-      fetch(`/api/search/suggestions?q=${encodeURIComponent(draft)}&limit=8`, {
+      const endpoint =
+        suggestionContext === "novels"
+          ? "/api/novels/search/suggestions"
+          : "/api/search/suggestions";
+      fetch(`${endpoint}?q=${encodeURIComponent(draft)}&limit=8`, {
         credentials: "include",
         signal: controller.signal
       })
         .then(async (response) => {
-          const payload = (await response.json()) as SearchSuggestionsResponse | { message?: string };
+          const payload = (await response.json()) as
+            | SearchSuggestionsResponse
+            | NovelSearchSuggestionsResponse
+            | { message?: string };
           if (!response.ok || !("tags" in payload)) {
             throw new Error(
               ("message" in payload ? payload.message : undefined) ??
@@ -16158,7 +17473,7 @@ function TagChipEditor({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [active, tagDraft]);
+  }, [active, suggestionContext, tagDraft]);
 
   const addTag = (value: string) => {
     const [tag] = parseTagListInput(value);
@@ -17295,14 +18610,14 @@ function NovelFormDrawer({
                   placeholder={importFile ? importFile.name.replace(/\.[^.]+$/, "") : "Use filename"}
                 />
               </label>
-              <label>
-                Tags
-                <input
-                  value={importInput.tags}
-                  maxLength={320}
-                  onChange={(event) => updateImportInput("tags", event.target.value)}
-                />
-              </label>
+              <TagChipEditor
+                active={open && mode === "create"}
+                label="Tags"
+                tags={parseTagListInput(importInput.tags)}
+                placeholder="serial, original, mystery"
+                suggestionContext="novels"
+                onTagsChange={(nextTags) => updateImportInput("tags", nextTags.join(", "))}
+              />
             </div>
             <div className="form-grid">
               <label>
@@ -17321,9 +18636,9 @@ function NovelFormDrawer({
                 Visibility
                 <select
                   value={importInput.visibility}
-                  onChange={(event) => updateImportInput("visibility", event.target.value as ArtworkVisibility)}
+                  onChange={(event) => updateImportInput("visibility", event.target.value as NovelVisibility)}
                 >
-                  {artworkVisibilityOptions.map((option) => (
+                  {novelVisibilityOptions.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -17367,14 +18682,14 @@ function NovelFormDrawer({
               onChange={(event) => updateInput("description", event.target.value)}
             />
           </label>
-          <label>
-            Tags
-            <input
-              value={input.tags}
-              maxLength={320}
-              onChange={(event) => updateInput("tags", event.target.value)}
-            />
-          </label>
+          <TagChipEditor
+            active={open}
+            label="Tags"
+            tags={parseTagListInput(input.tags)}
+            placeholder="serial, original, mystery"
+            suggestionContext="novels"
+            onTagsChange={(nextTags) => updateInput("tags", nextTags.join(", "))}
+          />
           <div className="novel-editor-toolbar">
             <label>
               Format
@@ -17438,9 +18753,9 @@ function NovelFormDrawer({
               Visibility
               <select
                 value={input.visibility}
-                onChange={(event) => updateInput("visibility", event.target.value as ArtworkVisibility)}
+                onChange={(event) => updateInput("visibility", event.target.value as NovelVisibility)}
               >
-                {artworkVisibilityOptions.map((option) => (
+                {novelVisibilityOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>

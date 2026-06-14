@@ -59,6 +59,7 @@ import type {
   CollectionVisibility,
   CollectionsResponse,
   Creator,
+  CreatorNovelAnalyticsResponse,
   CreatorAnalyticsResponse,
   CreatorDiscoveryItem,
   CreatorDiscoveryResponse,
@@ -86,18 +87,22 @@ import type {
   NovelContentFormat,
   NovelExportFormat,
   NovelImportResponse,
+  NovelProfileResponse,
+  NovelProfileSection,
   NovelTocItem,
   NovelListResponse,
   NovelCommentResponse,
   NovelMutationResponse,
   NovelRankingResponse,
   NovelResponse,
+  NovelSearchSuggestionsResponse,
   NovelSortMode,
   NovelSeries,
   NovelSeriesListResponse,
   NovelSeriesResponse,
   NovelSeriesDetailResponse,
   NovelSeriesItemResponse,
+  NovelVisibility,
   NotificationPreferences,
   NotificationPreferencesResponse,
   NotificationType,
@@ -2911,6 +2916,10 @@ type CreatorAnalyticsArtworkRow = ArtworkRow & {
   views_7d: number | null;
 };
 
+type CreatorNovelAnalyticsRow = NovelRow & {
+  views_7d: number | null;
+};
+
 type DailyAnalyticsRow = {
   day: string;
   count: number;
@@ -2952,6 +2961,13 @@ const asMatureFilter = (value: string | null | undefined): MatureFilter => {
 };
 
 const asArtworkVisibility = (value: string | null | undefined): ArtworkVisibility => {
+  if (value === "private" || value === "unlisted") {
+    return value;
+  }
+  return "public";
+};
+
+const asNovelVisibility = (value: string | null | undefined): NovelVisibility => {
   if (value === "private" || value === "unlisted") {
     return value;
   }
@@ -3585,7 +3601,7 @@ const novelFromRow = (row: NovelRow, viewer?: CurrentUser): Novel => {
     updatedAt: row.updated_at ?? row.created_at,
     mature: Boolean(row.mature) || asMatureRating(row.mature_rating) !== "general",
     matureRating: asMatureRating(row.mature_rating),
-    visibility: asArtworkVisibility(row.visibility),
+    visibility: asNovelVisibility(row.visibility),
     isDraft: Boolean(row.is_draft),
     canManage: Boolean(viewer && (viewer.id === row.creator_id || viewer.role === "admin")),
     seriesId: row.series_id ?? null,
@@ -5167,6 +5183,17 @@ const novelVisibleWhereSql = (
   const clauses = ["novels.deleted_at IS NULL", profileVisibilitySql("creator_user")];
   const bindings: Array<string | number | null> = [...profileVisibilityBindValues(viewer)];
 
+  if (options.includeOwnDrafts && viewer) {
+    clauses.push(
+      `(COALESCE(novels.visibility, 'public') = 'public'
+        OR novels.creator_id = ?
+        OR ? IN ('admin', 'moderator'))`
+    );
+    bindings.push(viewer.id, viewer.role);
+  } else {
+    clauses.push("COALESCE(novels.visibility, 'public') = 'public'");
+  }
+
   if (options.userId) {
     clauses.push("novels.creator_id = ?");
     bindings.push(options.userId);
@@ -5208,6 +5235,21 @@ const novelVisibleWhereSql = (
   }
 
   return { clauses, bindings };
+};
+
+const addNovelMatureAccessWhere = (
+  clauses: string[],
+  bindings: Array<string | number | null>,
+  matureAccess: MatureAccess,
+  rating: MatureFilter = "all"
+) => {
+  if (!matureAccess.allowed || rating === "general") {
+    clauses.push("novels.mature = 0");
+    clauses.push("COALESCE(novels.mature_rating, 'general') = 'general'");
+  } else if (rating !== "all") {
+    clauses.push("COALESCE(novels.mature_rating, 'general') = ?");
+    bindings.push(rating);
+  }
 };
 
 const publicArtworkVisibilitySql = "COALESCE(artworks.visibility, 'public') = 'public'";
@@ -5429,6 +5471,34 @@ const analyticsItemsFromRows = async (
     artwork,
     views7d: views7dByArtworkId.get(artwork.id) ?? 0,
     engagementRate: engagementRateForArtwork(artwork)
+  }));
+};
+
+const engagementRateForNovel = (novel: Novel) =>
+  Math.round(
+    ((novel.likeCount + novel.bookmarkCount + novel.commentCount) /
+      Math.max(1, novel.viewCount)) *
+      1000
+  ) / 10;
+
+const analyticsNovelItemsFromRows = async (
+  db: D1Database,
+  viewer: CurrentUser,
+  rows: CreatorNovelAnalyticsRow[]
+) => {
+  if (rows.length === 0) {
+    return [];
+  }
+  const views7dByNovelId = new Map(rows.map((row) => [row.id, Number(row.views_7d ?? 0)]));
+  const novels = await withViewerNovelInteractions(
+    db,
+    viewer.id,
+    rows.map((row) => novelFromRow(row, viewer))
+  );
+  return novels.map((novel) => ({
+    novel,
+    views7d: views7dByNovelId.get(novel.id) ?? 0,
+    engagementRate: engagementRateForNovel(novel)
   }));
 };
 
@@ -5952,6 +6022,12 @@ const novelSelect = `
   JOIN users AS creator_user ON creator_user.id = novels.creator_id
 `;
 
+const novelSelectWith = (extraColumns: string) =>
+  novelSelect.replace(
+    "  FROM novels",
+    `    ${extraColumns}\n  FROM novels`
+  );
+
 const novelTagCounts = (novels: Novel[]) => {
   const counts = new Map<string, number>();
   for (const novel of novels) {
@@ -6378,8 +6454,6 @@ const readingProgressFromRow = (row: ReadingProgressRow, novel: Novel) => ({
 });
 
 const textDecoderUtf8 = new TextDecoder("utf-8", { fatal: false });
-const novelArtworkEmbedPattern = /!\[([^\]]*)]\(artwork_id:([A-Za-z0-9_-]{1,80})\)/g;
-
 const sanitizeExportFilename = (value: string) =>
   value
     .trim()
@@ -6517,12 +6591,7 @@ const novelEpubExport = (novel: Novel) => {
         const level = Math.min(6, Math.max(1, heading[1].length));
         return `<h${level}>${escapeXml(heading[2])}</h${level}>`;
       }
-      const withArtworkNotes = paragraph.replace(
-        novelArtworkEmbedPattern,
-        (_match, alt: string, artworkId: string) =>
-          alt ? `[Illustration: ${alt} (${artworkId})]` : `[Illustration: ${artworkId}]`
-      );
-      return `<p>${escapeXml(withArtworkNotes).replace(/\n/g, "<br />")}</p>`;
+      return `<p>${escapeXml(paragraph).replace(/\n/g, "<br />")}</p>`;
     })
     .join("\n");
   const title = escapeXml(novel.title);
@@ -6837,15 +6906,6 @@ const getReadingProgressList = async (
   return progress;
 };
 
-const artworkIdsFromNovelContent = (content: string) =>
-  Array.from(
-    new Set(
-      [...content.matchAll(/!\[[^\]]*]\(artwork_id:([A-Za-z0-9_-]{1,80})\)/g)]
-        .map((match) => match[1])
-        .filter(Boolean)
-    )
-  ).slice(0, 24);
-
 const syncNovelPublishActivity = async (
   db: D1Database,
   novel: {
@@ -6854,7 +6914,7 @@ const syncNovelPublishActivity = async (
     creatorDisplayName: string;
     title: string;
     isDraft: boolean;
-    visibility: ArtworkVisibility;
+    visibility: NovelVisibility;
   }
 ) => {
   if (!novel.isDraft && novel.visibility === "public") {
@@ -7992,6 +8052,7 @@ type ProfileSection =
   | "privateBookmarks"
   | "publicCollections"
   | "publicSeries";
+type ProfileCursorSection = ProfileSection | NovelProfileSection;
 
 const profileSectionFromQuery = (value: string | null | undefined): ProfileSection => {
   if (
@@ -8005,19 +8066,48 @@ const profileSectionFromQuery = (value: string | null | undefined): ProfileSecti
   return "artworks";
 };
 
-const profileSectionKey = (section: ProfileSection) =>
+const novelProfileSectionFromQuery = (
+  value: string | null | undefined
+): NovelProfileSection => {
+  if (
+    value === "publicBookmarks" ||
+    value === "privateBookmarks" ||
+    value === "publicReadingLists" ||
+    value === "publicSeries"
+  ) {
+    return value;
+  }
+  return "novels";
+};
+
+const profileSectionKey = (section: ProfileCursorSection) =>
   section === "publicBookmarks"
     ? "public"
-    : section === "privateBookmarks"
+  : section === "privateBookmarks"
       ? "private"
+      : section === "publicReadingLists"
+        ? "readingLists"
       : section === "publicCollections"
         ? "collections"
         : section === "publicSeries"
           ? "series"
+          : section === "novels"
+            ? "novels"
         : "works";
 
+const novelProfileSectionKey = (section: NovelProfileSection) =>
+  section === "novels"
+    ? "novelWorks"
+    : section === "publicBookmarks"
+      ? "novelPublicBookmarks"
+      : section === "privateBookmarks"
+        ? "novelPrivateBookmarks"
+        : section === "publicReadingLists"
+          ? "novelShelves"
+          : "novelSeries";
+
 const encodeProfileCursor = (
-  section: ProfileSection,
+  section: ProfileCursorSection,
   item: { createdAt: string; id: string }
 ) =>
   toBase64Url(
@@ -8031,7 +8121,7 @@ const encodeProfileCursor = (
     )
   );
 
-const decodeProfileCursor = (value: string | null | undefined, section: ProfileSection) => {
+const decodeProfileCursor = (value: string | null | undefined, section: ProfileCursorSection) => {
   const rawValue = value?.trim();
   if (!rawValue) {
     return undefined;
@@ -8046,6 +8136,55 @@ const decodeProfileCursor = (value: string | null | undefined, section: ProfileS
     if (
       decoded.v === 1 &&
       decoded.section === profileSectionKey(section) &&
+      typeof decoded.createdAt === "string" &&
+      typeof decoded.id === "string" &&
+      decoded.createdAt.length > 0 &&
+      decoded.id.length > 0
+    ) {
+      return {
+        createdAt: decoded.createdAt,
+        id: decoded.id
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+};
+
+const encodeNovelProfileCursor = (
+  section: NovelProfileSection,
+  item: { createdAt: string; id: string }
+) =>
+  toBase64Url(
+    textEncoder.encode(
+      JSON.stringify({
+        v: 1,
+        section: novelProfileSectionKey(section),
+        createdAt: item.createdAt,
+        id: item.id
+      })
+    )
+  );
+
+const decodeNovelProfileCursor = (
+  value: string | null | undefined,
+  section: NovelProfileSection
+) => {
+  const rawValue = value?.trim();
+  if (!rawValue) {
+    return undefined;
+  }
+  try {
+    const decoded = JSON.parse(textDecoder.decode(fromBase64Url(rawValue))) as {
+      v?: unknown;
+      section?: unknown;
+      createdAt?: unknown;
+      id?: unknown;
+    };
+    if (
+      decoded.v === 1 &&
+      decoded.section === novelProfileSectionKey(section) &&
       typeof decoded.createdAt === "string" &&
       typeof decoded.id === "string" &&
       decoded.createdAt.length > 0 &&
@@ -8154,6 +8293,299 @@ const finishProfileArtworkPage = async (
     artworks,
     nextCursor: hasMore && lastArtwork ? encodeProfileCursor(section, lastArtwork) : null
   };
+};
+
+const finishNovelProfilePage = async (
+  db: D1Database,
+  viewer: CurrentUser | undefined,
+  section: NovelProfileSection,
+  rows: NovelRow[],
+  createdAtByNovelId?: Map<string, string>
+) => {
+  const pageRows = rows.slice(0, profilePageLimit);
+  const hasMore = rows.length > profilePageLimit;
+  const novels = await withViewerNovelInteractions(
+    db,
+    viewer?.id,
+    pageRows.map((row) => novelFromRow(row, viewer))
+  );
+  const lastNovel = novels.at(-1);
+  return {
+    novels,
+    nextCursor:
+      hasMore && lastNovel
+        ? encodeNovelProfileCursor(section, {
+            createdAt: createdAtByNovelId?.get(lastNovel.id) ?? lastNovel.createdAt,
+            id: lastNovel.id
+          })
+        : null
+  };
+};
+
+const getNovelPageByCreator = async (
+  db: D1Database,
+  userId: string,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess,
+  cursor: { createdAt: string; id: string } | undefined
+) => {
+  const baseWhere = novelVisibleWhereSql(viewer, {
+    includeOwnDrafts: true,
+    userId
+  });
+  addNovelMatureAccessWhere(baseWhere.clauses, baseWhere.bindings, matureAccess);
+  const cursorSql = profileCursorWhere(cursor, baseWhere.bindings, "novels.created_at", "novels.id");
+  const rows = await db
+    .prepare(
+      `${novelSelect}
+       WHERE ${baseWhere.clauses.join("\n         AND ")}
+         ${cursorSql}
+       ORDER BY datetime(novels.created_at) DESC, novels.id DESC
+       LIMIT ?`
+    )
+    .bind(...baseWhere.bindings, profilePageLimit + 1)
+    .all<NovelRow>();
+  const visibleRows = filterNovels(
+    rows.results.map((row) => novelFromRow(row, viewer)),
+    matureAccess,
+    "",
+    "",
+    "all"
+  )
+    .map((novel) => rows.results.find((row) => row.id === novel.id))
+    .filter((row): row is NovelRow => Boolean(row));
+  return finishNovelProfilePage(db, viewer, "novels", visibleRows);
+};
+
+const getBookmarkedNovelPage = async (
+  db: D1Database,
+  userId: string,
+  visibility: BookmarkVisibility,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess,
+  cursor: { createdAt: string; id: string } | undefined
+) => {
+  const section = visibility === "private" ? "privateBookmarks" : "publicBookmarks";
+  const baseWhere = novelVisibleWhereSql(viewer, { includeOwnDrafts: viewer?.id === userId });
+  addNovelMatureAccessWhere(baseWhere.clauses, baseWhere.bindings, matureAccess);
+  baseWhere.clauses.push("favorite_novels.user_id = ?");
+  baseWhere.clauses.push("favorite_novels.visibility = ?");
+  baseWhere.bindings.push(userId, visibility);
+  const cursorSql = profileCursorWhere(
+    cursor,
+    baseWhere.bindings,
+    "favorite_novels.created_at",
+    "novels.id"
+  );
+  const rows = await db
+    .prepare(
+      `${novelSelectWith(", favorite_novels.created_at AS favorite_created_at")}
+       JOIN favorite_novels ON favorite_novels.novel_id = novels.id
+       WHERE ${baseWhere.clauses.join("\n         AND ")}
+         ${cursorSql}
+       ORDER BY datetime(favorite_novels.created_at) DESC, novels.id DESC
+       LIMIT ?`
+    )
+    .bind(...baseWhere.bindings, profilePageLimit + 1)
+    .all<NovelRow & { favorite_created_at: string }>();
+  const createdAtByNovelId = new Map(
+    rows.results.map((row) => [row.id, row.favorite_created_at ?? row.created_at])
+  );
+  const visibleRows = filterNovels(
+    rows.results.map((row) => novelFromRow(row, viewer)),
+    matureAccess,
+    "",
+    "",
+    "all"
+  )
+    .map((novel) => rows.results.find((row) => row.id === novel.id))
+    .filter((row): row is NovelRow & { favorite_created_at: string } => Boolean(row));
+  return finishNovelProfilePage(db, viewer, section, visibleRows, createdAtByNovelId);
+};
+
+const getPublicReadingListPageByUser = async (
+  db: D1Database,
+  userId: string,
+  cursor: { createdAt: string; id: string } | undefined
+) => {
+  const bindings: Array<string | number | null> = [userId, "public"];
+  const cursorSql = profileCursorWhere(cursor, bindings, "reading_lists.created_at", "reading_lists.id");
+  const rows = await db
+    .prepare(
+      `${readingListSummarySelect}
+       WHERE reading_lists.user_id = ?
+         AND reading_lists.visibility = ?
+         AND reading_lists.deleted_at IS NULL
+         ${cursorSql}
+       GROUP BY reading_lists.id
+       ORDER BY datetime(reading_lists.created_at) DESC, reading_lists.id DESC
+       LIMIT ?`
+    )
+    .bind(...bindings, profilePageLimit + 1)
+    .all<ReadingListRow>();
+  const pageRows = rows.results.slice(0, profilePageLimit);
+  const lastRow = pageRows.at(-1);
+  return {
+    readingLists: pageRows.map(readingListFromRow),
+    nextCursor:
+      rows.results.length > profilePageLimit && lastRow
+        ? encodeNovelProfileCursor("publicReadingLists", {
+            createdAt: lastRow.created_at,
+            id: lastRow.id
+          })
+        : null
+  };
+};
+
+const getPublicNovelSeriesPageByUser = async (
+  db: D1Database,
+  userId: string,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess,
+  cursor: { createdAt: string; id: string } | undefined
+) => {
+  const baseWhere = novelVisibleWhereSql(viewer, {
+    includeOwnDrafts: viewer?.id === userId,
+    userId
+  });
+  addNovelMatureAccessWhere(baseWhere.clauses, baseWhere.bindings, matureAccess);
+  const bindings: Array<string | number | null> = [
+    userId,
+    ...baseWhere.bindings
+  ];
+  const cursorSql = profileCursorWhere(cursor, bindings, "novel_series.created_at", "novel_series.id");
+  const rows = await db
+    .prepare(
+      `${novelSeriesSummarySelect}
+       WHERE novel_series.user_id = ?
+         AND novel_series.deleted_at IS NULL
+         AND EXISTS (
+           SELECT 1
+           FROM novels
+           JOIN users AS creator_user ON creator_user.id = novels.creator_id
+           WHERE ${baseWhere.clauses.join("\n             AND ")}
+             AND novels.series_id = novel_series.id
+         )
+         ${cursorSql}
+       GROUP BY novel_series.id
+       ORDER BY datetime(novel_series.created_at) DESC, novel_series.id DESC
+       LIMIT ?`
+    )
+    .bind(...bindings, profilePageLimit + 1)
+    .all<NovelSeriesRow>();
+  const pageRows = rows.results.slice(0, profilePageLimit);
+  const lastRow = pageRows.at(-1);
+  return {
+    series: pageRows.map(novelSeriesFromRow),
+    nextCursor:
+      rows.results.length > profilePageLimit && lastRow
+        ? encodeNovelProfileCursor("publicSeries", {
+            createdAt: lastRow.created_at,
+            id: lastRow.id
+      })
+        : null
+  };
+};
+
+const getNovelStatsForProfile = async (
+  db: D1Database,
+  userId: string,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess
+) => {
+  const baseWhere = novelVisibleWhereSql(viewer, {
+    includeOwnDrafts: true,
+    userId
+  });
+  addNovelMatureAccessWhere(baseWhere.clauses, baseWhere.bindings, matureAccess);
+  const row = await db
+    .prepare(
+      `SELECT
+        COUNT(*) AS novels,
+        COALESCE(SUM(novels.like_count), 0) AS total_likes,
+        COALESCE(SUM(novels.view_count), 0) AS total_reads,
+        COALESCE(SUM(novels.word_count), 0) AS total_words
+       FROM novels
+       JOIN users AS creator_user ON creator_user.id = novels.creator_id
+       WHERE ${baseWhere.clauses.join("\n         AND ")}`
+    )
+    .bind(...baseWhere.bindings)
+    .first<{
+      novels: number;
+      total_likes: number | null;
+      total_reads: number | null;
+      total_words: number | null;
+    }>();
+  return row;
+};
+
+const getBookmarkedNovelCountForProfile = async (
+  db: D1Database,
+  userId: string,
+  visibility: BookmarkVisibility,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess
+) => {
+  const baseWhere = novelVisibleWhereSql(viewer, { includeOwnDrafts: viewer?.id === userId });
+  addNovelMatureAccessWhere(baseWhere.clauses, baseWhere.bindings, matureAccess);
+  baseWhere.clauses.push("favorite_novels.user_id = ?");
+  baseWhere.clauses.push("favorite_novels.visibility = ?");
+  baseWhere.bindings.push(userId, visibility);
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM favorite_novels
+       JOIN novels ON novels.id = favorite_novels.novel_id
+       JOIN users AS creator_user ON creator_user.id = novels.creator_id
+       WHERE ${baseWhere.clauses.join("\n         AND ")}`
+    )
+    .bind(...baseWhere.bindings)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
+};
+
+const getPublicReadingListCountForProfile = async (db: D1Database, userId: string) => {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM reading_lists
+       WHERE user_id = ?
+         AND visibility = 'public'
+         AND deleted_at IS NULL`
+    )
+    .bind(userId)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
+};
+
+const getPublicNovelSeriesCountForProfile = async (
+  db: D1Database,
+  userId: string,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess
+) => {
+  const baseWhere = novelVisibleWhereSql(viewer, {
+    includeOwnDrafts: viewer?.id === userId,
+    userId
+  });
+  addNovelMatureAccessWhere(baseWhere.clauses, baseWhere.bindings, matureAccess);
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM novel_series
+       WHERE novel_series.user_id = ?
+         AND novel_series.deleted_at IS NULL
+         AND EXISTS (
+           SELECT 1
+           FROM novels
+           JOIN users AS creator_user ON creator_user.id = novels.creator_id
+           WHERE ${baseWhere.clauses.join("\n             AND ")}
+             AND novels.series_id = novel_series.id
+         )`
+    )
+    .bind(userId, ...baseWhere.bindings)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
 };
 
 const getArtworkPageByCreator = async (
@@ -10364,6 +10796,198 @@ app.get("/api/search/suggestions", async (context) => {
   });
 });
 
+app.get("/api/novels/search/suggestions", async (context) => {
+  const query = (context.req.query("q") ?? "").trim().slice(0, 80);
+  const limit = Math.min(
+    10,
+    Math.max(3, Number.parseInt(context.req.query("limit") ?? "6", 10) || 6)
+  );
+  const viewer = context.env.DB ? await getCurrentUser(context.env.DB, context.req.raw) : undefined;
+  const matureAccess = matureAccessFor(context, viewer);
+  if (!context.env.DB || query.length < 2) {
+    return context.json<NovelSearchSuggestionsResponse>({
+      query,
+      tags: [],
+      creators: [],
+      novels: []
+    });
+  }
+
+  const db = context.env.DB;
+  const loweredQuery = query.toLowerCase();
+  const pattern = `%${escapeSqlLike(loweredQuery)}%`;
+  const prefixPattern = `${escapeSqlLike(loweredQuery)}%`;
+  const normalizedTag = normalizeTagName(query);
+  const novelWhere = novelVisibleWhereSql(viewer);
+  addNovelMatureAccessWhere(novelWhere.clauses, novelWhere.bindings, matureAccess);
+  const novelWhereSql = novelWhere.clauses.join("\n         AND ");
+  const tagWhere = novelVisibleWhereSql(viewer);
+  addNovelMatureAccessWhere(tagWhere.clauses, tagWhere.bindings, matureAccess);
+  const tagWhereSql = tagWhere.clauses.join("\n         AND ");
+  const creatorNovelClauses = [
+    "creator_novels.creator_id = creators.id",
+    "creator_novels.deleted_at IS NULL",
+    "COALESCE(creator_novels.is_draft, 0) = 0",
+    "COALESCE(creator_novels.visibility, 'public') = 'public'"
+  ];
+  if (!matureAccess.allowed) {
+    creatorNovelClauses.push(
+      "creator_novels.mature = 0",
+      "COALESCE(creator_novels.mature_rating, 'general') = 'general'"
+    );
+  }
+  const creatorClauses = [
+    "creator_user.suspended_at IS NULL",
+    profileVisibilitySql("creator_user"),
+    `(lower(creators.handle) LIKE ? ESCAPE '\\'
+      OR lower(creators.display_name) LIKE ? ESCAPE '\\')`,
+    `EXISTS (
+      SELECT 1
+      FROM novels AS creator_novels
+      WHERE ${creatorNovelClauses.join("\n        AND ")}
+    )`
+  ];
+  const creatorBindings: Array<string | number | null> = [
+    ...profileVisibilityBindValues(viewer),
+    pattern,
+    pattern
+  ];
+  if (viewer) {
+    creatorClauses.push(
+      `NOT EXISTS (
+        SELECT 1
+        FROM user_blocks
+        WHERE (blocker_user_id = ? AND blocked_user_id = creators.id)
+           OR (blocker_user_id = creators.id AND blocked_user_id = ?)
+      )`
+    );
+    creatorBindings.push(viewer.id, viewer.id);
+  }
+
+  const [tagRows, creatorRows, novelRows] = await Promise.all([
+    db
+      .prepare(
+        `SELECT novel_tags.tag AS name, COUNT(DISTINCT novels.id) AS count
+         FROM novel_tags
+         JOIN novels ON novels.id = novel_tags.novel_id
+         JOIN creators ON creators.id = novels.creator_id
+         JOIN users AS creator_user ON creator_user.id = novels.creator_id
+         WHERE ${tagWhereSql}
+           AND lower(novel_tags.tag) LIKE ? ESCAPE '\\'
+         GROUP BY novel_tags.tag
+         ORDER BY
+           CASE
+             WHEN lower(novel_tags.tag) = ? THEN 0
+             WHEN lower(novel_tags.tag) LIKE ? ESCAPE '\\' THEN 1
+             ELSE 2
+           END,
+           count DESC,
+           novel_tags.tag
+         LIMIT ?`
+      )
+      .bind(...tagWhere.bindings, pattern, normalizedTag, prefixPattern, limit)
+      .all<{ name: string; count: number }>(),
+    db
+      .prepare(
+        `SELECT
+          creators.id,
+          creators.handle,
+          creators.display_name,
+          creators.avatar_url,
+          creators.bio,
+          creators.follower_count,
+          creators.following
+         FROM creators
+         JOIN users AS creator_user ON creator_user.id = creators.id
+         WHERE ${creatorClauses.join("\n           AND ")}
+         ORDER BY
+           CASE
+             WHEN lower(creators.handle) = ? THEN 0
+             WHEN lower(creators.handle) LIKE ? ESCAPE '\\' THEN 1
+             WHEN lower(creators.display_name) LIKE ? ESCAPE '\\' THEN 2
+             ELSE 3
+           END,
+           creators.follower_count DESC,
+           creators.handle
+         LIMIT ?`
+      )
+      .bind(...creatorBindings, loweredQuery, prefixPattern, prefixPattern, limit)
+      .all<{
+        id: string;
+        handle: string;
+        display_name: string;
+        avatar_url: string;
+        bio: string;
+        follower_count: number;
+        following: number;
+      }>(),
+    db
+      .prepare(
+        `${novelSelect}
+         WHERE ${novelWhereSql}
+           AND (
+             lower(novels.title) LIKE ? ESCAPE '\\'
+             OR lower(novels.description) LIKE ? ESCAPE '\\'
+             OR lower(novels.excerpt) LIKE ? ESCAPE '\\'
+           )
+         ORDER BY
+           CASE
+             WHEN lower(novels.title) = ? THEN 0
+             WHEN lower(novels.title) LIKE ? ESCAPE '\\' THEN 1
+             ELSE 2
+           END,
+           datetime(novels.created_at) DESC,
+           novels.id DESC
+         LIMIT ?`
+      )
+      .bind(
+        ...novelWhere.bindings,
+        pattern,
+        pattern,
+        pattern,
+        loweredQuery,
+        prefixPattern,
+        limit
+      )
+      .all<NovelRow>()
+  ]);
+
+  const creators = await withViewerCreatorFollowing(
+    db,
+    viewer?.id,
+    creatorRows.results.map((row) => ({
+      id: row.id,
+      handle: row.handle,
+      displayName: row.display_name,
+      avatarUrl: row.avatar_url,
+      bio: row.bio,
+      followerCount: row.follower_count,
+      following: Boolean(row.following)
+    }))
+  );
+  const novels = await withViewerNovelInteractions(
+    db,
+    viewer?.id,
+    novelRows.results.map((row) => novelFromRow(row, viewer))
+  );
+
+  return context.json<NovelSearchSuggestionsResponse>({
+    query,
+    tags: tagRows.results.map((row) => ({ name: row.name, count: row.count })),
+    creators,
+    novels: novels.map((novel) => ({
+      id: novel.id,
+      title: novel.title,
+      coverColor: novel.coverColor,
+      creator: {
+        username: novel.creator.handle,
+        displayName: novel.creator.displayName
+      },
+      matureRating: novel.matureRating
+    }))
+  });
+});
+
 app.get("/api/notifications", async (context) => {
   if (!context.env.DB) {
     return authUnavailable(context);
@@ -12495,6 +13119,177 @@ app.get("/api/analytics/creator", async (context) => {
   });
 });
 
+app.get("/api/analytics/novels", async (context) => {
+  if (!context.env.DB) {
+    return authUnavailable(context);
+  }
+
+  const user = await getCurrentUser(context.env.DB, context.req.raw);
+  if (!user) {
+    return context.json({ message: "Sign in to view novel analytics." }, 401);
+  }
+
+  const rateLimitError = await enforceRateLimit(context, {
+    action: "analytics:novels",
+    userId: user.id,
+    ...rateLimitDefaults.analytics
+  });
+  if (rateLimitError) {
+    return rateLimitError;
+  }
+
+  const [
+    summaryRow,
+    topRows,
+    recentRows,
+    likeRows,
+    bookmarkRows,
+    commentRows
+  ] = await Promise.all([
+    context.env.DB
+      .prepare(
+        `SELECT
+          creators.follower_count AS followers,
+          COUNT(novels.id) AS novels,
+          COALESCE(SUM(CASE
+            WHEN COALESCE(novels.is_draft, 0) = 0 AND novels.deleted_at IS NULL THEN 1
+            ELSE 0
+          END), 0) AS published_novels,
+          COALESCE(SUM(CASE
+            WHEN COALESCE(novels.is_draft, 0) <> 0 AND novels.deleted_at IS NULL THEN 1
+            ELSE 0
+          END), 0) AS draft_novels,
+          COALESCE(SUM(CASE
+            WHEN (novels.mature = 1 OR COALESCE(novels.mature_rating, 'general') <> 'general')
+              AND novels.deleted_at IS NULL THEN 1
+            ELSE 0
+          END), 0) AS mature_novels,
+          COALESCE(SUM(CASE WHEN novels.deleted_at IS NULL THEN novels.view_count ELSE 0 END), 0) AS total_reads,
+          COALESCE(SUM(CASE WHEN novels.deleted_at IS NULL THEN novels.like_count ELSE 0 END), 0) AS likes,
+          COALESCE(SUM(CASE WHEN novels.deleted_at IS NULL THEN novels.bookmark_count ELSE 0 END), 0) AS bookmarks,
+          COALESCE((
+            SELECT COUNT(*)
+            FROM novel_comments
+            JOIN novels AS comment_novels ON comment_novels.id = novel_comments.novel_id
+            WHERE comment_novels.creator_id = creators.id
+              AND novel_comments.deleted_at IS NULL
+              AND comment_novels.deleted_at IS NULL
+          ), 0) AS comments,
+          COALESCE(SUM(CASE WHEN novels.deleted_at IS NULL THEN novels.word_count ELSE 0 END), 0) AS words
+         FROM creators
+         LEFT JOIN novels ON novels.creator_id = creators.id
+         WHERE creators.id = ?
+         GROUP BY creators.id, creators.follower_count`
+      )
+      .bind(user.id)
+      .first<{
+        followers: number | null;
+        novels: number;
+        published_novels: number | null;
+        draft_novels: number | null;
+        mature_novels: number | null;
+        total_reads: number | null;
+        likes: number | null;
+        bookmarks: number | null;
+        comments: number | null;
+        words: number | null;
+      }>(),
+    context.env.DB
+      .prepare(
+        `${novelSelectWith(", 0 AS views_7d")}
+         WHERE novels.creator_id = ?
+           AND novels.deleted_at IS NULL
+         ORDER BY views_7d DESC,
+           COALESCE(novels.view_count, 0) DESC,
+           COALESCE(novels.like_count, 0) DESC,
+           datetime(novels.created_at) DESC
+         LIMIT 8`
+      )
+      .bind(user.id)
+      .all<CreatorNovelAnalyticsRow>(),
+    context.env.DB
+      .prepare(
+        `${novelSelectWith(", 0 AS views_7d")}
+         WHERE novels.creator_id = ?
+           AND novels.deleted_at IS NULL
+         ORDER BY datetime(novels.created_at) DESC
+         LIMIT 8`
+      )
+      .bind(user.id)
+      .all<CreatorNovelAnalyticsRow>(),
+    context.env.DB
+      .prepare(
+        `SELECT substr(novel_likes.created_at, 1, 10) AS day, COUNT(*) AS count
+         FROM novel_likes
+         JOIN novels ON novels.id = novel_likes.novel_id
+         WHERE novels.creator_id = ?
+           AND date(novel_likes.created_at) >= date('now', '-29 days')
+         GROUP BY substr(novel_likes.created_at, 1, 10)`
+      )
+      .bind(user.id)
+      .all<DailyAnalyticsRow>(),
+    context.env.DB
+      .prepare(
+        `SELECT substr(favorite_novels.created_at, 1, 10) AS day, COUNT(*) AS count
+         FROM favorite_novels
+         JOIN novels ON novels.id = favorite_novels.novel_id
+         WHERE novels.creator_id = ?
+           AND date(favorite_novels.created_at) >= date('now', '-29 days')
+         GROUP BY substr(favorite_novels.created_at, 1, 10)`
+      )
+      .bind(user.id)
+      .all<DailyAnalyticsRow>(),
+    context.env.DB
+      .prepare(
+        `SELECT substr(novel_comments.created_at, 1, 10) AS day, COUNT(*) AS count
+         FROM novel_comments
+         JOIN novels ON novels.id = novel_comments.novel_id
+         WHERE novels.creator_id = ?
+           AND novel_comments.deleted_at IS NULL
+           AND date(novel_comments.created_at) >= date('now', '-29 days')
+         GROUP BY substr(novel_comments.created_at, 1, 10)`
+      )
+      .bind(user.id)
+      .all<DailyAnalyticsRow>()
+  ]);
+
+  const likesByDay = dailyCountMap(likeRows.results);
+  const bookmarksByDay = dailyCountMap(bookmarkRows.results);
+  const commentsByDay = dailyCountMap(commentRows.results);
+  const daily = lastUtcDateKeys(30).map((date) => ({
+    date,
+    views: 0,
+    likes: likesByDay.get(date) ?? 0,
+    bookmarks: bookmarksByDay.get(date) ?? 0,
+    comments: commentsByDay.get(date) ?? 0
+  }));
+  const [topNovels, recentNovels] = await Promise.all([
+    analyticsNovelItemsFromRows(context.env.DB, user, topRows.results),
+    analyticsNovelItemsFromRows(context.env.DB, user, recentRows.results)
+  ]);
+
+  return context.json<CreatorNovelAnalyticsResponse>({
+    summary: {
+      novels: summaryRow?.novels ?? 0,
+      publishedNovels: summaryRow?.published_novels ?? 0,
+      draftNovels: summaryRow?.draft_novels ?? 0,
+      matureNovels: summaryRow?.mature_novels ?? 0,
+      followers: summaryRow?.followers ?? 0,
+      totalReads: summaryRow?.total_reads ?? 0,
+      reads7d: 0,
+      reads30d: 0,
+      likes: summaryRow?.likes ?? 0,
+      bookmarks: summaryRow?.bookmarks ?? 0,
+      comments: summaryRow?.comments ?? 0,
+      words: summaryRow?.words ?? 0
+    },
+    daily,
+    topNovels,
+    recentNovels,
+    generatedAt: new Date().toISOString()
+  });
+});
+
 app.get("/api/admin/stats", async (context) => {
   const admin = await requireAdmin(context);
   if (admin.response) {
@@ -14084,6 +14879,195 @@ app.get("/api/users/:username/profile", async (context) => {
       following: followingCount,
       totalLikes: artworkStats?.total_likes ?? 0,
       totalViews: artworkStats?.total_views ?? 0
+    },
+    matureAccess
+  });
+});
+
+app.get("/api/users/:username/novel-profile", async (context) => {
+  if (!context.env.DB) {
+    return context.json({ message: "D1 database is required." }, 503);
+  }
+
+  const username = decodeURIComponent(context.req.param("username")).replace(/^@/, "");
+  const sectionQuery = context.req.query("section");
+  const requestedSection = novelProfileSectionFromQuery(sectionQuery);
+  const requestedCursor = decodeNovelProfileCursor(context.req.query("cursor"), requestedSection);
+  if (requestedCursor === null) {
+    return context.json({ message: "Novel profile cursor is invalid." }, 400);
+  }
+  const viewer = await getCurrentUser(context.env.DB, context.req.raw);
+  const matureAccess = matureAccessFor(context, viewer);
+  const profileUser = await getProfileUser(context.env.DB, username);
+  if (!profileUser || profileUser.suspended_at) {
+    return context.json({ message: "User not found." }, 404);
+  }
+
+  const ownProfile = viewer?.id === profileUser.id;
+  const viewerBlockedProfile = await viewerBlocksUser(context.env.DB, viewer?.id, profileUser.id);
+  const profileBlockedViewer =
+    viewer && !ownProfile ? await viewerBlocksUser(context.env.DB, profileUser.id, viewer.id) : false;
+  if (profileBlockedViewer) {
+    return context.json({ message: "User not found." }, 404);
+  }
+  if (
+    !canViewProfileVisibility(
+      asProfileVisibility(profileUser.profile_visibility),
+      profileUser.id,
+      viewer
+    )
+  ) {
+    return context.json(
+      {
+        message:
+          asProfileVisibility(profileUser.profile_visibility) === "members"
+            ? "Sign in to view this profile."
+            : "This profile is private."
+      },
+      viewer ? 403 : 401
+    );
+  }
+  if (viewerBlockedProfile) {
+    return context.json<NovelProfileResponse>({
+      profile: {
+        ...profileFromRow(profileUser, ownProfile),
+        blocked: true,
+        following: false
+      },
+      novels: [],
+      publicBookmarks: [],
+      privateBookmarks: [],
+      publicReadingLists: [],
+      publicSeries: [],
+      nextCursors: {
+        novels: null,
+        publicBookmarks: null,
+        privateBookmarks: null,
+        publicReadingLists: null,
+        publicSeries: null
+      },
+      stats: {
+        novels: 0,
+        publicBookmarks: 0,
+        privateBookmarks: 0,
+        publicReadingLists: 0,
+        publicSeries: 0,
+        following: 0,
+        totalLikes: 0,
+        totalReads: 0,
+        totalWords: 0
+      },
+      matureAccess
+    });
+  }
+
+  const emptyNovelPage = { novels: [] as Novel[], nextCursor: null as string | null };
+  const emptyReadingListPage = {
+    readingLists: [] as ReadingList[],
+    nextCursor: null as string | null
+  };
+  const emptyNovelSeriesPage = {
+    series: [] as NovelSeries[],
+    nextCursor: null as string | null
+  };
+  const loadAllSections = !sectionQuery;
+  const [
+    novelPage,
+    publicBookmarkPage,
+    privateBookmarkPage,
+    publicReadingListPage,
+    publicSeriesPage,
+    novelStats,
+    publicBookmarkCount,
+    privateBookmarkCount,
+    publicReadingListCount,
+    publicSeriesCount,
+    followingCount
+  ] = await Promise.all([
+    loadAllSections || requestedSection === "novels"
+      ? getNovelPageByCreator(
+          context.env.DB,
+          profileUser.id,
+          viewer,
+          matureAccess,
+          requestedSection === "novels" ? requestedCursor : undefined
+        )
+      : Promise.resolve(emptyNovelPage),
+    loadAllSections || requestedSection === "publicBookmarks"
+      ? getBookmarkedNovelPage(
+          context.env.DB,
+          profileUser.id,
+          "public",
+          viewer,
+          matureAccess,
+          requestedSection === "publicBookmarks" ? requestedCursor : undefined
+        )
+      : Promise.resolve(emptyNovelPage),
+    ownProfile && (loadAllSections || requestedSection === "privateBookmarks")
+      ? getBookmarkedNovelPage(
+          context.env.DB,
+          profileUser.id,
+          "private",
+          viewer,
+          matureAccess,
+          requestedSection === "privateBookmarks" ? requestedCursor : undefined
+        )
+      : Promise.resolve(emptyNovelPage),
+    loadAllSections || requestedSection === "publicReadingLists"
+      ? getPublicReadingListPageByUser(
+          context.env.DB,
+          profileUser.id,
+          requestedSection === "publicReadingLists" ? requestedCursor : undefined
+        )
+      : Promise.resolve(emptyReadingListPage),
+    loadAllSections || requestedSection === "publicSeries"
+      ? getPublicNovelSeriesPageByUser(
+          context.env.DB,
+          profileUser.id,
+          viewer,
+          matureAccess,
+          requestedSection === "publicSeries" ? requestedCursor : undefined
+        )
+      : Promise.resolve(emptyNovelSeriesPage),
+    getNovelStatsForProfile(context.env.DB, profileUser.id, viewer, matureAccess),
+    getBookmarkedNovelCountForProfile(context.env.DB, profileUser.id, "public", viewer, matureAccess),
+    ownProfile
+      ? getBookmarkedNovelCountForProfile(context.env.DB, profileUser.id, "private", viewer, matureAccess)
+      : Promise.resolve(0),
+    getPublicReadingListCountForProfile(context.env.DB, profileUser.id),
+    getPublicNovelSeriesCountForProfile(context.env.DB, profileUser.id, viewer, matureAccess),
+    getFollowingCountForProfile(context.env.DB, profileUser.id)
+  ]);
+  const following = await viewerFollowsCreator(context.env.DB, viewer?.id, profileUser.id);
+
+  return context.json<NovelProfileResponse>({
+    profile: {
+      ...profileFromRow(profileUser, ownProfile),
+      following,
+      blocked: false
+    },
+    novels: novelPage.novels,
+    publicBookmarks: publicBookmarkPage.novels,
+    privateBookmarks: privateBookmarkPage.novels,
+    publicReadingLists: publicReadingListPage.readingLists,
+    publicSeries: publicSeriesPage.series,
+    nextCursors: {
+      novels: novelPage.nextCursor,
+      publicBookmarks: publicBookmarkPage.nextCursor,
+      privateBookmarks: privateBookmarkPage.nextCursor,
+      publicReadingLists: publicReadingListPage.nextCursor,
+      publicSeries: publicSeriesPage.nextCursor
+    },
+    stats: {
+      novels: novelStats?.novels ?? 0,
+      publicBookmarks: publicBookmarkCount,
+      privateBookmarks: privateBookmarkCount,
+      publicReadingLists: publicReadingListCount,
+      publicSeries: publicSeriesCount,
+      following: followingCount,
+      totalLikes: novelStats?.total_likes ?? 0,
+      totalReads: novelStats?.total_reads ?? 0,
+      totalWords: novelStats?.total_words ?? 0
     },
     matureAccess
   });
@@ -16782,16 +17766,10 @@ app.get("/api/novels/:id", async (context) => {
           matureAccess.allowed ? "all" : "general",
           6
         )).filter((item) => item.id !== novel.id);
-        const linkedArtworkMap = await getArtworksByIds(
-          context.env.DB,
-          artworkIdsFromNovelContent(novel.body),
-          viewer
-        );
         return context.json<NovelResponse>({
           novel,
           comments: detail.comments,
           relatedNovels,
-          linkedArtworks: Array.from(linkedArtworkMap.values()),
           source: "d1",
           matureAccess
         });
@@ -16818,7 +17796,6 @@ app.get("/api/novels/:id", async (context) => {
     novel,
     comments: [],
     relatedNovels,
-    linkedArtworks: [],
     source: "fallback",
     matureAccess
   });
@@ -16902,7 +17879,7 @@ app.put("/api/novels/:id", async (context) => {
     parsed.data.tags !== undefined
       ? await canonicalizeArtworkTags(context.env.DB, parseTagInput(parsed.data.tags))
       : parseTags(existing.tags_json);
-  const visibility = parsed.data.visibility ?? asArtworkVisibility(existing.visibility);
+  const visibility = parsed.data.visibility ?? asNovelVisibility(existing.visibility);
   const isDraft =
     parsed.data.isDraft !== undefined
       ? parsed.data.isDraft
@@ -17151,7 +18128,11 @@ app.post("/api/novels/:id/bookmark", async (context) => {
     ]);
   } else {
     await context.env.DB.batch([
-      context.env.DB.prepare("INSERT OR IGNORE INTO favorite_novels (user_id, novel_id) VALUES (?, ?)").bind(user.id, id),
+      context.env.DB
+        .prepare(
+          "INSERT OR IGNORE INTO favorite_novels (user_id, novel_id, visibility) VALUES (?, ?, ?)"
+        )
+        .bind(user.id, id, user.bookmarkDefaultVisibility),
       context.env.DB.prepare("UPDATE novels SET bookmark_count = bookmark_count + 1 WHERE id = ?").bind(id)
     ]);
   }
@@ -20388,6 +21369,41 @@ const shellSeoByPath: Record<string, Omit<SeoMeta, "path">> = {
     title: "Reading Lists",
     description: "Create and browse NEHub reading lists for novels and stories."
   },
+  "/novels/notifications": {
+    title: "Novel Notifications",
+    description: "Review updates for your NEHub novel follows, comments, bookmarks, and reading activity.",
+    robots: "noindex,follow"
+  },
+  "/novels/analytics": {
+    title: "Novel Analytics",
+    description: "Review reader activity, bookmarks, likes, and performance for your NEHub novels.",
+    robots: "noindex,follow"
+  },
+  "/novels/my-folders": {
+    title: "My Reading Lists",
+    description: "Manage your NEHub novel reading lists and saved story folders.",
+    robots: "noindex,follow"
+  },
+  "/novels/my-series": {
+    title: "My Novel Series",
+    description: "Manage your NEHub novel series and story order.",
+    robots: "noindex,follow"
+  },
+  "/novels/settings/profile": {
+    title: "Novel Profile Settings",
+    description: "Update your public writer profile for NEHub novels.",
+    robots: "noindex,follow"
+  },
+  "/novels/settings/privacy-security": {
+    title: "Novel Privacy & Security",
+    description: "Manage privacy, account safety, and mature-content access for your NEHub novel experience.",
+    robots: "noindex,follow"
+  },
+  "/novels/dashboard": {
+    title: "Novel Dashboard",
+    description: "Manage your NEHub novel drafts, published stories, reading lists, and series.",
+    robots: "noindex,follow"
+  },
   "/terms": {
     title: "Terms",
     description: "Read the NEHub terms for creators, readers, and community members."
@@ -20406,11 +21422,40 @@ const shellSeoByPath: Record<string, Omit<SeoMeta, "path">> = {
   }
 };
 
+const decodePath = (path: string) => {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+};
+
 const shellSeoForRequest = (context: AppContext): SeoMeta => {
   const path = context.req.path;
+  const decodedPath = decodePath(path);
   const mapped = shellSeoByPath[path];
   if (mapped) {
     return { ...mapped, path };
+  }
+  const decodedMapped = decodedPath === path ? undefined : shellSeoByPath[decodedPath];
+  if (decodedMapped) {
+    return { ...decodedMapped, path };
+  }
+  if (decodedPath.startsWith("/novels/my-folders/")) {
+    return {
+      title: "Reading List",
+      description: "Open this NEHub novel reading list.",
+      robots: "noindex,follow",
+      path
+    };
+  }
+  if (decodedPath.startsWith("/novels/my-series/")) {
+    return {
+      title: "Novel Series",
+      description: "Open this NEHub novel series.",
+      robots: "noindex,follow",
+      path
+    };
   }
   if (path.startsWith("/tags/")) {
     const tag = decodeURIComponent(path.replace(/^\/tags\//, "")).replace(/\s+/g, " ");
@@ -20420,8 +21465,16 @@ const shellSeoForRequest = (context: AppContext): SeoMeta => {
       path
     };
   }
-  if (path.startsWith("/@")) {
-    const username = decodeURIComponent(path.slice(2));
+  if (decodedPath.startsWith("/novels/@")) {
+    const username = decodedPath.replace(/^\/novels\/@/, "");
+    return {
+      title: `@${username} Novels`,
+      description: `Read @${username}'s NEHub novels, public bookmarks, reading lists, and series.`,
+      path
+    };
+  }
+  if (decodedPath.startsWith("/@")) {
+    const username = decodedPath.slice(2);
     return {
       title: `@${username}`,
       description: `View @${username}'s NEHub profile, artwork, novels, and collections.`,
@@ -20607,13 +21660,17 @@ app.get("/novels/settings/privacy-security", appShellResponse);
 app.get("/novels/dashboard", appShellResponse);
 
 app.get("/novels/:id", async (context) => {
+  const id = context.req.param("id");
+  if (decodePath(id).startsWith("@")) {
+    return appShellResponse(context);
+  }
+
   const { assetResponse, html: originalHtml } = await indexHtml(context);
   if (!assetResponse.ok) {
     return assetResponse;
   }
 
   let html = originalHtml;
-  const id = context.req.param("id");
   const fallbackNovel = fallbackNovels.find((novel) => novel.id === id);
   let metaNovel: Pick<Novel, "title" | "excerpt" | "creator" | "mature" | "matureRating"> | null =
     fallbackNovel ?? null;
@@ -20653,7 +21710,7 @@ app.get("/novels/:id", async (context) => {
         }>();
       if (
         row &&
-        asArtworkVisibility(row.visibility) === "public" &&
+        asNovelVisibility(row.visibility) === "public" &&
         canViewProfileVisibility(
           asProfileVisibility(row.profile_visibility),
           row.creator_id,
