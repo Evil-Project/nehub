@@ -533,6 +533,83 @@ img {
   box-shadow: var(--sticker-shadow);
 }
 
+.sidebar-donate {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 8px;
+  padding: 12px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(244, 250, 248, 0.72));
+  box-shadow: inset 0 1px 3px rgba(255, 255, 255, 0.72);
+}
+
+.sidebar-donate-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--purple);
+  font-size: 0.88rem;
+  font-weight: 900;
+}
+
+.sidebar-donate p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.sidebar-donate-links {
+  display: grid;
+  gap: 7px;
+}
+
+.sidebar-donate-links a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid rgba(250, 158, 188, 0.42);
+  border-radius: 7px;
+  padding: 7px 8px;
+  background: rgba(255, 255, 255, 0.66);
+  color: var(--blue-dark);
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.sidebar-donate-wallets {
+  display: grid;
+  gap: 7px;
+}
+
+.sidebar-donate-wallets span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.sidebar-donate-wallets strong {
+  color: var(--purple);
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.sidebar-donate-wallets code {
+  overflow-wrap: anywhere;
+  border-radius: 6px;
+  padding: 5px 6px;
+  background: rgba(37, 49, 58, 0.06);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.66rem;
+  line-height: 1.35;
+}
+
 .page-frame.is-novel-section {
   --novel-ink: var(--text);
   --novel-wine: var(--purple);
@@ -1881,6 +1958,14 @@ h1 {
   max-width: 1040px;
 }
 
+.page-frame.is-novel-section .novel-feed-main {
+  grid-column: 2;
+}
+
+.page-frame.is-novel-section .novel-right-rail {
+  grid-column: 3;
+}
+
 .novel-feed-heading {
   margin-bottom: 0;
 }
@@ -2516,7 +2601,7 @@ h1 {
 }
 
 .novel-creator-card,
-.novel-collection-card {
+.novel-collection-item {
   animation: card-in 360ms ease forwards;
 }
 
@@ -2527,13 +2612,12 @@ h1 {
 }
 
 .novel-creator-card,
-.novel-collection-card {
+.novel-collection-item {
   position: relative;
   overflow: hidden;
 }
 
-.novel-creator-card::before,
-.novel-collection-card::before {
+.novel-creator-card::before {
   position: absolute;
   inset: 12px auto 12px 0;
   width: 4px;
@@ -2542,56 +2626,92 @@ h1 {
   content: "";
 }
 
-.novel-creator-preview-strip {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.novel-creator-preview-strip span {
-  position: relative;
-  height: 62px;
-  border: 2px solid #fff;
-  border-radius: 8px;
+.novel-preview-tile {
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.42), transparent),
-    linear-gradient(135deg, var(--cyan), rgba(250, 158, 188, 0.72));
+    linear-gradient(145deg, color-mix(in srgb, var(--novel-cover, var(--blue)) 58%, #ffffff), rgba(255, 247, 251, 0.86)),
+    repeating-linear-gradient(120deg, rgba(255, 255, 255, 0.22) 0 1px, transparent 1px 18px);
+  color: var(--purple);
 }
 
-.novel-creator-preview-strip span::before {
-  position: absolute;
-  inset: 9px auto 9px 8px;
+.novel-preview-tile::before {
+  display: block;
   width: 5px;
+  height: 52px;
   border-radius: 999px;
-  background: rgba(58, 12, 163, 0.18);
+  background: rgba(58, 12, 163, 0.2);
   content: "";
 }
 
-.novel-creator-preview-strip span:nth-child(2) {
+.novel-shelf-card {
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.42), transparent),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.86), rgba(235, 251, 252, 0.58)),
+    var(--surface);
+}
+
+.novel-shelf-icon {
+  background: linear-gradient(135deg, #ffffff, rgba(182, 246, 249, 0.86));
+  color: var(--blue-dark);
+}
+
+.novel-shelf-preview {
+  grid-template-columns: repeat(3, 16px);
+  align-content: end;
+}
+
+.novel-shelf-preview span {
+  display: block;
+  width: 18px;
+  min-height: 48px;
+  border: 2px solid #fff;
+  border-radius: 6px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), transparent),
+    linear-gradient(135deg, var(--cyan), rgba(250, 158, 188, 0.72));
+  box-shadow: 2px 2px 0 rgba(58, 12, 163, 0.08);
+}
+
+.novel-shelf-preview span:nth-child(2) {
+  min-height: 54px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), transparent),
     linear-gradient(135deg, var(--yellow), rgba(181, 126, 220, 0.64));
 }
 
-.novel-creator-preview-strip span:nth-child(3) {
+.novel-shelf-preview span:nth-child(3) {
+  min-height: 44px;
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.42), transparent),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), transparent),
     linear-gradient(135deg, rgba(181, 126, 220, 0.72), rgba(0, 223, 238, 0.5));
 }
 
-.novel-collection-main {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  align-items: center;
-  gap: 12px;
+.novel-tag-control .tag-follow-button {
+  pointer-events: none;
 }
 
-.novel-collection-card {
-  min-height: 126px;
+.novel-ranking-grid .novel-card {
+  margin-top: 0;
+}
+
+.novel-ranking-card .novel-card {
+  min-height: 100%;
+}
+
+.novel-ranking-card .novel-rank-badge {
+  display: none;
+}
+
+.novel-ranking-row-cover {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border: 2px solid #fff;
+  border-radius: 8px;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(255, 247, 251, 0.68)),
-    repeating-linear-gradient(120deg, rgba(255, 200, 0, 0.08) 0 1px, transparent 1px 26px),
-    rgba(255, 255, 255, 0.62);
+    linear-gradient(145deg, color-mix(in srgb, var(--novel-cover, var(--blue)) 58%, #ffffff), rgba(255, 247, 251, 0.86)),
+    repeating-linear-gradient(120deg, rgba(255, 255, 255, 0.22) 0 1px, transparent 1px 18px);
+  color: var(--purple);
+  box-shadow: 2px 2px 0 rgba(58, 12, 163, 0.08);
 }
 
 .novel-section-rankings .novel-feed-summary span:first-child {
@@ -3017,46 +3137,31 @@ h1 {
   --novel-paper: var(--surface-soft);
 }
 
-.novel-dashboard-main {
-  position: relative;
-  --novel-ink: var(--text);
-  --novel-wine: var(--purple);
-  --novel-gold: var(--yellow);
-  --novel-teal: var(--cyan);
-  --novel-paper: var(--surface-soft);
-}
-
-.novel-dedicated-page::before,
-.novel-dashboard-main::before {
+.novel-dedicated-page::before {
   display: none;
 }
 
-.novel-dedicated-page > *,
-.novel-dashboard-main > * {
+.novel-dedicated-page > * {
   margin-left: 0;
 }
 
-.novel-dedicated-page h1,
-.novel-dashboard-main h1 {
+.novel-dedicated-page h1 {
   color: var(--purple);
   text-shadow: 2px 2px 0 rgba(255, 255, 255, 0.82);
 }
 
-.novel-dedicated-page .eyebrow,
-.novel-dashboard-main .eyebrow {
+.novel-dedicated-page .eyebrow {
   color: var(--blue-dark);
   letter-spacing: 0;
 }
 
-.novel-dedicated-page .primary-button,
-.novel-dashboard-main .primary-button {
+.novel-dedicated-page .primary-button {
   border-color: #fff;
   background: var(--blue);
   box-shadow: var(--sticker-shadow);
 }
 
-.novel-dedicated-page .secondary-button,
-.novel-dashboard-main .secondary-button {
+.novel-dedicated-page .secondary-button {
   border-color: var(--line);
   background: linear-gradient(135deg, #ffffff 0%, #e0e5ec 100%);
   color: var(--purple);
@@ -3067,10 +3172,7 @@ h1 {
 .novel-dedicated-page .collection-folder-card,
 .novel-dedicated-page .notification-page-row,
 .novel-dedicated-page .profile-hero,
-.novel-dedicated-page .profile-follow-panel,
-.novel-dashboard-main .dashboard-panel,
-.novel-dashboard-main .metric-tile,
-.novel-dashboard-main .status-card {
+.novel-dedicated-page .profile-follow-panel {
   border-color: var(--line);
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(255, 247, 251, 0.68)),
@@ -3191,10 +3293,6 @@ h1 {
   align-items: end;
   border-top: 1px solid var(--line);
   padding-top: 12px;
-}
-
-.novel-report-filter-row {
-  grid-template-columns: repeat(3, minmax(130px, 1fr));
 }
 
 .report-filter-row label {
@@ -7041,6 +7139,10 @@ h1 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .page-frame.is-novel-section .novel-right-rail {
+    grid-column: 2;
+  }
+
   .dashboard-main {
     grid-column: 2;
   }
@@ -7138,9 +7240,18 @@ h1 {
     flex: 0 0 auto;
   }
 
+  .sidebar-donate {
+    flex: 0 0 min(280px, 82vw);
+  }
+
   .right-rail {
     grid-column: auto;
     grid-template-columns: 1fr;
+  }
+
+  .page-frame.is-novel-section .novel-feed-main,
+  .page-frame.is-novel-section .novel-right-rail {
+    grid-column: auto;
   }
 
   .dashboard-main {
@@ -7621,13 +7732,11 @@ h1 {
     grid-template-columns: 1fr;
   }
 
-  .novel-dedicated-page::before,
-  .novel-dashboard-main::before {
+  .novel-dedicated-page::before {
     display: none;
   }
 
-  .novel-dedicated-page > *,
-  .novel-dashboard-main > * {
+  .novel-dedicated-page > * {
     margin-left: 0;
   }
 

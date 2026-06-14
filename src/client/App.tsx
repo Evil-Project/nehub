@@ -295,9 +295,15 @@ const profileVisibilityOptions: {
   { value: "private", label: "Private", icon: Lock }
 ];
 
-const homeSortOptions: { value: SortMode; label: string; icon: typeof Grid3X3 }[] = [
-  { value: "latest", label: "Latest", icon: Grid3X3 },
-  { value: "following", label: "Following", icon: Sparkles }
+const donationLinks = [
+  { label: "Ko-fi", href: "https://ko-fi.com/xiaoyuan151" },
+  { label: "Buy Me a Coffee", href: "https://buymeacoffee.com/xiaoyuan151" }
+];
+
+const donationWallets = [
+  { label: "BTC", value: "3DPDaQ63u7nKJpc1jYgrPQTmu5vfgaWpUB" },
+  { label: "ERC20 / BEP20", value: "0xA57F5F34f6a0B8f44C3363dBA6Dd996f801A0500" },
+  { label: "TRC20", value: "TUVwPUf1NMFUbeuLQ91Qa4fPDWzZsxEwyF" }
 ];
 
 const collectionDiscoverySortOptions: {
@@ -603,10 +609,20 @@ const novelSectionSlugs = [
 ] as const;
 type NovelSection = (typeof novelSectionSlugs)[number];
 const novelSectionSlugSet = new Set<string>(novelSectionSlugs);
-const authRequiredNovelSections = new Set<NovelSection>(["bookmarks"]);
+const authRequiredNovelSections = new Set<NovelSection>(["following", "tags", "bookmarks"]);
 const novelSectionRequiresAuth = (section: NovelSection) => authRequiredNovelSections.has(section);
-const novelSectionAuthNotice = (section: NovelSection) =>
-  section === "bookmarks" ? "Sign in to view your bookmarks." : "Sign in to continue.";
+const novelSectionAuthNotice = (section: NovelSection) => {
+  if (section === "following") {
+    return "Sign in to view novels from authors you follow.";
+  }
+  if (section === "tags") {
+    return "Sign in to follow novel tags.";
+  }
+  if (section === "bookmarks") {
+    return "Sign in to view your bookmarks.";
+  }
+  return "Sign in to continue.";
+};
 const securityApprovalActionLabels: Record<SecurityApprovalAction, string> = {
   discord_link: "connect Discord",
   totp_start: "set up authenticator",
@@ -838,6 +854,34 @@ const getInitialRoute = (): RouteState => {
   return routeState("illustrations");
 };
 
+function SidebarDonateCard() {
+  return (
+    <section className="sidebar-donate" aria-label="Support XiaoYuan151">
+      <div className="sidebar-donate-heading">
+        <Heart size={17} />
+        <span>Donate</span>
+      </div>
+      <p>Support XiaoYuan151 and NEHub development.</p>
+      <div className="sidebar-donate-links">
+        {donationLinks.map((link) => (
+          <a href={link.href} key={link.href} target="_blank" rel="noreferrer">
+            {link.label}
+            <ExternalLink size={13} />
+          </a>
+        ))}
+      </div>
+      <div className="sidebar-donate-wallets">
+        {donationWallets.map((wallet) => (
+          <span key={wallet.label}>
+            <strong>{wallet.label}</strong>
+            <code>{wallet.value}</code>
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function App() {
   const initialRoute = useMemo(getInitialRoute, []);
   const [gallery, setGallery] = useState<GalleryResponse | null>(null);
@@ -903,6 +947,7 @@ function App() {
   const [selectedArtwork, setSelectedArtwork] = useState<Artwork | null>(null);
   const [artworkDetail, setArtworkDetail] = useState<ArtworkResponse | null>(null);
   const [novelsData, setNovelsData] = useState<NovelListResponse | null>(null);
+  const [followedNovelsData, setFollowedNovelsData] = useState<NovelListResponse | null>(null);
   const [novelDetail, setNovelDetail] = useState<NovelResponse | null>(null);
   const [novelLoading, setNovelLoading] = useState(false);
   const [novelFormOpen, setNovelFormOpen] = useState(false);
@@ -1028,7 +1073,7 @@ function App() {
 
     let cancelled = false;
 
-    fetch(galleryUrl)
+    fetch(galleryUrl, { credentials: "include" })
       .then((response) => response.json() as Promise<GalleryResponse>)
       .then((nextGallery) => {
         if (!cancelled) {
@@ -1076,6 +1121,41 @@ function App() {
       cancelled = true;
     };
   }, [contentAccessRevision, currentUser?.id, novelsUrl, view]);
+
+  useEffect(() => {
+    if (!currentUser || !isNovelSection) {
+      setFollowedNovelsData(null);
+      return;
+    }
+
+    let cancelled = false;
+    fetch("/api/novels/feed?limit=24", { credentials: "include" })
+      .then(async (response) => {
+        const payload = (await response.json()) as NovelListResponse | { message?: string };
+        if (!response.ok || !("novels" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ??
+              "Followed novels could not be loaded."
+          );
+        }
+        return payload;
+      })
+      .then((payload) => {
+        if (!cancelled) {
+          setFollowedNovelsData(payload);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setFollowedNovelsData(null);
+        }
+        console.error("Unable to load followed novels", error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [contentAccessRevision, currentUser?.id, isNovelSection]);
 
   useEffect(() => {
     if (!isIllustrationsSection && view !== "rankings") {
@@ -1857,7 +1937,8 @@ function App() {
   const novelCreators = [...new Map(novels.map((novel) => [novel.creator.id, novel.creator])).values()];
   const followedNovelCreators = novelCreators.filter((creator) => creator.following);
   const followedNovelCreatorIds = new Set(followedNovelCreators.map((creator) => creator.id));
-  const followedNovels = novels.filter((novel) => followedNovelCreatorIds.has(novel.creator.id));
+  const followedNovels =
+    followedNovelsData?.novels ?? novels.filter((novel) => followedNovelCreatorIds.has(novel.creator.id));
   const novelRankingNovels =
     novelRankingData?.rankings.map((item) => item.novel) ??
     [...novels]
@@ -1865,11 +1946,7 @@ function App() {
       .slice(0, 8);
   const bookmarkedNovels = novels.filter((novel) => novel.bookmarked);
   const continueReadingItems = readingProgressData?.progress ?? [];
-  const novelCollections = (readingLists?.readingLists ?? []).map((readingList) => ({
-    id: readingList.id,
-    title: readingList.title,
-    detail: `${formatCount(readingList.novelCount)} entries · ${readingList.visibility}`
-  }));
+  const novelCollections = readingLists?.readingLists ?? [];
   const novelSectionTitleMap: Record<NovelSection, string> = {
     home: "Latest creator works",
     following: "Following",
@@ -1913,7 +1990,6 @@ function App() {
     : isSubscriptionsView
       ? "Subscribed tags"
       : "All work";
-  const showHomeSortTabs = !isBookmarksView && !isSubscriptionsView;
   const accountNotice = dashboardMessage || authNotice;
   const hasAccountNotice =
     view !== "emailConfirmation" &&
@@ -1948,6 +2024,18 @@ function App() {
   const showIllustrations = (nextSort: SortMode) => {
     pushRoute("/", "illustrations");
     setSort(nextSort);
+  };
+
+  const showFollowingIllustrations = () => {
+    if (!currentUser) {
+      setPostAuthSort("following");
+      setPostAuthNovelSection(null);
+      openAuth("login", "Sign in to view works from creators you follow.", {
+        onAuthenticated: () => showIllustrations("following")
+      });
+      return;
+    }
+    showIllustrations("following");
   };
 
   const openNovelSection = (section: NovelSection = "home") => {
@@ -2350,6 +2438,7 @@ function App() {
       setSeriesList(null);
       setReadingLists(null);
       setNovelSeriesList(null);
+      setFollowedNovelsData(null);
       if (
         view === "dashboard" ||
         view === "collections" ||
@@ -2359,6 +2448,7 @@ function App() {
         view === "series" ||
         view === "profileSettings" ||
         view === "privacySecurity" ||
+        sort === "following" ||
         sort === "bookmarks" ||
         sort === "subscriptions" ||
         (view === "novels" && novelSectionRequiresAuth(routeNovelSection))
@@ -2402,6 +2492,7 @@ function App() {
         artworks: current.artworks
           .map((item) => (item.id === updatedArtwork.id ? updatedArtwork : item))
           .filter((item) => item.reviewStatus === "approved")
+          .filter((item) => sort !== "following" || item.creator.following)
           .filter((item) => sort !== "bookmarks" || item.bookmarked)
       };
     });
@@ -4025,7 +4116,7 @@ function App() {
     const params = new URLSearchParams(galleryParams);
     params.set("cursor", gallery.nextCursor);
     try {
-      const response = await fetch(`/api/gallery?${params.toString()}`);
+      const response = await fetch(`/api/gallery?${params.toString()}`, { credentials: "include" });
       const payload = (await response.json()) as GalleryResponse;
       setGallery((current) =>
         current
@@ -4578,6 +4669,7 @@ function App() {
                 <FolderOpen size={18} />
                 Collections
               </button>
+              <SidebarDonateCard />
             </>
           ) : (
             <>
@@ -4592,7 +4684,7 @@ function App() {
               <button
                 className={classNames("menu-item", view === "illustrations" && sort === "following" && "is-active")}
                 type="button"
-                onClick={() => showIllustrations("following")}
+                onClick={showFollowingIllustrations}
               >
                 <Grid3X3 size={18} />
                 Following
@@ -4637,6 +4729,7 @@ function App() {
                 <FolderOpen size={18} />
                 Collections
               </button>
+              <SidebarDonateCard />
             </>
           )}
           {currentUser ? (
@@ -4815,6 +4908,7 @@ function App() {
             <NovelHubPage
               section={routeNovelSection}
               data={novelsData}
+              activityData={activityData}
               featuredNovel={featuredNovel}
               novels={novels}
               totalWords={totalNovelWords}
@@ -4827,6 +4921,7 @@ function App() {
               continueReadingItems={continueReadingItems}
               bookmarkedNovels={bookmarkedNovels}
               collections={novelCollections}
+              currentUser={currentUser}
               matureFilter={novelMatureFilter}
               sortMode={novelSortMode}
               activeTag={activeNovelTag}
@@ -4836,8 +4931,9 @@ function App() {
               onTagFilterChange={setActiveNovelTag}
               onRankingPeriodChange={setNovelRankingPeriod}
               onAuthRequired={() => openAuth("login")}
-              onWriteNovel={() => openNovelForm()}
               onOpenNovel={openNovel}
+              onOpenCollection={showCollection}
+              onOpenArtwork={openArtwork}
               onOpenProfile={showProfile}
               onPrivacySecurity={showPrivacySecurity}
               onOpenSection={showNovels}
@@ -5144,8 +5240,6 @@ function App() {
             feedTitle={feedTitle}
             feedMeta={feedMeta}
             filterLabel={filterLabel}
-            showSortTabs={showHomeSortTabs}
-            sort={sort}
             galleryLoadingMore={galleryLoadingMore}
             isBookmarksView={isBookmarksView}
             onAuthRequired={() => openAuth("login")}
@@ -5156,7 +5250,6 @@ function App() {
               setIllustrationQuery("");
               setIllustrationMatureFilter("all");
             }}
-            onSortChange={setSort}
             onOpenTag={showTag}
             onToggleTagSubscription={handleToggleTagSubscription}
             onOpenArtwork={openArtwork}
@@ -7830,6 +7923,12 @@ function NovelDashboard({
   reportTarget,
   reportReason,
   reportLimit,
+  adminUsers,
+  userQuery,
+  userStatus,
+  userLimit,
+  adminTags,
+  adminAuditLog,
   canAdminister,
   message,
   onUpload,
@@ -7838,21 +7937,36 @@ function NovelDashboard({
   onReportTargetChange,
   onReportReasonChange,
   onReportLimitChange,
-  onModerateNovel
+  onUserQueryChange,
+  onUserStatusChange,
+  onUserLimitChange,
+  onUpdateUserRole,
+  onModerateNovel,
+  onToggleUserSuspension,
+  onSaveTagAlias,
+  onDeleteTagAlias,
+  onSaveTagImplication,
+  onDeleteTagImplication
 }: DashboardProps) {
   const contentStats = adminStats?.content;
   const accountStats = adminStats?.accounts;
   const recentNovels = adminStats?.recentNovels ?? [];
   const reports = adminReports?.reports ?? [];
+  const auditEntries = adminAuditLog?.entries ?? [];
   const novelReports = reports.filter((report) => report.targetType === "novel");
   const reportStatusLabel =
     reportStatusFilterOptions.find((option) => option.value === reportStatus)?.label ?? "Open";
+  const directoryUsers = adminUsers?.users ?? [];
+  const userStatusLabel =
+    adminUserStatusFilterOptions.find((option) => option.value === userStatus)?.label ??
+    "All accounts";
   const filteredReportTotal =
     adminReports?.targetType === "novel" ? adminReports.totalCount : novelReports.length;
   const draftCount = Math.max(
     0,
     (contentStats?.novels ?? 0) - (contentStats?.publishedNovels ?? 0)
   );
+  const [userSearchDraft, setUserSearchDraft] = useState(userQuery);
 
   useEffect(() => {
     if (reportTarget !== "novel") {
@@ -7860,16 +7974,17 @@ function NovelDashboard({
     }
   }, [onReportTargetChange, reportTarget]);
 
+  useEffect(() => {
+    setUserSearchDraft(userQuery);
+  }, [userQuery]);
+
   return (
-    <section
-      className="dashboard-main novel-dedicated-page novel-dashboard-main"
-      aria-label="Novel operations dashboard"
-    >
+    <section className="dashboard-main" aria-label="Novel operations dashboard">
       <div className="dashboard-heading">
         <div>
-          <p className="eyebrow">Novel operations</p>
+          <p className="eyebrow">Operations</p>
           <h1>Novel dashboard</h1>
-          <p>Writing, reading, rankings, and novel moderation without illustration queues.</p>
+          <p>Worker, D1, accounts, and novel publishing pipeline status for NEHub.</p>
           {message ? <p className="dashboard-message">{message}</p> : null}
         </div>
         <button className="primary-button" type="button" onClick={onUpload}>
@@ -7884,7 +7999,7 @@ function NovelDashboard({
           label="Novel API"
           value={health?.ok ? "Online" : "Checking"}
           active={Boolean(health?.ok)}
-          detail="Novel CRUD, rankings, comments, and reading progress"
+          detail="Novel routes and static asset fallback"
         />
         <StatusCard
           icon={<Database size={22} />}
@@ -7898,7 +8013,7 @@ function NovelDashboard({
           label="Reader saves"
           value={formatCount(contentStats?.novelBookmarks ?? 0)}
           active={Boolean(contentStats?.novelBookmarks)}
-          detail="Bookmarks, lists, and reading progress"
+          detail="Bookmarks, reading lists, progress"
         />
         <StatusCard
           icon={<Trophy size={22} />}
@@ -7917,6 +8032,48 @@ function NovelDashboard({
       </div>
 
       <div className="dashboard-grid">
+        <section className="dashboard-panel">
+          <div className="panel-title">
+            <UserRound size={18} />
+            Account controls
+          </div>
+          <StatusLine
+            label="Total users"
+            value={formatCount(accountStats?.totalUsers ?? 0)}
+            active={Boolean(accountStats)}
+          />
+          <StatusLine
+            label="Verified users"
+            value={formatCount(accountStats?.verifiedUsers ?? 0)}
+            active={Boolean(accountStats?.verifiedUsers)}
+          />
+          <StatusLine
+            label="Administrators"
+            value={formatCount(accountStats?.admins ?? 0)}
+            active={Boolean(accountStats?.admins)}
+          />
+          <StatusLine
+            label="Moderators"
+            value={formatCount(accountStats?.moderators ?? 0)}
+            active={Boolean(accountStats?.moderators)}
+          />
+          <StatusLine
+            label="Suspended users"
+            value={formatCount(accountStats?.suspendedUsers ?? 0)}
+            active={Boolean(accountStats?.suspendedUsers)}
+          />
+          <StatusLine
+            label="Active sessions"
+            value={formatCount(accountStats?.activeSessions ?? 0)}
+            active={Boolean(accountStats?.activeSessions)}
+          />
+          <StatusLine
+            label="Pending email links"
+            value={formatCount(accountStats?.pendingVerifications ?? 0)}
+            active={Boolean(accountStats?.pendingVerifications)}
+          />
+        </section>
+
         <section className="dashboard-panel metric-panel">
           <div className="panel-title">
             <Activity size={18} />
@@ -7933,47 +8090,157 @@ function NovelDashboard({
             <MetricTile label="Likes" value={formatCount(contentStats?.novelLikes ?? 0)} />
             <MetricTile label="Comments" value={formatCount(contentStats?.novelComments ?? 0)} />
             <MetricTile label={`${reportStatusLabel} reports`} value={formatCount(filteredReportTotal)} />
+            <MetricTile label="Source" value={health?.storage.d1 ? "D1" : "EMPTY"} />
           </div>
         </section>
 
         <section className="dashboard-panel">
           <div className="panel-title">
-            <ListOrdered size={18} />
-            Reading systems
+            <BarChart3 size={18} />
+            Resource checks
           </div>
           <StatusLine
-            label="Serialized chapters"
-            value={contentStats?.novels ? "Available" : "Waiting"}
-            active={Boolean(contentStats?.novels)}
+            label="API response"
+            value={health?.ok ? "Healthy" : "Pending"}
+            active={Boolean(health?.ok)}
+          />
+          <StatusLine
+            label="D1 binding"
+            value={health?.storage.d1 ? "Available" : "Unavailable"}
+            active={Boolean(health?.storage.d1)}
+          />
+          <StatusLine
+            label="Email binding"
+            value={adminStats?.storage.email ? "Available" : "Unavailable"}
+            active={Boolean(adminStats?.storage.email)}
+          />
+          <StatusLine
+            label="Novel data"
+            value={health?.storage.d1 ? "Persisted" : "Empty"}
+            active={Boolean(health?.storage.d1)}
           />
           <StatusLine
             label="Reading progress"
             value="Tracking"
-            active={Boolean(health?.storage.d1)}
-          />
-          <StatusLine
-            label="Reading lists"
-            value={`${formatCount(contentStats?.novelBookmarks ?? 0)} saved entries`}
-            active={Boolean(contentStats?.novelBookmarks)}
-          />
-          <StatusLine
-            label="Public rankings"
-            value={`${formatCount(contentStats?.novelViews ?? 0)} reads`}
-            active={Boolean(contentStats?.novelViews)}
-          />
-          <StatusLine
-            label="Moderator access"
-            value={canAdminister ? "Admin" : "Moderator"}
             active
           />
         </section>
+
+        {canAdminister ? (
+          <section className="dashboard-panel recent-users-panel">
+            <div className="panel-title">
+              <ShieldCheck size={18} />
+              User directory
+            </div>
+            <div className="admin-user-filter-row" aria-label="User directory filters">
+              <form
+                className="admin-user-search-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  onUserQueryChange(userSearchDraft.trim());
+                }}
+              >
+                <label>
+                  Search
+                  <div className="admin-user-search-box">
+                    <Search size={15} />
+                    <input
+                      value={userSearchDraft}
+                      maxLength={120}
+                      onChange={(event) => setUserSearchDraft(event.target.value)}
+                      placeholder="Username, email, display name"
+                    />
+                  </div>
+                </label>
+                <button className="secondary-button" type="submit">
+                  Search
+                </button>
+              </form>
+              <label>
+                Status
+                <select
+                  value={userStatus}
+                  onChange={(event) =>
+                    onUserStatusChange(event.target.value as AdminUserStatusFilter)
+                  }
+                >
+                  {adminUserStatusFilterOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Limit
+                <select
+                  value={userLimit}
+                  onChange={(event) => onUserLimitChange(Number(event.target.value))}
+                >
+                  {[20, 40, 100].map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {adminUsers ? (
+              <p className="muted">
+                Showing {formatCount(directoryUsers.length)} of{" "}
+                {formatCount(adminUsers.totalCount)} {userStatusLabel.toLowerCase()}.
+              </p>
+            ) : (
+              <p className="muted">Loading users.</p>
+            )}
+            {directoryUsers.map((user) => (
+              <div className="admin-user-row" key={user.id}>
+                <span className={classNames("verify-dot", (user.emailVerified || user.role !== "member") && "is-verified")} />
+                <div>
+                  <strong>{user.displayName}</strong>
+                  <span>
+                    @{user.username} · {user.email} · {formatUserRole(user.role)}
+                    {!user.emailVerified ? " · unverified" : ""}
+                    {user.suspendedAt ? " · suspended" : ""} ·{" "}
+                    {dateFormat.format(new Date(user.createdAt))}
+                  </span>
+                </div>
+                <label className="admin-user-role-select">
+                  Role
+                  <select
+                    value={user.role}
+                    onChange={(event) => onUpdateUserRole(user, event.target.value as UserRole)}
+                  >
+                    {userRoleOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {user.role === "member" ? (
+                  <button
+                    className={classNames("text-button", user.suspendedAt && "is-danger")}
+                    type="button"
+                    onClick={() => onToggleUserSuspension(user, !user.suspendedAt)}
+                  >
+                    {user.suspendedAt ? "Restore" : "Suspend"}
+                  </button>
+                ) : null}
+              </div>
+            ))}
+            {adminUsers && directoryUsers.length === 0 ? (
+              <p className="muted">No users match these filters.</p>
+            ) : null}
+          </section>
+        ) : null}
 
         <section className="dashboard-panel moderation-panel">
           <div className="panel-title">
             <Flag size={18} />
             Novel moderation queue
           </div>
-          <div className="report-filter-row novel-report-filter-row" aria-label="Novel report filters">
+          <div className="report-filter-row" aria-label="Novel report filters">
             <label>
               Status
               <select
@@ -7985,6 +8252,12 @@ function NovelDashboard({
                     {option.label}
                   </option>
                 ))}
+              </select>
+            </label>
+            <label>
+              Target
+              <select value="novel" disabled>
+                <option value="novel">Novels</option>
               </select>
             </label>
             <label>
@@ -8072,6 +8345,41 @@ function NovelDashboard({
           ) : null}
         </section>
 
+        {canAdminister ? (
+          <TagGovernancePanel
+            data={adminTags}
+            onSaveAlias={onSaveTagAlias}
+            onDeleteAlias={onDeleteTagAlias}
+            onSaveImplication={onSaveTagImplication}
+            onDeleteImplication={onDeleteTagImplication}
+          />
+        ) : null}
+
+        {canAdminister ? (
+          <section className="dashboard-panel audit-log-panel">
+            <div className="panel-title">
+              <FileText size={18} />
+              Audit log
+            </div>
+            {!adminAuditLog ? <p className="muted">Loading audit trail.</p> : null}
+            {auditEntries.map((entry) => (
+              <article className="audit-log-row" key={entry.id}>
+                <div className="audit-log-heading">
+                  <strong>{entry.summary}</strong>
+                  <span>{dateFormat.format(new Date(entry.createdAt))}</span>
+                </div>
+                <small>
+                  {formatAuditAction(entry.action)} by {entry.admin.displayName} ·{" "}
+                  {entry.targetType}:{entry.targetId}
+                </small>
+              </article>
+            ))}
+            {adminAuditLog && auditEntries.length === 0 ? (
+              <p className="muted">No admin actions recorded yet.</p>
+            ) : null}
+          </section>
+        ) : null}
+
         <section className="dashboard-panel recent-panel">
           <div className="panel-title">
             <NotebookText size={18} />
@@ -8097,38 +8405,6 @@ function NovelDashboard({
             <p className="muted">No novels have been posted yet.</p>
           ) : null}
           {!adminStats ? <p className="muted">Loading novels.</p> : null}
-        </section>
-
-        <section className="dashboard-panel">
-          <div className="panel-title">
-            <UserRound size={18} />
-            Account safety
-          </div>
-          <StatusLine
-            label="Total users"
-            value={formatCount(accountStats?.totalUsers ?? 0)}
-            active={Boolean(accountStats)}
-          />
-          <StatusLine
-            label="Verified users"
-            value={formatCount(accountStats?.verifiedUsers ?? 0)}
-            active={Boolean(accountStats?.verifiedUsers)}
-          />
-          <StatusLine
-            label="Moderators"
-            value={formatCount(accountStats?.moderators ?? 0)}
-            active={Boolean(accountStats?.moderators)}
-          />
-          <StatusLine
-            label="Suspended users"
-            value={formatCount(accountStats?.suspendedUsers ?? 0)}
-            active={Boolean(accountStats?.suspendedUsers)}
-          />
-          <StatusLine
-            label="Active sessions"
-            value={formatCount(accountStats?.activeSessions ?? 0)}
-            active={Boolean(accountStats?.activeSessions)}
-          />
         </section>
       </div>
     </section>
@@ -8642,6 +8918,23 @@ function CollectionFolderPreview({ collection }: { collection: UserCollection })
           loading="lazy"
           decoding="async"
         />
+      ))}
+    </span>
+  );
+}
+
+function ReadingShelfPreview({ readingList }: { readingList: ReadingList }) {
+  if (readingList.novelCount === 0) {
+    return (
+      <span className="collection-folder-icon novel-shelf-icon">
+        <FolderOpen size={22} />
+      </span>
+    );
+  }
+  return (
+    <span className="collection-folder-preview novel-shelf-preview" aria-hidden="true">
+      {Array.from({ length: Math.min(3, Math.max(1, readingList.novelCount)) }).map((_, index) => (
+        <span key={`${readingList.id}-${index}`} />
       ))}
     </span>
   );
@@ -14544,6 +14837,7 @@ function MetricTile({ label, value }: MetricTileProps) {
 type NovelHubPageProps = {
   section: NovelSection;
   data: NovelListResponse | null;
+  activityData: ActivityResponse | null;
   featuredNovel: Novel | null;
   novels: Novel[];
   totalWords: number;
@@ -14555,7 +14849,8 @@ type NovelHubPageProps = {
   rankingPeriod: RankingPeriod;
   continueReadingItems: ReadingProgressResponse["progress"];
   bookmarkedNovels: Novel[];
-  collections: Array<{ id: string; title: string; detail: string }>;
+  collections: ReadingList[];
+  currentUser: AuthUser | null;
   matureFilter: MatureFilter;
   sortMode: NovelSortMode;
   activeTag: string;
@@ -14565,8 +14860,9 @@ type NovelHubPageProps = {
   onTagFilterChange: (tag: string) => void;
   onRankingPeriodChange: (period: RankingPeriod) => void;
   onAuthRequired: () => void;
-  onWriteNovel: () => void;
   onOpenNovel: (novelId: string) => void;
+  onOpenCollection: (collectionId: string) => void;
+  onOpenArtwork: (artwork: Artwork) => void;
   onOpenProfile: (username: string) => void;
   onPrivacySecurity: () => void;
   onOpenSection: (section: NovelSection) => void;
@@ -14575,6 +14871,7 @@ type NovelHubPageProps = {
 function NovelHubPage({
   section,
   data,
+  activityData,
   featuredNovel,
   novels,
   totalWords,
@@ -14587,6 +14884,7 @@ function NovelHubPage({
   continueReadingItems,
   bookmarkedNovels,
   collections,
+  currentUser,
   matureFilter,
   sortMode,
   activeTag,
@@ -14596,54 +14894,135 @@ function NovelHubPage({
   onTagFilterChange,
   onRankingPeriodChange,
   onAuthRequired,
-  onWriteNovel,
   onOpenNovel,
+  onOpenCollection,
+  onOpenArtwork,
   onOpenProfile,
   onPrivacySecurity,
   onOpenSection
 }: NovelHubPageProps) {
+  const [creatorSearchInput, setCreatorSearchInput] = useState("");
+  const [creatorSearchQuery, setCreatorSearchQuery] = useState("");
+  const [creatorSort, setCreatorSort] = useState<CreatorDiscoverySort>("popular");
+  const [shelfSearchInput, setShelfSearchInput] = useState("");
+  const [shelfSearchQuery, setShelfSearchQuery] = useState("");
+  const [shelfSort, setShelfSort] = useState<CollectionDiscoverySort>("updated");
+  const authorNovelMap = useMemo(() => {
+    const map = new Map<string, Novel[]>();
+    for (const novel of novels) {
+      map.set(novel.creator.id, [...(map.get(novel.creator.id) ?? []), novel]);
+    }
+    return map;
+  }, [novels]);
+  const creatorItems = useMemo(
+    () =>
+      creators.map((creator) => {
+        const authorNovels = authorNovelMap.get(creator.id) ?? [];
+        const latestNovelAt = authorNovels.reduce<string | null>(
+          (latest, novel) =>
+            !latest || new Date(novel.updatedAt).getTime() > new Date(latest).getTime()
+              ? novel.updatedAt
+              : latest,
+          null
+        );
+        const newestNovelAt = authorNovels.reduce<string | null>(
+          (latest, novel) =>
+            !latest || new Date(novel.createdAt).getTime() > new Date(latest).getTime()
+              ? novel.createdAt
+              : latest,
+          null
+        );
+        return { creator, authorNovels, latestNovelAt, newestNovelAt };
+      }),
+    [authorNovelMap, creators]
+  );
+  const visibleCreatorItems = useMemo(() => {
+    const search = creatorSearchQuery.trim().toLowerCase();
+    const filtered = search
+      ? creatorItems.filter(({ creator }) =>
+          `${creator.displayName} ${creator.handle} ${creator.bio}`.toLowerCase().includes(search)
+        )
+      : creatorItems;
+    return [...filtered].sort((left, right) => {
+      if (creatorSort === "active") {
+        return (
+          new Date(right.latestNovelAt ?? 0).getTime() -
+          new Date(left.latestNovelAt ?? 0).getTime()
+        );
+      }
+      if (creatorSort === "newest") {
+        return (
+          new Date(right.newestNovelAt ?? 0).getTime() -
+          new Date(left.newestNovelAt ?? 0).getTime()
+        );
+      }
+      return (
+        right.creator.followerCount - left.creator.followerCount ||
+        right.authorNovels.length - left.authorNovels.length
+      );
+    });
+  }, [creatorItems, creatorSearchQuery, creatorSort]);
+  const visibleCollections = useMemo(() => {
+    const search = shelfSearchQuery.trim().toLowerCase();
+    const filtered = search
+      ? collections.filter((collection) =>
+          `${collection.title} ${collection.description} ${collection.visibility}`
+            .toLowerCase()
+            .includes(search)
+        )
+      : collections;
+    return [...filtered].sort((left, right) => {
+      if (shelfSort === "largest") {
+        return (
+          right.novelCount - left.novelCount ||
+          new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+        );
+      }
+      return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+    });
+  }, [collections, shelfSearchQuery, shelfSort]);
+  const handleCreatorSearchSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setCreatorSearchQuery(creatorSearchInput.trim());
+  };
+  const handleShelfSearchSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setShelfSearchQuery(shelfSearchInput.trim());
+  };
   const sectionTitleMap: Record<NovelSection, string> = {
-    home: "Latest creator works",
+    home: "Recommended novels",
     following: "Following",
-    creators: "Creators",
-    tags: "Tags",
+    creators: "Author discovery",
+    tags: "Followed novel tags",
     novels: "All works",
-    rankings: "Rankings",
+    rankings: `${rankingPeriod === "weekly" ? "Weekly" : "Daily"} novel ranking`,
     bookmarks: "Bookmarks",
-    collections: "Collections",
+    collections: "Reading list discovery",
     terms: "Terms",
     privacy: "Privacy"
   };
   const sectionDescriptionMap: Record<NovelSection, string> = {
-    home: "Fresh chapters, essays, and luminous fragments from NEHub creators.",
-    following: "Works from creators you already follow.",
-    creators: "Authors publishing across NEHub.",
-    tags: "Browse the labels shaping the current fiction feed.",
+    home: query.trim()
+      ? `${formatCount(novels.length)} novels matching "${query.trim()}".`
+      : `${formatCount(section === "home" ? novels.length : data?.totalCount ?? novels.length)} readable novels from NEHub authors.`,
+    following: `${formatCount(followedNovels.length)} novels from authors you follow.`,
+    creators: creatorSearchQuery
+      ? `${formatCount(visibleCreatorItems.length)} authors matching "${creatorSearchQuery}".`
+      : `${formatCount(visibleCreatorItems.length)} visible authors publishing readable novels.`,
+    tags: `${formatCount(data?.tags.length ?? 0)} available novel tags.`,
     novels: activeTag
       ? `Every visible work tagged #${activeTag}.`
       : "The complete readable shelf currently loaded from NEHub.",
-    rankings: "Daily and weekly novel rankings from recent engagement.",
-    bookmarks: "Saved fiction from your bookmarks.",
-    collections: "Grouped reading shelves for saved novels.",
+    rankings: `${formatCount(rankingItems.length)} ranked novels from recent ${rankingPeriod === "weekly" ? "weekly" : "daily"} likes and reads.`,
+    bookmarks: `${formatCount(bookmarkedNovels.length)} saved novels from your bookmarks.`,
+    collections: shelfSearchQuery
+      ? `${formatCount(visibleCollections.length)} reading shelves matching "${shelfSearchQuery}".`
+      : currentUser
+      ? `${formatCount(visibleCollections.length)} reading shelves from your library.`
+      : "Sign in to browse and manage your reading shelves.",
     terms: "Read the terms without leaving this section.",
     privacy: "Read the privacy policy without leaving this section."
   };
-  const listTitleMap: Record<NovelSection, string> = {
-    home: query.trim() ? "Search results" : "Latest works",
-    following: "Following",
-    creators: "Publishing creators",
-    tags: "Popular tags",
-    novels: "All works",
-    rankings: "Ranked works",
-    bookmarks: "Bookmarks",
-    collections: "Collections",
-    terms: "Terms",
-    privacy: "Privacy"
-  };
-  const sectionTabs: { section: NovelSection; label: string; icon: typeof Home }[] = [
-    { section: "home", label: "Home", icon: Home },
-    { section: "following", label: "Following", icon: Grid3X3 }
-  ];
   const sectionNovels =
     section === "following"
       ? followedNovels
@@ -14653,126 +15032,223 @@ function NovelHubPage({
           ? bookmarkedNovels
           : novels;
   const isRankingsSection = section === "rankings";
+  const isCreatorSection = section === "creators";
+  const isCollectionSection = section === "collections";
+  const isTagSection = section === "tags";
   const isDedicatedNovelSection =
-    section === "creators" ||
-    section === "tags" ||
+    isCreatorSection ||
+    isTagSection ||
     section === "bookmarks" ||
-    section === "rankings" ||
-    section === "collections";
-  const showNovelHomeTabs = section === "home" || section === "following";
-  const showMatureFilter = section !== "creators" && section !== "tags" && section !== "collections";
+    isRankingsSection ||
+    isCollectionSection;
+  const showMatureFilter = !isCreatorSection && !isTagSection && !isCollectionSection;
   const showSortControl = section === "home" || section === "novels";
+  const showNovelRightRail =
+    section === "home" || section === "following" || section === "bookmarks" || section === "novels";
   const showContinueReading =
     (section === "home" || section === "following") && continueReadingItems.length > 0;
-  const activeSectionLabel = sectionTabs.find((item) => item.section === section)?.label ?? sectionTitleMap[section];
   const prominentNovelTags = data?.tags.slice(0, 12) ?? [];
-  const maxRankingScore = Math.max(1, ...rankingItems.map((item) => item.score));
+  const ownerDisplayName = currentUser?.displayName ?? "You";
+  const ownerHandle = currentUser?.username ?? "";
   const sectionLikeCount = sectionNovels.reduce((sum, novel) => sum + novel.likeCount, 0);
   const sectionViewCount = sectionNovels.reduce((sum, novel) => sum + novel.viewCount, 0);
   const visibleCount =
-    section === "creators"
-      ? creators.length
-      : section === "tags"
+    isCreatorSection
+      ? visibleCreatorItems.length
+      : isTagSection
         ? data?.tags.length ?? 0
-        : section === "collections"
-          ? collections.length
+        : isCollectionSection
+          ? visibleCollections.length
           : sectionNovels.length;
   const visibleUnitLabel =
-    section === "creators"
+    isCreatorSection
       ? `active ${visibleCount === 1 ? "author" : "authors"}`
-      : section === "tags"
+      : isTagSection
         ? visibleCount === 1 ? "tag" : "tags"
-        : section === "collections"
-          ? visibleCount === 1 ? "collection" : "collections"
-          : `readable ${visibleCount === 1 ? "work" : "works"}`;
+        : isCollectionSection
+          ? visibleCount === 1 ? "reading shelf" : "reading shelves"
+          : `readable ${visibleCount === 1 ? "novel" : "novels"}`;
   const EmptyIcon =
     section === "bookmarks"
       ? Bookmark
       : section === "rankings"
         ? Trophy
-        : section === "collections"
+        : isCollectionSection
           ? FolderOpen
-          : section === "tags"
+          : isTagSection
             ? Bell
-            : section === "creators"
+            : isCreatorSection
               ? UserPlus
               : NotebookText;
   const emptyTitle =
     section === "bookmarks"
-      ? "No bookmarked works yet"
+      ? "No bookmarked novels yet"
       : section === "rankings"
-        ? "No ranked works yet"
-        : section === "collections"
-          ? "No collections yet"
-          : section === "tags"
-            ? "No tags yet"
-            : section === "creators"
-              ? "No creators yet"
-              : "No works match this view";
+        ? "No ranked novels yet"
+        : isCollectionSection
+          ? "No reading shelves yet"
+          : isTagSection
+            ? "No followed novel tags yet"
+            : isCreatorSection
+              ? "No authors yet"
+              : "No novels match this view";
   const emptyMessage =
     section === "bookmarks"
-      ? "Bookmarked works will appear here after you save them."
+      ? "Bookmarked novels will appear here after you save them."
       : section === "rankings"
-        ? "Rankings will fill in as readable works collect views and likes."
-        : section === "collections"
-          ? "Grouped reading lists will appear here when collections are available."
-          : section === "tags"
-            ? "Tags will appear as authors publish readable works."
-            : section === "creators"
-              ? "Authors publishing readable works will appear here."
+        ? "Rankings will fill in as readable novels collect views and likes."
+        : isCollectionSection
+          ? currentUser
+            ? "Create reading shelves from a novel page, then use this section to browse them."
+            : "Sign in to browse reading shelves."
+          : isTagSection
+            ? "Novel tags will appear as authors publish readable work."
+            : isCreatorSection
+              ? "Authors publishing readable novels will appear here."
               : "Try the latest feed or adjust the current filters.";
   const summaryItems =
-    section === "creators"
+    isCreatorSection
       ? [
           { value: visibleCount, label: visibleUnitLabel },
           { value: followedCreators.length, label: "followed authors" },
-          { value: novels.length, label: "readable works" }
+          { value: novels.length, label: "readable novels" }
         ]
-      : section === "tags"
+      : isTagSection
         ? [
             { value: visibleCount, label: visibleUnitLabel },
-            { value: novels.length, label: "tagged works" },
+            { value: novels.length, label: "tagged novels" },
             { value: totalWords, label: "words indexed" }
           ]
-        : section === "rankings"
+        : isRankingsSection
           ? [
               { value: visibleCount, label: visibleUnitLabel },
               { value: sectionLikeCount, label: "likes in ranking" },
               { value: sectionViewCount, label: "reads in ranking" }
             ]
-          : section === "collections"
+          : isCollectionSection
             ? [
                 { value: visibleCount, label: visibleUnitLabel },
-                { value: novels.length, label: "readable works" },
-                { value: data?.tags.length ?? 0, label: "tags" }
-              ]
+                { value: visibleCollections.reduce((sum, collection) => sum + collection.novelCount, 0), label: "saved novels" },
+                { value: visibleCollections.filter((collection) => collection.visibility === "public").length, label: "public shelves" }
+            ]
             : [
-                { value: visibleCount, label: data ? visibleUnitLabel : "loading works" },
+                { value: visibleCount, label: data ? visibleUnitLabel : "loading novels" },
                 { value: totalWords, label: "words in current feed" },
                 { value: data?.tags.length ?? 0, label: "tags" }
               ];
+  const headingClassName = classNames(
+    "section-heading novel-feed-heading",
+    isCreatorSection && "settings-heading creator-discover-heading",
+    isRankingsSection && "settings-heading ranking-page-heading",
+    isCollectionSection && "settings-heading collection-heading"
+  );
+  const sectionEyebrow = isCreatorSection
+    ? "Authors"
+    : isRankingsSection
+      ? "Rankings"
+      : isCollectionSection
+        ? "Reading shelves"
+        : "NEHub novels";
+  const sectionClassName = classNames(
+    "content-main novels-page novel-feed-page",
+    `novel-section-${section}`,
+    isCreatorSection && "creator-discover-page novel-author-discover-page",
+    isRankingsSection && "ranking-page novels-rankings-page",
+    isCollectionSection && "collection-page collection-discover-page novel-collection-discover-page",
+    isDedicatedNovelSection && "novel-section-page"
+  );
+  const novelRightRail = showNovelRightRail ? (
+    <aside className="right-rail novel-right-rail" aria-label="Novel recommendations">
+      <section className="side-panel ranking-panel">
+        <div className="panel-title ranking-title">
+          <span>
+            <Trophy size={18} />
+            Ranking
+          </span>
+          <div className="mini-segmented" aria-label="Novel rail ranking period">
+            {(["daily", "weekly"] as RankingPeriod[]).map((period) => (
+              <button
+                className={classNames(rankingPeriod === period && "is-active")}
+                key={period}
+                type="button"
+                onClick={() => onRankingPeriodChange(period)}
+              >
+                {period === "daily" ? "Day" : "Week"}
+              </button>
+            ))}
+          </div>
+        </div>
+        {rankingItems.slice(0, 5).map(({ novel, score }, index) => (
+          <button
+            className="ranking-row novel-ranking-row"
+            key={novel.id}
+            type="button"
+            onClick={() => onOpenNovel(novel.id)}
+          >
+            <span className="rank-number">{index + 1}</span>
+            <span className="novel-ranking-row-cover" style={{ "--novel-cover": novel.coverColor } as CSSProperties}>
+              <NotebookText size={15} />
+            </span>
+            <span>
+              <strong>{novel.title}</strong>
+              <small>{formatCount(score || novel.likeCount)} recent reads</small>
+            </span>
+          </button>
+        ))}
+        {rankingItems.length === 0 ? <p className="muted">No ranked novels yet.</p> : null}
+      </section>
+
+      <ActivityPanel
+        data={activityData}
+        onOpenArtwork={onOpenArtwork}
+        onOpenNovel={onOpenNovel}
+        onOpenProfile={onOpenProfile}
+      />
+
+      <section className="side-panel creator-panel">
+        <div className="panel-title">
+          <ShieldCheck size={18} />
+          Recommended authors
+        </div>
+        {creators.slice(0, 5).map((creator) => (
+          <button
+            className="creator-row creator-row-link"
+            key={creator.id}
+            type="button"
+            onClick={() => onOpenProfile(creator.handle)}
+          >
+            {creator.avatarUrl ? (
+              <img src={creator.avatarUrl} alt="" />
+            ) : (
+              <DefaultAvatar
+                className="creator-row-avatar-fallback"
+                name={creator.displayName}
+              />
+            )}
+            <div>
+              <strong>{creator.displayName}</strong>
+              <span>@{creator.handle}</span>
+            </div>
+            <span className="icon-button creator-row-icon" aria-label={`Open ${creator.displayName}`}>
+              <UserPlus size={15} />
+            </span>
+          </button>
+        ))}
+      </section>
+    </aside>
+  ) : null;
 
   return (
-    <section
-      className={classNames(
-        "content-main novels-page novel-feed-page",
-        `novel-section-${section}`,
-        isDedicatedNovelSection && "novel-section-page",
-        isRankingsSection && "novels-rankings-page"
-      )}
-    >
+    <>
+      <section className={classNames(sectionClassName, showNovelRightRail && "novel-feed-main")}>
       <MatureAccessNotice matureAccess={data?.matureAccess ?? null} onLogin={onAuthRequired} onPrivacySecurity={onPrivacySecurity} />
-      <div className="section-heading novel-feed-heading">
+      <div className={headingClassName}>
         <div>
-          <p className="eyebrow">NEHub novels</p>
+          <p className="eyebrow">{sectionEyebrow}</p>
           <h1>{sectionTitleMap[section]}</h1>
           <p>{sectionDescriptionMap[section]}</p>
         </div>
         <div className="feed-controls">
-          <button className="primary-button" type="button" onClick={onWriteNovel}>
-            <NotebookText size={16} />
-            Write
-          </button>
           {showMatureFilter ? (
             <label className="rating-filter novel-rating-filter">
               <Shield size={15} />
@@ -14818,33 +15294,8 @@ function NovelHubPage({
               ))}
             </div>
           ) : null}
-          {showNovelHomeTabs ? (
-            <button className="filter-chip" type="button" onClick={() => onOpenSection("home")}>
-              {activeSectionLabel}
-              <ChevronDown size={15} />
-            </button>
-          ) : null}
         </div>
       </div>
-
-      {showNovelHomeTabs ? (
-        <div className="work-tabs novel-work-tabs" aria-label="Novel sections">
-          {sectionTabs.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.section}
-                className={classNames("work-tab", section === item.section && "is-active")}
-                type="button"
-                onClick={() => onOpenSection(item.section)}
-              >
-                <Icon size={16} />
-                {item.label}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
 
       <div className="novel-feed-summary" aria-label="Novel feed summary">
         {summaryItems.map((item) => (
@@ -14929,116 +15380,246 @@ function NovelHubPage({
         </div>
       ) : null}
 
-      {section === "creators" ? (
-        <div className="creator-discovery-grid novel-creator-grid" aria-live="polite">
-          {creators.map((creator, index) => (
-            <article className="creator-discovery-card novel-creator-card" key={creator.id}>
-              <button className="creator-discovery-main" type="button" onClick={() => onOpenProfile(creator.handle)}>
-                {creator.avatarUrl ? (
-                  <img className="creator-discovery-avatar" src={creator.avatarUrl} alt="" />
-                ) : (
-                  <DefaultAvatar className="creator-discovery-avatar creator-discovery-avatar-fallback" name={creator.displayName} />
-                )}
-                <span className="creator-discovery-copy">
-                  <strong>{creator.displayName}</strong>
-                  <small>@{creator.handle}</small>
-                  <span>{creator.bio || "Creator publishing on NEHub."}</span>
-                </span>
+      {isCreatorSection ? (
+        <>
+          <div className="creator-discovery-toolbar">
+            <form className="collection-discovery-search" onSubmit={handleCreatorSearchSubmit}>
+              <Search size={18} />
+              <input
+                value={creatorSearchInput}
+                onChange={(event) => setCreatorSearchInput(event.target.value)}
+                placeholder="Search authors"
+                type="search"
+              />
+              <button className="secondary-button" type="submit">
+                Search
               </button>
-              <div className="novel-creator-preview-strip" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-                <span />
-              </div>
-              <div className="creator-discovery-meta">
-                <span>{formatCount(creator.followerCount)} followers</span>
-                <span>{creator.following ? "Following" : "Discover"}</span>
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : section === "tags" ? (
+            </form>
+            <div className="mini-segmented" aria-label="Author discovery sort">
+              {creatorDiscoverySortOptions.map((option) => {
+                const Icon = option.icon;
+                return (
+                  <button
+                    className={classNames(creatorSort === option.value && "is-active")}
+                    type="button"
+                    key={option.value}
+                    onClick={() => setCreatorSort(option.value)}
+                  >
+                    <Icon size={15} />
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="creator-discovery-grid novel-creator-grid" aria-live="polite">
+            {visibleCreatorItems.map(({ creator, authorNovels, latestNovelAt }) => {
+              const ownProfile = currentUser?.username.toLowerCase() === creator.handle.toLowerCase();
+              return (
+                <article className="creator-discovery-card novel-creator-card" key={creator.id}>
+                  <button className="creator-discovery-main" type="button" onClick={() => onOpenProfile(creator.handle)}>
+                    {creator.avatarUrl ? (
+                      <img className="creator-discovery-avatar" src={creator.avatarUrl} alt="" />
+                    ) : (
+                      <DefaultAvatar className="creator-discovery-avatar creator-discovery-avatar-fallback" name={creator.displayName} />
+                    )}
+                    <span className="creator-discovery-copy">
+                      <strong>{creator.displayName}</strong>
+                      <small>@{creator.handle}</small>
+                      <span>{creator.bio || "Author publishing novels on NEHub."}</span>
+                    </span>
+                  </button>
+                  <div className="creator-discovery-previews novel-creator-previews">
+                    {authorNovels.slice(0, 4).length > 0 ? (
+                      authorNovels.slice(0, 4).map((novel) => (
+                        <button
+                          className="creator-preview-tile novel-preview-tile"
+                          type="button"
+                          key={novel.id}
+                          onClick={() => onOpenNovel(novel.id)}
+                          title={novel.title}
+                          style={{ "--novel-cover": novel.coverColor } as CSSProperties}
+                        >
+                          <NotebookText size={18} />
+                        </button>
+                      ))
+                    ) : (
+                      <span className="creator-preview-empty">
+                        <NotebookText size={20} />
+                      </span>
+                    )}
+                  </div>
+                  <div className="creator-discovery-meta">
+                    <span>{formatCount(creator.followerCount)} followers</span>
+                    <span>{formatCount(authorNovels.length)} novels</span>
+                    {latestNovelAt ? <span>Active {dateFormat.format(new Date(latestNovelAt))}</span> : null}
+                  </div>
+                  <div className="creator-discovery-actions">
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => onOpenProfile(creator.handle)}
+                    >
+                      <UserRound size={16} />
+                      Profile
+                    </button>
+                    <button
+                      className={classNames("secondary-button", creator.following && "is-active")}
+                      type="button"
+                      onClick={() => onOpenProfile(creator.handle)}
+                    >
+                      <UserPlus size={16} />
+                      {ownProfile ? "You" : creator.following ? "Following" : "Author"}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </>
+      ) : isTagSection ? (
         <div className="tag-row novel-tag-browser" aria-live="polite" aria-label="Novel tags">
           {(data?.tags ?? []).map((tag) => (
-            <button
-              className={classNames("tag-pill novel-tag-pill", activeTag === tag.name && "is-active")}
-              key={tag.name}
-              type="button"
-              onClick={() => {
-                onTagFilterChange(activeTag === tag.name ? "" : tag.name);
-                onOpenSection("novels");
-              }}
-            >
-              #{tag.name}
-              <span>{formatCount(tag.count)}</span>
-            </button>
+            <span className="tag-control novel-tag-control" key={tag.name}>
+              <button
+                className={classNames("tag-pill novel-tag-pill", activeTag === tag.name && "is-active")}
+                type="button"
+                onClick={() => {
+                  onTagFilterChange(activeTag === tag.name ? "" : tag.name);
+                  onOpenSection("novels");
+                }}
+              >
+                #{tag.name}
+                <span>{formatCount(tag.count)}</span>
+              </button>
+              <span className="tag-follow-button is-active" aria-label={`Following #${tag.name}`}>
+                <Bell size={13} />
+              </span>
+            </span>
           ))}
         </div>
-      ) : section === "collections" ? (
-        <div className="creator-discovery-grid novel-collection-grid" aria-live="polite">
-          {collections.map((collection, index) => (
-            <article className="creator-discovery-card novel-collection-card" key={collection.id} style={{ animationDelay: `${Math.min(index * 36, 260)}ms` } as CSSProperties}>
-              <div className="novel-collection-main">
-                <span className="collection-folder-icon">
-                  <FolderOpen size={20} />
-                </span>
-                <div className="creator-discovery-copy">
-                  <small>{collection.id}</small>
-                  <strong>{collection.title}</strong>
-                  <span>{collection.detail}</span>
-                </div>
-              </div>
-              <div className="creator-discovery-meta">
-                <span>Reading list</span>
-                <span>Coming soon</span>
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : (
+      ) : isCollectionSection ? (
         <>
-          {isRankingsSection && rankingItems.length > 0 ? (
-            <section className="ranking-signal-board" aria-label="Novel ranking signals">
-              <div className="ranking-signal-heading">
-                <span>{rankingPeriod === "daily" ? "Daily" : "Weekly"} signals</span>
-                <strong>{formatCount(rankingItems.length)} ranked works</strong>
-              </div>
-              <div className="ranking-signal-list">
-                {rankingItems.slice(0, 3).map((item, index) => (
-                  <div className="ranking-signal-row" key={item.novel.id}>
-                    <span>#{index + 1} {item.novel.title}</span>
-                    <strong>{formatCount(item.score)}</strong>
-                    <span
-                      className="ranking-signal-meter"
-                      aria-hidden="true"
-                      style={
-                        {
-                          "--ranking-fill": `${Math.max(4, (item.score / maxRankingScore) * 100)}%`
-                        } as CSSProperties
-                      }
-                    />
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-          <div className={classNames("novel-grid", isRankingsSection && "ranking-grid")} aria-live="polite">
-            {sectionNovels.map((novel, index) => (
-              <NovelCard
-                key={novel.id}
-                novel={novel}
-                index={index}
-                rankingPosition={isRankingsSection ? index + 1 : undefined}
-                onOpenNovel={onOpenNovel}
-                onOpenProfile={onOpenProfile}
+          <div className="collection-discovery-toolbar">
+            <form className="collection-discovery-search novel-collection-search" onSubmit={handleShelfSearchSubmit}>
+              <Search size={18} />
+              <input
+                value={shelfSearchInput}
+                onChange={(event) => setShelfSearchInput(event.target.value)}
+                placeholder="Search shelves"
+                type="search"
+                disabled={!currentUser}
               />
+              <button className="secondary-button" type={currentUser ? "submit" : "button"} onClick={currentUser ? undefined : onAuthRequired}>
+                {currentUser ? "Search" : "Sign in"}
+              </button>
+            </form>
+            <div className="mini-segmented" aria-label="Reading shelf view">
+              {collectionDiscoverySortOptions.map((option) => {
+                const Icon = option.icon;
+                return (
+                  <button
+                    className={classNames(shelfSort === option.value && "is-active")}
+                    type="button"
+                    key={option.value}
+                    onClick={() => setShelfSort(option.value)}
+                    disabled={!currentUser}
+                  >
+                    <Icon size={15} />
+                    {option.value === "largest" ? "Largest" : "Updated"}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="collection-folder-grid collection-discovery-grid novel-collection-grid" aria-live="polite">
+            {visibleCollections.map((collection) => (
+              <article className="collection-discovery-item novel-collection-item" key={collection.id}>
+                <button
+                  className="collection-folder-card novel-shelf-card"
+                  type="button"
+                  onClick={() => onOpenCollection(collection.id)}
+                >
+                  <ReadingShelfPreview readingList={collection} />
+                  <span>
+                    <strong>{collection.title}</strong>
+                    <small>
+                      {formatCount(collection.novelCount)} novels · Updated{" "}
+                      {dateFormat.format(new Date(collection.updatedAt))}
+                    </small>
+                  </span>
+                  {collection.visibility === "public" ? <Eye size={16} /> : <Lock size={16} />}
+                </button>
+                <button
+                  className="collection-owner-link"
+                  type="button"
+                  onClick={() => ownerHandle && onOpenProfile(ownerHandle)}
+                  disabled={!ownerHandle}
+                >
+                  <span>{ownerDisplayName.slice(0, 1).toUpperCase()}</span>
+                  <strong>{ownerDisplayName}</strong>
+                  <small>{ownerHandle ? `@${ownerHandle}` : "Private library"}</small>
+                </button>
+              </article>
             ))}
           </div>
         </>
+      ) : isRankingsSection ? (
+        <>
+          <div className="ranking-grid novel-ranking-grid" aria-live="polite">
+            {rankingItems.map(({ novel, score }, index) => (
+              <article className="ranking-card novel-ranking-card" key={novel.id}>
+                <div className="ranking-card-rank">
+                  <Trophy size={18} />
+                  #{index + 1}
+                  <span>{formatCount(score || novel.likeCount)} reads</span>
+                </div>
+                <NovelCard
+                  novel={novel}
+                  index={index}
+                  rankingPosition={index + 1}
+                  onOpenNovel={onOpenNovel}
+                  onOpenProfile={onOpenProfile}
+                />
+              </article>
+            ))}
+          </div>
+          {rankingItems.length === 0 && sectionNovels.length > 0 ? (
+            <div className="ranking-grid novel-ranking-grid" aria-live="polite">
+              {sectionNovels.map((novel, index) => (
+                <article className="ranking-card novel-ranking-card" key={novel.id}>
+                  <div className="ranking-card-rank">
+                    <Trophy size={18} />
+                    #{index + 1}
+                    <span>{formatCount(novel.likeCount)} likes</span>
+                  </div>
+                  <NovelCard
+                    novel={novel}
+                    index={index}
+                    rankingPosition={index + 1}
+                    onOpenNovel={onOpenNovel}
+                    onOpenProfile={onOpenProfile}
+                  />
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="novel-grid" aria-live="polite">
+          {sectionNovels.map((novel, index) => (
+            <NovelCard
+              key={novel.id}
+              novel={novel}
+              index={index}
+              onOpenNovel={onOpenNovel}
+              onOpenProfile={onOpenProfile}
+            />
+          ))}
+        </div>
       )}
 
-      {!data ? <p className="empty-feed">Loading works.</p> : null}
+      {!data ? <p className="empty-feed">Loading novels.</p> : null}
       {data && visibleCount === 0 ? (
         <div className="novel-empty-state">
           <span className="novel-empty-icon" aria-hidden="true">
@@ -15048,14 +15629,20 @@ function NovelHubPage({
             <strong>{emptyTitle}</strong>
             <p>{emptyMessage}</p>
           </div>
-          {section !== "home" ? (
+          {isCollectionSection && !currentUser ? (
+            <button className="secondary-button" type="button" onClick={onAuthRequired}>
+              Sign in
+            </button>
+          ) : section !== "home" ? (
             <button className="secondary-button" type="button" onClick={() => onOpenSection("home")}>
-              Latest works
+              Latest novels
             </button>
           ) : null}
         </div>
       ) : null}
-    </section>
+      </section>
+      {novelRightRail}
+    </>
   );
 }
 
@@ -15839,15 +16426,12 @@ type IllustrationsPageProps = {
   feedTitle: string;
   feedMeta: string;
   filterLabel: string;
-  showSortTabs: boolean;
-  sort: SortMode;
   galleryLoadingMore: boolean;
   isBookmarksView: boolean;
   onAuthRequired: () => void;
   onPrivacySecurity: () => void;
   onMatureFilterChange: (filter: MatureFilter) => void;
   onResetFilters: () => void;
-  onSortChange: (sort: SortMode) => void;
   onOpenTag: (tag: string) => void;
   onToggleTagSubscription: (tag: string) => void;
   onOpenArtwork: (artwork: Artwork) => void;
@@ -15872,15 +16456,12 @@ function IllustrationsPage({
   feedTitle,
   feedMeta,
   filterLabel,
-  showSortTabs,
-  sort,
   galleryLoadingMore,
   isBookmarksView,
   onAuthRequired,
   onPrivacySecurity,
   onMatureFilterChange,
   onResetFilters,
-  onSortChange,
   onOpenTag,
   onToggleTagSubscription,
   onOpenArtwork,
@@ -15924,25 +16505,6 @@ function IllustrationsPage({
             </button>
           </div>
         </div>
-
-        {showSortTabs ? (
-          <div className="work-tabs" aria-label="Sort artwork">
-            {homeSortOptions.map((option) => {
-              const Icon = option.icon;
-              return (
-                <button
-                  key={option.value}
-                  className={classNames("work-tab", sort === option.value && "is-active")}
-                  type="button"
-                  onClick={() => onSortChange(option.value)}
-                >
-                  <Icon size={16} />
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-        ) : null}
 
         <div className="tag-row" aria-label="Popular tags">
           {prominentTags.map((tag) => {
