@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && node scripts/sync-static-runtime-vars.mjs",
     "check": "tsc --noEmit",
+    "sync:static-vars": "node scripts/sync-static-runtime-vars.mjs",
     "deploy": "npm run build && wrangler deploy",
     "dev": "npm run build && wrangler dev",
     "dev:client": "vite --host 0.0.0.0",
