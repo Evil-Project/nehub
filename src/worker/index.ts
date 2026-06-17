@@ -6279,6 +6279,95 @@ const getD1Novels = async (
   return withViewerNovelInteractions(db, viewer?.id, filtered.slice(0, limit));
 };
 
+const getD1NovelCreators = async (
+  db: D1Database,
+  viewer: CurrentUser | undefined,
+  matureAccess: MatureAccess,
+  limit = 12
+) => {
+  const creatorClauses = ["creator_user.suspended_at IS NULL", profileVisibilitySql("creator_user")];
+  const creatorBindings: Array<string | number | null> = [...profileVisibilityBindValues(viewer)];
+  if (viewer) {
+    creatorClauses.push(
+      `NOT EXISTS (
+        SELECT 1
+        FROM user_blocks
+        WHERE (blocker_user_id = ? AND blocked_user_id = creators.id)
+           OR (blocker_user_id = creators.id AND blocked_user_id = ?)
+      )`
+    );
+    creatorBindings.push(viewer.id, viewer.id);
+  }
+
+  const novelStatsWhere = novelVisibleWhereSql(viewer);
+  addNovelMatureAccessWhere(novelStatsWhere.clauses, novelStatsWhere.bindings, matureAccess);
+  const result = await db
+    .prepare(
+      `SELECT
+        creators.id,
+        creators.handle,
+        creators.display_name,
+        creators.avatar_url,
+        creators.bio,
+        creators.follower_count,
+        creators.following,
+        COALESCE(novel_stats.novel_count, 0) AS novel_count,
+        COALESCE(novel_stats.total_likes, 0) AS total_likes,
+        COALESCE(novel_stats.total_reads, 0) AS total_reads,
+        novel_stats.latest_novel_at
+       FROM creators
+       JOIN users AS creator_user ON creator_user.id = creators.id
+       LEFT JOIN (
+         SELECT
+          novels.creator_id,
+          COUNT(novels.id) AS novel_count,
+          COALESCE(SUM(novels.like_count), 0) AS total_likes,
+          COALESCE(SUM(novels.view_count), 0) AS total_reads,
+          MAX(novels.created_at) AS latest_novel_at
+         FROM novels
+         JOIN creators ON creators.id = novels.creator_id
+         JOIN users AS creator_user ON creator_user.id = novels.creator_id
+         WHERE ${novelStatsWhere.clauses.join("\n           AND ")}
+         GROUP BY novels.creator_id
+       ) AS novel_stats ON novel_stats.creator_id = creators.id
+       WHERE ${creatorClauses.join("\n         AND ")}
+       ORDER BY
+        COALESCE(novel_stats.novel_count, 0) DESC,
+        COALESCE(novel_stats.total_likes, 0) DESC,
+        COALESCE(novel_stats.total_reads, 0) DESC,
+        creators.follower_count DESC,
+        datetime(COALESCE(novel_stats.latest_novel_at, creators.created_at)) DESC,
+        creators.id DESC
+       LIMIT ?`
+    )
+    .bind(
+      ...novelStatsWhere.bindings,
+      ...creatorBindings,
+      Math.min(Math.max(limit, 1), 60)
+    )
+    .all<{
+      id: string;
+      handle: string;
+      display_name: string;
+      avatar_url: string;
+      bio: string;
+      follower_count: number;
+      following: number;
+    }>();
+  const creators = result.results.map(
+    (row): Creator => ({
+      id: row.id,
+      handle: row.handle,
+      displayName: row.display_name,
+      avatarUrl: row.avatar_url,
+      bio: row.bio,
+      followerCount: row.follower_count,
+      following: Boolean(row.following)
+    })
+  );
+  return withViewerCreatorFollowing(db, viewer?.id, creators);
+};
+
 const getNovelFeedFromD1 = async (
   db: D1Database,
   viewer: CurrentUser | undefined,
@@ -17293,20 +17382,24 @@ app.get("/api/novels", async (context) => {
 
   if (context.env.DB) {
     try {
-      const novels = await getD1Novels(
-        context.env.DB,
-        viewer,
-        matureAccess,
-	        search,
-	        tag,
-	        rating,
-	        limit,
-	        sort
-	      );
+      const [novels, creators] = await Promise.all([
+        getD1Novels(
+          context.env.DB,
+          viewer,
+          matureAccess,
+          search,
+          tag,
+          rating,
+          limit,
+          sort
+        ),
+        getD1NovelCreators(context.env.DB, viewer, matureAccess)
+      ]);
       return context.json<NovelListResponse>({
         novels,
         featuredNovel: novels[0] ?? null,
         tags: novelTagCounts(novels),
+        creators,
         totalCount: novels.length,
         source: "d1",
         matureAccess
@@ -17323,6 +17416,9 @@ app.get("/api/novels", async (context) => {
     novels,
     featuredNovel: novels[0] ?? null,
     tags: novelTagCounts(novels),
+    creators: [
+      ...new Map(novels.map((novel) => [novel.creator.id, novel.creator])).values()
+    ],
     totalCount: novels.length,
     source: "fallback",
     matureAccess
@@ -17335,6 +17431,7 @@ app.get("/api/novels/feed", async (context) => {
       novels: [],
       featuredNovel: null,
       tags: [],
+      creators: [],
       totalCount: 0,
       source: "d1",
       matureAccess: matureAccessFor(context, undefined)
@@ -17354,6 +17451,9 @@ app.get("/api/novels/feed", async (context) => {
     novels,
     featuredNovel: novels[0] ?? null,
     tags: novelTagCounts(novels),
+    creators: [
+      ...new Map(novels.map((novel) => [novel.creator.id, novel.creator])).values()
+    ],
     totalCount: novels.length,
     source: "d1",
     matureAccess
@@ -17366,6 +17466,7 @@ app.get("/api/novels/user/:user_id", async (context) => {
       novels: [],
       featuredNovel: null,
       tags: [],
+      creators: [],
       totalCount: 0,
       source: "d1",
       matureAccess: matureAccessFor(context, undefined)
@@ -17383,6 +17484,9 @@ app.get("/api/novels/user/:user_id", async (context) => {
     novels,
     featuredNovel: novels[0] ?? null,
     tags: novelTagCounts(novels),
+    creators: [
+      ...new Map(novels.map((novel) => [novel.creator.id, novel.creator])).values()
+    ],
     totalCount: novels.length,
     source: "d1",
     matureAccess
@@ -21315,6 +21419,11 @@ const shellSeoByPath: Record<string, Omit<SeoMeta, "path">> = {
     title: "Illustration Rankings",
     description: "Browse trending NEHub illustrations ranked by community activity."
   },
+  "/following": {
+    title: "Following Illustrations",
+    description: "Follow updates from NEHub illustrators you subscribe to.",
+    robots: "noindex,follow"
+  },
   "/creators": {
     title: "Creators",
     description: "Find illustrators and writers publishing on NEHub."
@@ -21334,6 +21443,10 @@ const shellSeoByPath: Record<string, Omit<SeoMeta, "path">> = {
   "/tags": {
     title: "Tags",
     description: "Explore NEHub artwork and novel tags."
+  },
+  "/donate": {
+    title: "Donate",
+    description: "Support XiaoYuan151 and ongoing NEHub development."
   },
   "/novels": {
     title: "Novels",
@@ -21403,6 +21516,10 @@ const shellSeoByPath: Record<string, Omit<SeoMeta, "path">> = {
     title: "Novel Dashboard",
     description: "Manage your NEHub novel drafts, published stories, reading lists, and series.",
     robots: "noindex,follow"
+  },
+  "/novels/donate": {
+    title: "Donate",
+    description: "Support XiaoYuan151 and ongoing NEHub novel features."
   },
   "/terms": {
     title: "Terms",
@@ -21547,6 +21664,7 @@ app.get("/sitemap.xml", async (context) => {
     sitemapEntry(context, "/creators", now, "0.8"),
     sitemapEntry(context, "/collections/discover", now, "0.7"),
     sitemapEntry(context, "/series", now, "0.7"),
+    sitemapEntry(context, "/donate", now, "0.5"),
     sitemapEntry(context, "/novels", now, "0.9"),
     sitemapEntry(context, "/novels/rankings", now, "0.8"),
     sitemapEntry(context, "/novels/creators", now, "0.8"),
@@ -21622,7 +21740,9 @@ for (const path of [
   "/collections/discover",
   "/creators",
   "/dashboard",
+  "/donate",
   "/email-confirmation",
+  "/following",
   "/notifications",
   "/privacy",
   "/rankings",
@@ -21648,6 +21768,7 @@ app.get("/novels/bookmarks", appShellResponse);
 app.get("/novels/collections", appShellResponse);
 app.get("/novels/terms", appShellResponse);
 app.get("/novels/privacy", appShellResponse);
+app.get("/novels/donate", appShellResponse);
 
 app.get("/novels/notifications", appShellResponse);
 app.get("/novels/analytics", appShellResponse);

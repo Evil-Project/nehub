@@ -228,6 +228,7 @@ export type NovelListResponse = {
   novels: Novel[];
   featuredNovel: Novel | null;
   tags: { name: string; count: number }[];
+  creators: Creator[];
   totalCount: number;
   source: "d1" | "fallback";
   matureAccess: MatureAccess;

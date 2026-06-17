@@ -306,6 +306,8 @@ const donationWallets = [
   { label: "TRC20", value: "TUVwPUf1NMFUbeuLQ91Qa4fPDWzZsxEwyF" }
 ];
 
+const donationContactMethods = ["Paypal", "Bank transfer"];
+
 const collectionDiscoverySortOptions: {
   value: CollectionDiscoverySort;
   label: string;
@@ -333,6 +335,15 @@ const tagPageSortOptions: {
   { value: "latest", label: "Latest", icon: Grid3X3 },
   { value: "popular", label: "Popular", icon: Flame },
   { value: "rising", label: "Rising", icon: TrendingUp }
+];
+
+const illustrationSortOptions: { value: SortMode; label: string }[] = [
+  { value: "latest", label: "All work" },
+  { value: "popular", label: "Popular" },
+  { value: "rising", label: "Rising" },
+  { value: "following", label: "Following" },
+  { value: "subscriptions", label: "Followed tags" },
+  { value: "bookmarks", label: "Bookmarks" }
 ];
 
 const numberFormat = new Intl.NumberFormat("en", {
@@ -589,6 +600,7 @@ type ViewMode =
   | "collection"
   | "seriesList"
   | "series"
+  | "donate"
   | "profileSettings"
   | "privacySecurity"
   | "discordVerification"
@@ -620,6 +632,20 @@ const novelSectionAuthNotice = (section: NovelSection) => {
   }
   if (section === "bookmarks") {
     return "Sign in to view your bookmarks.";
+  }
+  return "Sign in to continue.";
+};
+const illustrationSortRequiresAuth = (nextSort: SortMode) =>
+  nextSort === "following" || nextSort === "bookmarks" || nextSort === "subscriptions";
+const illustrationSortAuthNotice = (nextSort: SortMode) => {
+  if (nextSort === "following") {
+    return "Sign in to view works from creators you follow.";
+  }
+  if (nextSort === "bookmarks") {
+    return "Sign in to view your bookmarks.";
+  }
+  if (nextSort === "subscriptions") {
+    return "Sign in to follow tags.";
   }
   return "Sign in to continue.";
 };
@@ -703,6 +729,7 @@ type RouteState = {
   collectionId: string;
   seriesId: string;
   tag: string;
+  sort: SortMode;
 };
 type RouteContext = "illustrations" | "novels";
 
@@ -718,7 +745,8 @@ const routeState = (
   novelSection: values.novelSection ?? "home",
   collectionId: values.collectionId ?? "",
   seriesId: values.seriesId ?? "",
-  tag: values.tag ?? ""
+  tag: values.tag ?? "",
+  sort: values.sort ?? "latest"
 });
 
 const getInitialRoute = (): RouteState => {
@@ -731,6 +759,12 @@ const getInitialRoute = (): RouteState => {
   const pathname = decodeURIComponent(window.location.pathname);
   if (pathname === "/") {
     return routeState("illustrations");
+  }
+  if (pathname === "/following") {
+    return routeState("illustrations", { sort: "following" });
+  }
+  if (pathname === "/donate") {
+    return routeState("donate");
   }
   if (pathname.startsWith("/artworks/")) {
     return routeState("artwork", {
@@ -777,6 +811,9 @@ const getInitialRoute = (): RouteState => {
     }
     if (novelPath === "dashboard") {
       return routeState("dashboard", { routeContext: "novels" });
+    }
+    if (novelPath === "donate") {
+      return routeState("donate", { routeContext: "novels" });
     }
     if (novelSectionSlugSet.has(novelPath)) {
       return routeState("novels", {
@@ -854,34 +891,6 @@ const getInitialRoute = (): RouteState => {
   return routeState("illustrations");
 };
 
-function SidebarDonateCard() {
-  return (
-    <section className="sidebar-donate" aria-label="Support XiaoYuan151">
-      <div className="sidebar-donate-heading">
-        <Heart size={17} />
-        <span>Donate</span>
-      </div>
-      <p>Support XiaoYuan151 and NEHub development.</p>
-      <div className="sidebar-donate-links">
-        {donationLinks.map((link) => (
-          <a href={link.href} key={link.href} target="_blank" rel="noreferrer">
-            {link.label}
-            <ExternalLink size={13} />
-          </a>
-        ))}
-      </div>
-      <div className="sidebar-donate-wallets">
-        {donationWallets.map((wallet) => (
-          <span key={wallet.label}>
-            <strong>{wallet.label}</strong>
-            <code>{wallet.value}</code>
-          </span>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function App() {
   const initialRoute = useMemo(getInitialRoute, []);
   const [gallery, setGallery] = useState<GalleryResponse | null>(null);
@@ -933,7 +942,7 @@ function App() {
   const [routeCollectionId, setRouteCollectionId] = useState(initialRoute.collectionId);
   const [routeSeriesId, setRouteSeriesId] = useState(initialRoute.seriesId);
   const [routeTag, setRouteTag] = useState(initialRoute.tag);
-  const [sort, setSort] = useState<SortMode>("latest");
+  const [sort, setSort] = useState<SortMode>(initialRoute.sort);
   const [illustrationQuery, setIllustrationQuery] = useState("");
   const [novelQuery, setNovelQuery] = useState("");
   const [searchSuggestions, setSearchSuggestions] = useState<SearchSuggestionsResponse | null>(null);
@@ -967,6 +976,7 @@ function App() {
   const authOpeningRef = useRef(false);
   const isNovelSection = routeContext === "novels";
   const isIllustrationsSection = view === "illustrations" || view === "artwork";
+  const showHeaderComposeButton = !isNovelSection || view === "novel";
 
   const refreshAuthSession = useCallback(async () => {
     const response = await fetch("/api/auth/session", { credentials: "include" });
@@ -1770,6 +1780,7 @@ function App() {
       setRouteCollectionId(route.collectionId);
       setRouteSeriesId(route.seriesId);
       setRouteTag(route.tag);
+      setSort(route.sort);
       setSelectedArtwork(null);
       setArtworkDetail(null);
       setNovelDetail(null);
@@ -1797,6 +1808,21 @@ function App() {
     setNovelDetail(null);
     pushRoute("/novels", "novels", "", "home", "", "", "", "novels");
   }, [authReady, currentUser, routeNovelSection, view]);
+
+  useEffect(() => {
+    if (!authReady || currentUser || view !== "illustrations" || !illustrationSortRequiresAuth(sort)) {
+      return;
+    }
+    setPostAuthSort(sort);
+    setPostAuthNovelSection(null);
+    openAuth("login", illustrationSortAuthNotice(sort), {
+      onAuthenticated: () => showIllustrations(sort)
+    });
+    setSelectedArtwork(null);
+    setArtworkDetail(null);
+    setNovelDetail(null);
+    showIllustrations("latest");
+  }, [authReady, currentUser, sort, view]);
 
   useEffect(() => {
     if (!routeArtworkId) {
@@ -1929,12 +1955,28 @@ function App() {
       .sort((left, right) => right.likeCount - left.likeCount)
       .slice(0, 8)
       .map((artwork) => ({ artwork, score: artwork.likeCount }));
+  const recommendedIllustrationCreators = [
+    ...new Map(
+      [
+        ...(gallery?.creators ?? []),
+        ...artworks.map((artwork) => artwork.creator),
+        ...rankingItems.map((item) => item.artwork.creator)
+      ].map((creator) => [creator.id, creator])
+    ).values()
+  ];
   const totalLikes = artworks.reduce((sum, artwork) => sum + artwork.likeCount, 0);
   const totalViews = artworks.reduce((sum, artwork) => sum + artwork.viewCount, 0);
   const novels = novelsData?.novels ?? [];
   const featuredNovel = novelsData?.featuredNovel ?? novels[0] ?? null;
   const totalNovelWords = novels.reduce((sum, novel) => sum + novel.wordCount, 0);
-  const novelCreators = [...new Map(novels.map((novel) => [novel.creator.id, novel.creator])).values()];
+  const novelCreators = [
+    ...new Map(
+      [
+        ...(novelsData?.creators ?? []),
+        ...novels.map((novel) => novel.creator)
+      ].map((creator) => [creator.id, creator])
+    ).values()
+  ];
   const followedNovelCreators = novelCreators.filter((creator) => creator.following);
   const followedNovelCreatorIds = new Set(followedNovelCreators.map((creator) => creator.id));
   const followedNovels =
@@ -1946,6 +1988,18 @@ function App() {
       .slice(0, 8);
   const bookmarkedNovels = novels.filter((novel) => novel.bookmarked);
   const continueReadingItems = readingProgressData?.progress ?? [];
+  const recommendedNovelCreators = [
+    ...new Map(
+      [
+        ...(novelsData?.creators ?? []),
+        ...novels.map((novel) => novel.creator),
+        ...followedNovels.map((novel) => novel.creator),
+        ...novelRankingNovels.map((novel) => novel.creator),
+        ...continueReadingItems.map((item) => item.novel.creator),
+        ...(featuredNovel ? [featuredNovel.creator] : [])
+      ].map((creator) => [creator.id, creator])
+    ).values()
+  ];
   const novelCollections = readingLists?.readingLists ?? [];
   const novelSectionTitleMap: Record<NovelSection, string> = {
     home: "Latest creator works",
@@ -1985,11 +2039,6 @@ function App() {
     : isSubscriptionsView
       ? `${formatCount(tagSubscriptions?.tags.length ?? 0)} followed tags`
       : `${formatCount(totalLikes)} likes across ${formatCount(totalViews)} views`;
-  const filterLabel = isBookmarksView
-    ? "All bookmarks"
-    : isSubscriptionsView
-      ? "Subscribed tags"
-      : "All work";
   const accountNotice = dashboardMessage || authNotice;
   const hasAccountNotice =
     view !== "emailConfirmation" &&
@@ -2022,7 +2071,7 @@ function App() {
   };
 
   const showIllustrations = (nextSort: SortMode) => {
-    pushRoute("/", "illustrations");
+    pushRoute(nextSort === "following" ? "/following" : "/", "illustrations");
     setSort(nextSort);
   };
 
@@ -2030,7 +2079,7 @@ function App() {
     if (!currentUser) {
       setPostAuthSort("following");
       setPostAuthNovelSection(null);
-      openAuth("login", "Sign in to view works from creators you follow.", {
+      openAuth("login", illustrationSortAuthNotice("following"), {
         onAuthenticated: () => showIllustrations("following")
       });
       return;
@@ -2072,7 +2121,7 @@ function App() {
     if (!currentUser) {
       setPostAuthSort("bookmarks");
       setPostAuthNovelSection(null);
-      openAuth("login", "Sign in to view your bookmarks.", {
+      openAuth("login", illustrationSortAuthNotice("bookmarks"), {
         onAuthenticated: () => showIllustrations("bookmarks")
       });
       return;
@@ -2084,7 +2133,7 @@ function App() {
     if (!currentUser) {
       setPostAuthSort("subscriptions");
       setPostAuthNovelSection(null);
-      openAuth("login", "Sign in to follow tags.", {
+      openAuth("login", illustrationSortAuthNotice("subscriptions"), {
         onAuthenticated: () => showIllustrations("subscriptions")
       });
       return;
@@ -2137,6 +2186,10 @@ function App() {
 
   const showCollectionDiscover = () => {
     pushRoute("/collections/discover", "collectionDiscover");
+  };
+
+  const showDonate = () => {
+    pushRoute(isNovelSection ? "/novels/donate" : "/donate", "donate");
   };
 
   const showCollection = (collectionId: string) => {
@@ -4574,14 +4627,16 @@ function App() {
                 />
               ) : null}
             </div>
-            <button
-              className="primary-button"
-              type="button"
-              onClick={isNovelSection ? () => openNovelForm() : openUpload}
-            >
-              {isNovelSection ? <NotebookText size={17} /> : <ImageUp size={17} />}
-              {isNovelSection ? "Write" : "Post"}
-            </button>
+            {showHeaderComposeButton ? (
+              <button
+                className="primary-button"
+                type="button"
+                onClick={isNovelSection ? () => openNovelForm() : openUpload}
+              >
+                {isNovelSection ? <NotebookText size={17} /> : <ImageUp size={17} />}
+                {isNovelSection ? "Write" : "Post"}
+              </button>
+            ) : null}
             <AccountControl
               user={currentUser}
               onLogin={() => openAuth("login")}
@@ -4669,7 +4724,14 @@ function App() {
                 <FolderOpen size={18} />
                 Collections
               </button>
-              <SidebarDonateCard />
+              <button
+                className={classNames("menu-item", view === "donate" && "is-active")}
+                type="button"
+                onClick={showDonate}
+              >
+                <Heart size={18} />
+                Donate
+              </button>
             </>
           ) : (
             <>
@@ -4729,7 +4791,14 @@ function App() {
                 <FolderOpen size={18} />
                 Collections
               </button>
-              <SidebarDonateCard />
+              <button
+                className={classNames("menu-item", view === "donate" && "is-active")}
+                type="button"
+                onClick={showDonate}
+              >
+                <Heart size={18} />
+                Donate
+              </button>
             </>
           )}
           {currentUser ? (
@@ -4908,11 +4977,13 @@ function App() {
             <NovelHubPage
               section={routeNovelSection}
               data={novelsData}
+              csrfToken={csrfToken}
               activityData={activityData}
               featuredNovel={featuredNovel}
               novels={novels}
               totalWords={totalNovelWords}
               creators={novelCreators}
+              recommendedCreators={recommendedNovelCreators}
               followedCreators={followedNovelCreators}
               followedNovels={followedNovels}
               rankingNovels={novelRankingNovels}
@@ -4928,6 +4999,12 @@ function App() {
               query={novelQuery}
               onMatureFilterChange={setNovelMatureFilter}
               onSortModeChange={setNovelSortMode}
+              onResetFilters={() => {
+                setActiveNovelTag("");
+                setNovelQuery("");
+                setNovelMatureFilter("all");
+                setNovelSortMode("newest");
+              }}
               onTagFilterChange={setActiveNovelTag}
               onRankingPeriodChange={setNovelRankingPeriod}
               onAuthRequired={() => openAuth("login")}
@@ -5183,6 +5260,8 @@ function App() {
             onSessionRefresh={refreshAuthSession}
             siteKey={authConfig?.turnstileSiteKey ?? ""}
           />
+        ) : view === "donate" ? (
+          <DonatePage />
         ) : view === "terms" ? (
           <PolicyPage kind="terms" onOpenPrivacy={() => showPolicy("privacy")} />
         ) : view === "privacy" ? (
@@ -5231,20 +5310,31 @@ function App() {
             gallery={gallery}
             activityData={activityData}
             artworks={artworks}
-            creators={gallery?.creators ?? []}
+            creators={recommendedIllustrationCreators}
             prominentTags={prominentTags}
             subscribedTagSet={subscribedTagSet}
             rankingItems={rankingItems}
             rankingPeriod={rankingPeriod}
             matureFilter={illustrationMatureFilter}
+            sortMode={sort}
             feedTitle={feedTitle}
             feedMeta={feedMeta}
-            filterLabel={filterLabel}
             galleryLoadingMore={galleryLoadingMore}
             isBookmarksView={isBookmarksView}
             onAuthRequired={() => openAuth("login")}
             onPrivacySecurity={showPrivacySecurity}
             onMatureFilterChange={setIllustrationMatureFilter}
+            onSortModeChange={(nextSort) => {
+              if (nextSort === "following") {
+                showFollowingIllustrations();
+              } else if (nextSort === "bookmarks") {
+                showBookmarks();
+              } else if (nextSort === "subscriptions") {
+                showTagSubscriptions();
+              } else {
+                showIllustrations(nextSort);
+              }
+            }}
             onResetFilters={() => {
               setActiveTag("");
               setIllustrationQuery("");
@@ -14708,7 +14798,6 @@ type PolicyPageProps =
 
 function PolicyPage(props: PolicyPageProps) {
   const isTerms = props.kind === "terms";
-  const novelContext = props.context === "novels";
   const sections = isTerms
     ? [
         {
@@ -14766,7 +14855,7 @@ function PolicyPage(props: PolicyPageProps) {
       ];
 
   return (
-    <section className={classNames("content-main policy-page", novelContext && "novel-dedicated-page novel-policy-page")}>
+    <section className="content-main policy-page">
       <div className="policy-heading">
         <p className="eyebrow">NEHub</p>
         <h1>
@@ -14795,6 +14884,117 @@ function PolicyPage(props: PolicyPageProps) {
           </button>
         )}
       </div>
+    </section>
+  );
+}
+
+function DonatePage() {
+  const [copiedWallet, setCopiedWallet] = useState("");
+  const copiedWalletTimer = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (copiedWalletTimer.current !== null) {
+        window.clearTimeout(copiedWalletTimer.current);
+      }
+    },
+    []
+  );
+
+  const copyWalletAddress = async (wallet: (typeof donationWallets)[number]) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(wallet.value);
+      } else {
+        const input = document.createElement("textarea");
+        input.value = wallet.value;
+        input.setAttribute("readonly", "");
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        input.remove();
+      }
+      setCopiedWallet(wallet.label);
+      if (copiedWalletTimer.current !== null) {
+        window.clearTimeout(copiedWalletTimer.current);
+      }
+      copiedWalletTimer.current = window.setTimeout(() => setCopiedWallet(""), 1800);
+    } catch (error) {
+      console.error("Unable to copy wallet address", error);
+    }
+  };
+
+  return (
+    <section className="content-main donate-page">
+      <div className="donate-hero">
+        <div>
+          <p className="eyebrow">Support</p>
+          <h1>Donate</h1>
+          <p>Support XiaoYuan151 and ongoing NEHub development.</p>
+        </div>
+        <Heart size={34} aria-hidden="true" />
+      </div>
+
+      <div className="donate-grid">
+        <section className="donate-panel" aria-labelledby="donate-platforms">
+          <div className="donate-panel-heading">
+            <p className="eyebrow">Platforms</p>
+            <h2 id="donate-platforms">Support links</h2>
+          </div>
+          <div className="donate-link-list">
+            {donationLinks.map((link) => (
+              <a className="donate-link-card" href={link.href} key={link.href} target="_blank" rel="noreferrer">
+                <span>{link.label}</span>
+                <ExternalLink size={16} />
+              </a>
+            ))}
+          </div>
+        </section>
+
+        <section className="donate-panel" aria-labelledby="donate-contact">
+          <div className="donate-panel-heading">
+            <p className="eyebrow">Direct</p>
+            <h2 id="donate-contact">Contact options</h2>
+          </div>
+          <div className="donate-contact-list">
+            {donationContactMethods.map((method) => (
+              <span key={method}>
+                <MailCheck size={15} />
+                {method}
+              </span>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <section className="donate-panel donate-wallet-panel" aria-labelledby="donate-wallets">
+        <div className="donate-panel-heading">
+          <p className="eyebrow">Crypto</p>
+          <h2 id="donate-wallets">Click to copy</h2>
+        </div>
+        <div className="donate-wallet-list">
+          {donationWallets.map((wallet) => {
+            const copied = copiedWallet === wallet.label;
+            return (
+              <button
+                className={classNames("donate-wallet-button", copied && "is-copied")}
+                type="button"
+                key={wallet.label}
+                onClick={() => void copyWalletAddress(wallet)}
+                title={copied ? "Address copied" : `Copy ${wallet.label} address`}
+              >
+                <span className="donate-wallet-label">{wallet.label}</span>
+                <code>{wallet.value}</code>
+                <span className="donate-wallet-copy" aria-hidden="true">
+                  {copied ? <Check size={15} /> : <Copy size={15} />}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
     </section>
   );
 }
@@ -14837,11 +15037,13 @@ function MetricTile({ label, value }: MetricTileProps) {
 type NovelHubPageProps = {
   section: NovelSection;
   data: NovelListResponse | null;
+  csrfToken: string;
   activityData: ActivityResponse | null;
   featuredNovel: Novel | null;
   novels: Novel[];
   totalWords: number;
   creators: Creator[];
+  recommendedCreators: Creator[];
   followedCreators: Creator[];
   followedNovels: Novel[];
   rankingNovels: Novel[];
@@ -14857,6 +15059,7 @@ type NovelHubPageProps = {
   query: string;
   onMatureFilterChange: (filter: MatureFilter) => void;
   onSortModeChange: (sortMode: NovelSortMode) => void;
+  onResetFilters: () => void;
   onTagFilterChange: (tag: string) => void;
   onRankingPeriodChange: (period: RankingPeriod) => void;
   onAuthRequired: () => void;
@@ -14871,11 +15074,13 @@ type NovelHubPageProps = {
 function NovelHubPage({
   section,
   data,
+  csrfToken,
   activityData,
   featuredNovel,
   novels,
   totalWords,
   creators,
+  recommendedCreators,
   followedCreators,
   followedNovels,
   rankingNovels,
@@ -14891,6 +15096,7 @@ function NovelHubPage({
   query,
   onMatureFilterChange,
   onSortModeChange,
+  onResetFilters,
   onTagFilterChange,
   onRankingPeriodChange,
   onAuthRequired,
@@ -14904,9 +15110,17 @@ function NovelHubPage({
   const [creatorSearchInput, setCreatorSearchInput] = useState("");
   const [creatorSearchQuery, setCreatorSearchQuery] = useState("");
   const [creatorSort, setCreatorSort] = useState<CreatorDiscoverySort>("popular");
+  const [localCreators, setLocalCreators] = useState<Creator[]>(creators);
+  const [creatorMessage, setCreatorMessage] = useState("");
+  const [followingBusy, setFollowingBusy] = useState("");
   const [shelfSearchInput, setShelfSearchInput] = useState("");
   const [shelfSearchQuery, setShelfSearchQuery] = useState("");
   const [shelfSort, setShelfSort] = useState<CollectionDiscoverySort>("updated");
+
+  useEffect(() => {
+    setLocalCreators(creators);
+  }, [creators]);
+
   const authorNovelMap = useMemo(() => {
     const map = new Map<string, Novel[]>();
     for (const novel of novels) {
@@ -14916,7 +15130,7 @@ function NovelHubPage({
   }, [novels]);
   const creatorItems = useMemo(
     () =>
-      creators.map((creator) => {
+      localCreators.map((creator) => {
         const authorNovels = authorNovelMap.get(creator.id) ?? [];
         const latestNovelAt = authorNovels.reduce<string | null>(
           (latest, novel) =>
@@ -14934,7 +15148,7 @@ function NovelHubPage({
         );
         return { creator, authorNovels, latestNovelAt, newestNovelAt };
       }),
-    [authorNovelMap, creators]
+    [authorNovelMap, localCreators]
   );
   const visibleCreatorItems = useMemo(() => {
     const search = creatorSearchQuery.trim().toLowerCase();
@@ -14985,6 +15199,41 @@ function NovelHubPage({
     event.preventDefault();
     setCreatorSearchQuery(creatorSearchInput.trim());
   };
+  const handleCreatorFollow = async (username: string) => {
+    if (!currentUser) {
+      onAuthRequired();
+      return;
+    }
+    setFollowingBusy(username);
+    setCreatorMessage("");
+    try {
+      const response = await fetch(`/api/users/${encodeURIComponent(username)}/follow`, {
+        method: "POST",
+        credentials: "include",
+        headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
+      });
+      const payload = (await response.json()) as FollowResponse | { message?: string };
+      if (!response.ok || !("following" in payload)) {
+        throw new Error(payload.message ?? "Follow action failed.");
+      }
+      setLocalCreators((current) =>
+        current.map((creator) =>
+          creator.handle.toLowerCase() === username.toLowerCase()
+            ? {
+                ...creator,
+                following: payload.following,
+                followerCount: payload.followerCount
+              }
+            : creator
+        )
+      );
+      setCreatorMessage(payload.message);
+    } catch (error) {
+      setCreatorMessage(error instanceof Error ? error.message : "Follow action failed.");
+    } finally {
+      setFollowingBusy("");
+    }
+  };
   const handleShelfSearchSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setShelfSearchQuery(shelfSearchInput.trim());
@@ -14993,11 +15242,11 @@ function NovelHubPage({
     home: "Recommended novels",
     following: "Following",
     creators: "Author discovery",
-    tags: "Followed novel tags",
+    tags: "Tags",
     novels: "All works",
-    rankings: `${rankingPeriod === "weekly" ? "Weekly" : "Daily"} novel ranking`,
+    rankings: `${rankingPeriod === "weekly" ? "Weekly" : "Daily"} ranking`,
     bookmarks: "Bookmarks",
-    collections: "Reading list discovery",
+    collections: "Collection discovery",
     terms: "Terms",
     privacy: "Privacy"
   };
@@ -15009,17 +15258,17 @@ function NovelHubPage({
     creators: creatorSearchQuery
       ? `${formatCount(visibleCreatorItems.length)} authors matching "${creatorSearchQuery}".`
       : `${formatCount(visibleCreatorItems.length)} visible authors publishing readable novels.`,
-    tags: `${formatCount(data?.tags.length ?? 0)} available novel tags.`,
+    tags: `${formatCount(data?.tags.length ?? 0)} followed novel tags.`,
     novels: activeTag
       ? `Every visible work tagged #${activeTag}.`
       : "The complete readable shelf currently loaded from NEHub.",
-    rankings: `${formatCount(rankingItems.length)} ranked novels from recent ${rankingPeriod === "weekly" ? "weekly" : "daily"} likes and reads.`,
+    rankings: `${formatCount(rankingItems.length)} ranked novels from recent ${rankingPeriod === "weekly" ? "weekly" : "daily"} likes.`,
     bookmarks: `${formatCount(bookmarkedNovels.length)} saved novels from your bookmarks.`,
     collections: shelfSearchQuery
-      ? `${formatCount(visibleCollections.length)} reading shelves matching "${shelfSearchQuery}".`
+      ? `${formatCount(visibleCollections.length)} public shelves matching "${shelfSearchQuery}".`
       : currentUser
-      ? `${formatCount(visibleCollections.length)} reading shelves from your library.`
-      : "Sign in to browse and manage your reading shelves.",
+      ? `${formatCount(visibleCollections.length)} public shelves from your library.`
+      : "Sign in to browse and manage reading shelves.",
     terms: "Read the terms without leaving this section.",
     privacy: "Read the privacy policy without leaving this section."
   };
@@ -15035,12 +15284,7 @@ function NovelHubPage({
   const isCreatorSection = section === "creators";
   const isCollectionSection = section === "collections";
   const isTagSection = section === "tags";
-  const isDedicatedNovelSection =
-    isCreatorSection ||
-    isTagSection ||
-    section === "bookmarks" ||
-    isRankingsSection ||
-    isCollectionSection;
+  const isDedicatedNovelSection = isCreatorSection || isRankingsSection || isCollectionSection;
   const showMatureFilter = !isCreatorSection && !isTagSection && !isCollectionSection;
   const showSortControl = section === "home" || section === "novels";
   const showNovelRightRail =
@@ -15050,8 +15294,6 @@ function NovelHubPage({
   const prominentNovelTags = data?.tags.slice(0, 12) ?? [];
   const ownerDisplayName = currentUser?.displayName ?? "You";
   const ownerHandle = currentUser?.username ?? "";
-  const sectionLikeCount = sectionNovels.reduce((sum, novel) => sum + novel.likeCount, 0);
-  const sectionViewCount = sectionNovels.reduce((sum, novel) => sum + novel.viewCount, 0);
   const visibleCount =
     isCreatorSection
       ? visibleCreatorItems.length
@@ -15060,26 +15302,6 @@ function NovelHubPage({
         : isCollectionSection
           ? visibleCollections.length
           : sectionNovels.length;
-  const visibleUnitLabel =
-    isCreatorSection
-      ? `active ${visibleCount === 1 ? "author" : "authors"}`
-      : isTagSection
-        ? visibleCount === 1 ? "tag" : "tags"
-        : isCollectionSection
-          ? visibleCount === 1 ? "reading shelf" : "reading shelves"
-          : `readable ${visibleCount === 1 ? "novel" : "novels"}`;
-  const EmptyIcon =
-    section === "bookmarks"
-      ? Bookmark
-      : section === "rankings"
-        ? Trophy
-        : isCollectionSection
-          ? FolderOpen
-          : isTagSection
-            ? Bell
-            : isCreatorSection
-              ? UserPlus
-              : NotebookText;
   const emptyTitle =
     section === "bookmarks"
       ? "No bookmarked novels yet"
@@ -15089,72 +15311,21 @@ function NovelHubPage({
           ? "No reading shelves yet"
           : isTagSection
             ? "No followed novel tags yet"
-            : isCreatorSection
+          : isCreatorSection
               ? "No authors yet"
               : "No novels match this view";
-  const emptyMessage =
-    section === "bookmarks"
-      ? "Bookmarked novels will appear here after you save them."
-      : section === "rankings"
-        ? "Rankings will fill in as readable novels collect views and likes."
-        : isCollectionSection
-          ? currentUser
-            ? "Create reading shelves from a novel page, then use this section to browse them."
-            : "Sign in to browse reading shelves."
-          : isTagSection
-            ? "Novel tags will appear as authors publish readable work."
-            : isCreatorSection
-              ? "Authors publishing readable novels will appear here."
-              : "Try the latest feed or adjust the current filters.";
-  const summaryItems =
-    isCreatorSection
-      ? [
-          { value: visibleCount, label: visibleUnitLabel },
-          { value: followedCreators.length, label: "followed authors" },
-          { value: novels.length, label: "readable novels" }
-        ]
-      : isTagSection
-        ? [
-            { value: visibleCount, label: visibleUnitLabel },
-            { value: novels.length, label: "tagged novels" },
-            { value: totalWords, label: "words indexed" }
-          ]
-        : isRankingsSection
-          ? [
-              { value: visibleCount, label: visibleUnitLabel },
-              { value: sectionLikeCount, label: "likes in ranking" },
-              { value: sectionViewCount, label: "reads in ranking" }
-            ]
-          : isCollectionSection
-            ? [
-                { value: visibleCount, label: visibleUnitLabel },
-                { value: visibleCollections.reduce((sum, collection) => sum + collection.novelCount, 0), label: "saved novels" },
-                { value: visibleCollections.filter((collection) => collection.visibility === "public").length, label: "public shelves" }
-            ]
-            : [
-                { value: visibleCount, label: data ? visibleUnitLabel : "loading novels" },
-                { value: totalWords, label: "words in current feed" },
-                { value: data?.tags.length ?? 0, label: "tags" }
-              ];
   const headingClassName = classNames(
     "section-heading novel-feed-heading",
     isCreatorSection && "settings-heading creator-discover-heading",
     isRankingsSection && "settings-heading ranking-page-heading",
     isCollectionSection && "settings-heading collection-heading"
   );
-  const sectionEyebrow = isCreatorSection
-    ? "Authors"
-    : isRankingsSection
-      ? "Rankings"
-      : isCollectionSection
-        ? "Reading shelves"
-        : "NEHub novels";
   const sectionClassName = classNames(
     "content-main novels-page novel-feed-page",
     `novel-section-${section}`,
-    isCreatorSection && "creator-discover-page novel-author-discover-page",
-    isRankingsSection && "ranking-page novels-rankings-page",
-    isCollectionSection && "collection-page collection-discover-page novel-collection-discover-page",
+    isCreatorSection && "creator-discover-page",
+    isRankingsSection && "ranking-page",
+    isCollectionSection && "collection-page collection-discover-page",
     isDedicatedNovelSection && "novel-section-page"
   );
   const novelRightRail = showNovelRightRail ? (
@@ -15208,9 +15379,9 @@ function NovelHubPage({
       <section className="side-panel creator-panel">
         <div className="panel-title">
           <ShieldCheck size={18} />
-          Recommended authors
+          Recommended users
         </div>
-        {creators.slice(0, 5).map((creator) => (
+        {recommendedCreators.slice(0, 5).map((creator) => (
           <button
             className="creator-row creator-row-link"
             key={creator.id}
@@ -15241,14 +15412,16 @@ function NovelHubPage({
   return (
     <>
       <section className={classNames(sectionClassName, showNovelRightRail && "novel-feed-main")}>
-      <MatureAccessNotice matureAccess={data?.matureAccess ?? null} onLogin={onAuthRequired} onPrivacySecurity={onPrivacySecurity} />
+      {!isCreatorSection && !isRankingsSection && !isCollectionSection ? (
+        <MatureAccessNotice matureAccess={data?.matureAccess ?? null} onLogin={onAuthRequired} onPrivacySecurity={onPrivacySecurity} />
+      ) : null}
       <div className={headingClassName}>
         <div>
-          <p className="eyebrow">{sectionEyebrow}</p>
+          {isCreatorSection ? <p className="eyebrow">Authors</p> : null}
           <h1>{sectionTitleMap[section]}</h1>
           <p>{sectionDescriptionMap[section]}</p>
         </div>
-        <div className="feed-controls">
+        <div className="feed-controls novel-feed-controls">
           {showMatureFilter ? (
             <label className="rating-filter novel-rating-filter">
               <Shield size={15} />
@@ -15265,11 +15438,12 @@ function NovelHubPage({
             </label>
           ) : null}
           {showSortControl ? (
-            <label className="rating-filter novel-rating-filter">
+            <label className="filter-chip sort-filter novel-sort-filter">
               <TrendingUp size={15} />
               <select
                 value={sortMode}
                 onChange={(event) => onSortModeChange(event.target.value as NovelSortMode)}
+                aria-label="Novel feed"
               >
                 {novelSortOptions.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -15277,7 +15451,13 @@ function NovelHubPage({
                   </option>
                 ))}
               </select>
+              <ChevronDown size={15} aria-hidden="true" />
             </label>
+          ) : null}
+          {showMatureFilter || showSortControl ? (
+            <button className="filter-reset-button" type="button" onClick={onResetFilters}>
+              Reset
+            </button>
           ) : null}
           {isRankingsSection ? (
             <div className="mini-segmented" aria-label="Novel ranking period">
@@ -15295,15 +15475,6 @@ function NovelHubPage({
             </div>
           ) : null}
         </div>
-      </div>
-
-      <div className="novel-feed-summary" aria-label="Novel feed summary">
-        {summaryItems.map((item) => (
-          <span key={item.label}>
-            <strong>{formatCount(item.value)}</strong>
-            {item.label}
-          </span>
-        ))}
       </div>
 
       {showContinueReading ? (
@@ -15412,6 +15583,12 @@ function NovelHubPage({
               })}
             </div>
           </div>
+          <MatureAccessNotice
+            matureAccess={data?.matureAccess ?? null}
+            onLogin={onAuthRequired}
+            onPrivacySecurity={onPrivacySecurity}
+          />
+          {creatorMessage ? <p className="empty-feed">{creatorMessage}</p> : null}
           <div className="creator-discovery-grid novel-creator-grid" aria-live="polite">
             {visibleCreatorItems.map(({ creator, authorNovels, latestNovelAt }) => {
               const ownProfile = currentUser?.username.toLowerCase() === creator.handle.toLowerCase();
@@ -15466,10 +15643,19 @@ function NovelHubPage({
                     <button
                       className={classNames("secondary-button", creator.following && "is-active")}
                       type="button"
-                      onClick={() => onOpenProfile(creator.handle)}
+                      onClick={() =>
+                        ownProfile ? onOpenProfile(creator.handle) : void handleCreatorFollow(creator.handle)
+                      }
+                      disabled={followingBusy === creator.handle}
                     >
                       <UserPlus size={16} />
-                      {ownProfile ? "You" : creator.following ? "Following" : "Author"}
+                      {ownProfile
+                        ? "You"
+                        : followingBusy === creator.handle
+                          ? "Saving"
+                          : creator.following
+                            ? "Following"
+                            : "Follow"}
                     </button>
                   </div>
                 </article>
@@ -15532,6 +15718,11 @@ function NovelHubPage({
               })}
             </div>
           </div>
+          <MatureAccessNotice
+            matureAccess={data?.matureAccess ?? null}
+            onLogin={onAuthRequired}
+            onPrivacySecurity={onPrivacySecurity}
+          />
           <div className="collection-folder-grid collection-discovery-grid novel-collection-grid" aria-live="polite">
             {visibleCollections.map((collection) => (
               <article className="collection-discovery-item novel-collection-item" key={collection.id}>
@@ -15566,6 +15757,11 @@ function NovelHubPage({
         </>
       ) : isRankingsSection ? (
         <>
+          <MatureAccessNotice
+            matureAccess={data?.matureAccess ?? null}
+            onLogin={onAuthRequired}
+            onPrivacySecurity={onPrivacySecurity}
+          />
           <div className="ranking-grid novel-ranking-grid" aria-live="polite">
             {rankingItems.map(({ novel, score }, index) => (
               <article className="ranking-card novel-ranking-card" key={novel.id}>
@@ -15621,24 +15817,7 @@ function NovelHubPage({
 
       {!data ? <p className="empty-feed">Loading novels.</p> : null}
       {data && visibleCount === 0 ? (
-        <div className="novel-empty-state">
-          <span className="novel-empty-icon" aria-hidden="true">
-            <EmptyIcon size={24} />
-          </span>
-          <div>
-            <strong>{emptyTitle}</strong>
-            <p>{emptyMessage}</p>
-          </div>
-          {isCollectionSection && !currentUser ? (
-            <button className="secondary-button" type="button" onClick={onAuthRequired}>
-              Sign in
-            </button>
-          ) : section !== "home" ? (
-            <button className="secondary-button" type="button" onClick={() => onOpenSection("home")}>
-              Latest novels
-            </button>
-          ) : null}
-        </div>
+        <p className="empty-feed">{emptyTitle}</p>
       ) : null}
       </section>
       {novelRightRail}
@@ -16423,14 +16602,15 @@ type IllustrationsPageProps = {
   rankingItems: RankingResponse["rankings"];
   rankingPeriod: RankingPeriod;
   matureFilter: MatureFilter;
+  sortMode: SortMode;
   feedTitle: string;
   feedMeta: string;
-  filterLabel: string;
   galleryLoadingMore: boolean;
   isBookmarksView: boolean;
   onAuthRequired: () => void;
   onPrivacySecurity: () => void;
   onMatureFilterChange: (filter: MatureFilter) => void;
+  onSortModeChange: (sortMode: SortMode) => void;
   onResetFilters: () => void;
   onOpenTag: (tag: string) => void;
   onToggleTagSubscription: (tag: string) => void;
@@ -16453,14 +16633,15 @@ function IllustrationsPage({
   rankingItems,
   rankingPeriod,
   matureFilter,
+  sortMode,
   feedTitle,
   feedMeta,
-  filterLabel,
   galleryLoadingMore,
   isBookmarksView,
   onAuthRequired,
   onPrivacySecurity,
   onMatureFilterChange,
+  onSortModeChange,
   onResetFilters,
   onOpenTag,
   onToggleTagSubscription,
@@ -16485,7 +16666,7 @@ function IllustrationsPage({
             <h1>{feedTitle}</h1>
             <p>{feedMeta}</p>
           </div>
-          <div className="feed-controls">
+          <div className="feed-controls illustration-feed-controls">
             <label className="rating-filter">
               <Shield size={15} />
               <select
@@ -16499,9 +16680,23 @@ function IllustrationsPage({
                 ))}
               </select>
             </label>
-            <button className="filter-chip" type="button" onClick={onResetFilters}>
-              {filterLabel}
-              <ChevronDown size={15} />
+            <label className="filter-chip sort-filter">
+              <Grid3X3 size={15} />
+              <select
+                value={sortMode}
+                onChange={(event) => onSortModeChange(event.target.value as SortMode)}
+                aria-label="Illustration feed"
+              >
+                {illustrationSortOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={15} aria-hidden="true" />
+            </label>
+            <button className="filter-reset-button" type="button" onClick={onResetFilters}>
+              Reset
             </button>
           </div>
         </div>
