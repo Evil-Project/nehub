@@ -8,6 +8,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Clock,
   Cloud,
   Copy,
   Database,
@@ -346,6 +347,28 @@ const illustrationSortOptions: { value: SortMode; label: string }[] = [
   { value: "bookmarks", label: "Bookmarks" }
 ];
 
+const illustrationQuickModes: {
+  value: SortMode;
+  label: string;
+  icon: typeof Grid3X3;
+}[] = [
+  { value: "latest", label: "Home", icon: Home },
+  { value: "popular", label: "Popular", icon: Flame },
+  { value: "rising", label: "Rising", icon: TrendingUp },
+  { value: "bookmarks", label: "Saved", icon: Bookmark }
+];
+
+const novelQuickModes: {
+  value: NovelSection;
+  label: string;
+  icon: typeof Grid3X3;
+}[] = [
+  { value: "home", label: "Home", icon: Home },
+  { value: "rankings", label: "Rankings", icon: Trophy },
+  { value: "tags", label: "Tags", icon: Bell },
+  { value: "bookmarks", label: "Saved", icon: Bookmark }
+];
+
 const numberFormat = new Intl.NumberFormat("en", {
   notation: "compact",
   maximumFractionDigits: 1
@@ -363,6 +386,28 @@ const fullDateFormat = new Intl.DateTimeFormat("en", {
 });
 
 const formatCount = (value: number) => numberFormat.format(value);
+
+const readJsonResponse = async <Payload,>(
+  response: Response,
+  fallbackMessage = "Request could not be completed."
+): Promise<Payload> => {
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  const body = await response.text();
+
+  if (!body) {
+    return {} as Payload;
+  }
+
+  if (!contentType.includes("application/json")) {
+    throw new Error(fallbackMessage);
+  }
+
+  try {
+    return JSON.parse(body) as Payload;
+  } catch {
+    throw new Error(fallbackMessage);
+  }
+};
 
 const formatFileSize = (bytes: number) => {
   if (bytes >= 1024 * 1024) {
@@ -507,6 +552,29 @@ const matureAccessLabel = (matureAccess: MatureAccess | null) => {
   }
   return "Mature content is off.";
 };
+
+const matureAccessShortLabel = (matureAccess: MatureAccess | null) => {
+  if (!matureAccess) {
+    return "Checking";
+  }
+  if (matureAccess.allowed) {
+    return "All ratings";
+  }
+  if (matureAccess.reason === "region_restricted") {
+    return "Region filter";
+  }
+  if (matureAccess.reason === "sign_in_required") {
+    return "Sign in needed";
+  }
+  if (matureAccess.reason === "age_verification_required") {
+    return "Age check";
+  }
+  return "Mature hidden";
+};
+
+const isNovelSearchSuggestions = (
+  suggestions: SearchSuggestionsResponse | NovelSearchSuggestionsResponse | null
+): suggestions is NovelSearchSuggestionsResponse => Boolean(suggestions && "novels" in suggestions);
 
 const avatarInitial = (value: string) => value.trim().slice(0, 1).toUpperCase() || "?";
 
@@ -945,7 +1013,9 @@ function App() {
   const [sort, setSort] = useState<SortMode>(initialRoute.sort);
   const [illustrationQuery, setIllustrationQuery] = useState("");
   const [novelQuery, setNovelQuery] = useState("");
-  const [searchSuggestions, setSearchSuggestions] = useState<SearchSuggestionsResponse | null>(null);
+  const [searchSuggestions, setSearchSuggestions] = useState<
+    SearchSuggestionsResponse | NovelSearchSuggestionsResponse | null
+  >(null);
   const [searchSuggestionsOpen, setSearchSuggestionsOpen] = useState(false);
   const [searchSuggestionsLoading, setSearchSuggestionsLoading] = useState(false);
   const [activeTag, setActiveTag] = useState("");
@@ -980,7 +1050,13 @@ function App() {
 
   const refreshAuthSession = useCallback(async () => {
     const response = await fetch("/api/auth/session", { credentials: "include" });
-    const session = (await response.json()) as AuthSessionResponse;
+    const session = await readJsonResponse<AuthSessionResponse>(
+      response,
+      "Auth session could not be loaded."
+    );
+    if (!response.ok) {
+      throw new Error("Auth session could not be loaded.");
+    }
     setCurrentUser(session.user);
     setCsrfToken(session.csrfToken ?? "");
     return session;
@@ -1022,14 +1098,16 @@ function App() {
   const novelsUrl = useMemo(() => `/api/novels?${novelParams.toString()}`, [novelParams]);
 
   useEffect(() => {
-    if (!isIllustrationsSection) {
+    const searchContext = isNovelSection ? "novels" : "illustrations";
+    const search = (searchContext === "novels" ? novelQuery : illustrationQuery).trim();
+
+    if (!isNovelSection && routeContext !== "illustrations") {
       setSearchSuggestions(null);
       setSearchSuggestionsLoading(false);
       setSearchSuggestionsOpen(false);
       return;
     }
 
-    const search = illustrationQuery.trim();
     if (search.length < 2) {
       setSearchSuggestions(null);
       setSearchSuggestionsLoading(false);
@@ -1039,12 +1117,18 @@ function App() {
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setSearchSuggestionsLoading(true);
-      fetch(`/api/search/suggestions?q=${encodeURIComponent(search)}&limit=5`, {
+      const endpoint =
+        searchContext === "novels"
+          ? "/api/novels/search/suggestions"
+          : "/api/search/suggestions";
+      fetch(`${endpoint}?q=${encodeURIComponent(search)}&limit=5`, {
         credentials: "include",
         signal: controller.signal
       })
         .then(async (response) => {
-          const payload = (await response.json()) as SearchSuggestionsResponse | { message?: string };
+          const payload = await readJsonResponse<
+            SearchSuggestionsResponse | NovelSearchSuggestionsResponse | { message?: string }
+          >(response, "Search suggestions could not be loaded.");
           if (!response.ok || !("query" in payload)) {
             throw new Error(
               ("message" in payload ? payload.message : undefined) ??
@@ -1074,7 +1158,7 @@ function App() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [contentAccessRevision, currentUser?.id, illustrationQuery, isIllustrationsSection]);
+  }, [contentAccessRevision, currentUser?.id, illustrationQuery, isNovelSection, novelQuery, routeContext]);
 
   useEffect(() => {
     if (!isIllustrationsSection) {
@@ -1084,7 +1168,7 @@ function App() {
     let cancelled = false;
 
     fetch(galleryUrl, { credentials: "include" })
-      .then((response) => response.json() as Promise<GalleryResponse>)
+      .then((response) => readJsonResponse<GalleryResponse>(response, "Gallery could not be loaded."))
       .then((nextGallery) => {
         if (!cancelled) {
           setGallery(nextGallery);
@@ -1107,7 +1191,10 @@ function App() {
     let cancelled = false;
     fetch(novelsUrl, { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as NovelListResponse | { message?: string };
+        const payload = await readJsonResponse<NovelListResponse | { message?: string }>(
+          response,
+          "Works could not be loaded."
+        );
         if (!response.ok || !("novels" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Works could not be loaded."
@@ -1141,7 +1228,10 @@ function App() {
     let cancelled = false;
     fetch("/api/novels/feed?limit=24", { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as NovelListResponse | { message?: string };
+        const payload = await readJsonResponse<NovelListResponse | { message?: string }>(
+          response,
+          "Followed novels could not be loaded."
+        );
         if (!response.ok || !("novels" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ??
@@ -1175,7 +1265,7 @@ function App() {
     let cancelled = false;
 
     fetch(`/api/rankings?period=${rankingPeriod}&limit=8`, { credentials: "include" })
-      .then((response) => response.json() as Promise<RankingResponse>)
+      .then((response) => readJsonResponse<RankingResponse>(response, "Rankings could not be loaded."))
       .then((payload) => {
         if (!cancelled) {
           setRankingData(payload);
@@ -1201,7 +1291,10 @@ function App() {
       credentials: "include"
     })
       .then(async (response) => {
-        const payload = (await response.json()) as NovelRankingResponse | { message?: string };
+        const payload = await readJsonResponse<NovelRankingResponse | { message?: string }>(
+          response,
+          "Novel rankings could not be loaded."
+        );
         if (!response.ok || !("rankings" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ??
@@ -1236,7 +1329,10 @@ function App() {
     let cancelled = false;
     fetch("/api/novels/reading-progress?limit=8", { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as ReadingProgressResponse | { message?: string };
+        const payload = await readJsonResponse<ReadingProgressResponse | { message?: string }>(
+          response,
+          "Reading progress could not be loaded."
+        );
         if (!response.ok || !("progress" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ??
@@ -1268,7 +1364,10 @@ function App() {
 
     fetch(`/api/activity?scope=${scope}&limit=8`, { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as ActivityResponse | { message?: string };
+        const payload = await readJsonResponse<ActivityResponse | { message?: string }>(
+          response,
+          "Unable to load activity."
+        );
         if (!response.ok) {
           const message =
             "message" in payload && payload.message ? payload.message : "Unable to load activity.";
@@ -1300,7 +1399,16 @@ function App() {
     let cancelled = false;
 
     fetch("/api/auth/config")
-      .then((response) => response.json() as Promise<AuthConfigResponse>)
+      .then(async (response) => {
+        const config = await readJsonResponse<AuthConfigResponse>(
+          response,
+          "Auth config could not be loaded."
+        );
+        if (!response.ok) {
+          throw new Error("Auth config could not be loaded.");
+        }
+        return config;
+      })
       .then((config) => {
         if (!cancelled) {
           setAuthConfig(config);
@@ -1833,7 +1941,10 @@ function App() {
     setDetailLoading(true);
     fetch(`/api/artworks/${encodeURIComponent(routeArtworkId)}`)
       .then(async (response) => {
-        const payload = (await response.json()) as ArtworkResponse | { message?: string };
+        const payload = await readJsonResponse<ArtworkResponse | { message?: string }>(
+          response,
+          "Artwork could not be loaded."
+        );
         if (!response.ok) {
           const message =
             "message" in payload && payload.message
@@ -1879,7 +1990,10 @@ function App() {
     setNovelLoading(true);
     fetch(`/api/novels/${encodeURIComponent(routeNovelId)}`, { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as NovelResponse | { message?: string };
+        const payload = await readJsonResponse<NovelResponse | { message?: string }>(
+          response,
+          "Work could not be loaded."
+        );
         if (!response.ok || !("novel" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Work could not be loaded."
@@ -1923,7 +2037,18 @@ function App() {
     let cancelled = false;
     setDetailLoading(true);
     fetch(`/api/artworks/${selectedArtwork.id}`)
-      .then((response) => response.json() as Promise<ArtworkResponse>)
+      .then(async (response) => {
+        const payload = await readJsonResponse<ArtworkResponse | { message?: string }>(
+          response,
+          "Artwork could not be loaded."
+        );
+        if (!response.ok || !("artwork" in payload)) {
+          throw new Error(
+            ("message" in payload ? payload.message : undefined) ?? "Artwork could not be loaded."
+          );
+        }
+        return payload;
+      })
       .then((detail) => {
         if (!cancelled) {
           setArtworkDetail(detail);
@@ -2039,6 +2164,19 @@ function App() {
     : isSubscriptionsView
       ? `${formatCount(tagSubscriptions?.tags.length ?? 0)} followed tags`
       : `${formatCount(totalLikes)} likes across ${formatCount(totalViews)} views`;
+  const activeContextLabel = isNovelSection
+    ? novelSectionTitleMap[routeNovelSection]
+    : view === "tag" && routeTag
+      ? `#${routeTag}`
+      : isBookmarksView
+        ? "Saved works"
+        : isSubscriptionsView
+          ? "Followed tags"
+          : sort === "popular"
+            ? "Popular works"
+            : sort === "rising"
+              ? "Rising works"
+              : "For you";
   const accountNotice = dashboardMessage || authNotice;
   const hasAccountNotice =
     view !== "emailConfirmation" &&
@@ -2368,13 +2506,24 @@ function App() {
   };
 
   const openSuggestedTag = (tag: string) => {
+    if (isNovelSection) {
+      setNovelQuery("");
+      setActiveNovelTag(tag);
+      setSearchSuggestionsOpen(false);
+      openNovelSection("novels");
+      return;
+    }
     setIllustrationQuery(`#${tag}`);
     setSearchSuggestionsOpen(false);
     showTag(tag);
   };
 
   const openSuggestedCreator = (username: string) => {
-    setIllustrationQuery(`@${username}`);
+    if (isNovelSection) {
+      setNovelQuery(`@${username}`);
+    } else {
+      setIllustrationQuery(`@${username}`);
+    }
     setSearchSuggestionsOpen(false);
     showProfile(username);
   };
@@ -2383,6 +2532,12 @@ function App() {
     setIllustrationQuery(artwork.title);
     setSearchSuggestionsOpen(false);
     openArtworkById(artwork.id);
+  };
+
+  const openSuggestedNovel = (novel: NovelSearchSuggestionsResponse["novels"][number]) => {
+    setNovelQuery(novel.title);
+    setSearchSuggestionsOpen(false);
+    openNovel(novel.id);
   };
 
   const closeArtwork = () => {
@@ -4170,7 +4325,15 @@ function App() {
     params.set("cursor", gallery.nextCursor);
     try {
       const response = await fetch(`/api/gallery?${params.toString()}`, { credentials: "include" });
-      const payload = (await response.json()) as GalleryResponse;
+      const payload = await readJsonResponse<GalleryResponse | { message?: string }>(
+        response,
+        "Gallery page could not be loaded."
+      );
+      if (!response.ok || !("artworks" in payload)) {
+        throw new Error(
+          ("message" in payload ? payload.message : undefined) ?? "Gallery page could not be loaded."
+        );
+      }
       setGallery((current) =>
         current
           ? {
@@ -4443,14 +4606,27 @@ function App() {
     setContentAccessRevision((revision) => revision + 1);
   };
 
-  const searchSuggestionQueryActive = searchSuggestions?.query === illustrationQuery.trim();
-  const hasSearchSuggestions = Boolean(
-    searchSuggestionQueryActive &&
-      searchSuggestions &&
-      (searchSuggestions.tags.length > 0 ||
-        searchSuggestions.creators.length > 0 ||
-        searchSuggestions.artworks.length > 0)
-  );
+  const searchSuggestionQueryActive = searchSuggestions?.query === activeSearchQuery.trim();
+  const novelSearchSuggestions =
+    searchSuggestionQueryActive && isNovelSearchSuggestions(searchSuggestions)
+      ? searchSuggestions
+      : null;
+  const artworkSearchSuggestions =
+    searchSuggestionQueryActive && searchSuggestions && !isNovelSearchSuggestions(searchSuggestions)
+      ? searchSuggestions
+      : null;
+  const activeSuggestionTags = searchSuggestionQueryActive ? searchSuggestions?.tags ?? [] : [];
+  const activeSuggestionCreators = searchSuggestionQueryActive
+    ? searchSuggestions?.creators ?? []
+    : [];
+  const activeSuggestionArtworks = artworkSearchSuggestions?.artworks ?? [];
+  const activeSuggestionNovels = novelSearchSuggestions?.novels ?? [];
+  const searchSuggestionTotal =
+    activeSuggestionTags.length +
+    activeSuggestionCreators.length +
+    activeSuggestionArtworks.length +
+    activeSuggestionNovels.length;
+  const hasSearchSuggestions = searchSuggestionTotal > 0;
 
   return (
     <main className="pixiv-shell">
@@ -4484,6 +4660,19 @@ function App() {
                 <span>{isNovelSection ? "reading diary" : "art diary"}</span>
               </div>
             </a>
+            <div className="header-context-card" aria-hidden="true">
+              <span className="header-context-avatar">
+                <Sparkles size={17} />
+              </span>
+              <span>
+                <strong>{activeContextLabel}</strong>
+                <small>
+                  {isNovelSection
+                    ? `${formatCount(novels.length)} readable works`
+                    : `${formatCount(artworks.length)} visible works`}
+                </small>
+              </span>
+            </div>
             <nav className="main-nav" aria-label="Content types">
               <button
                 className={classNames(isIllustrationsSection && sort === "latest" && "is-active")}
@@ -4492,7 +4681,15 @@ function App() {
               >
                 Illustrations
               </button>
-              <button type="button">Manga</button>
+              <button
+                className={classNames(
+                  view === "tag" && routeTag.toLowerCase() === "manga" && "is-active"
+                )}
+                type="button"
+                onClick={() => showTag("manga")}
+              >
+                Manga
+              </button>
               <button
                 className={classNames(isNovelSection && "is-active")}
                 type="button"
@@ -4513,13 +4710,13 @@ function App() {
               onChange={(event) => {
                 if (isNovelSection) {
                   setNovelQuery(event.target.value);
-                  setSearchSuggestionsOpen(false);
+                  setSearchSuggestionsOpen(true);
                 } else {
                   setIllustrationQuery(event.target.value);
                   setSearchSuggestionsOpen(true);
                 }
               }}
-              onFocus={() => setSearchSuggestionsOpen(isIllustrationsSection)}
+              onFocus={() => setSearchSuggestionsOpen(true)}
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
                   setSearchSuggestionsOpen(false);
@@ -4528,13 +4725,27 @@ function App() {
               placeholder={isNovelSection ? "Search works, authors, tags" : "Search works, creators, tags"}
               type="search"
             />
-            {isIllustrationsSection && searchSuggestionsOpen && illustrationQuery.trim().length >= 2 ? (
+            {searchSuggestionsOpen && activeSearchQuery.trim().length >= 2 ? (
               <div className="search-suggestions" role="listbox" aria-label="Search suggestions">
+                <div className="search-suggestions-header">
+                  <span>
+                    <Sparkles size={16} />
+                    {isNovelSection ? "Reading search" : "Artwork search"}
+                  </span>
+                  <strong>
+                    {searchSuggestionsLoading
+                      ? "Scanning"
+                      : hasSearchSuggestions
+                        ? `${formatCount(searchSuggestionTotal)} matches`
+                        : "No matches"}
+                  </strong>
+                  <small>{activeSearchQuery.trim()}</small>
+                </div>
                 {searchSuggestionsLoading ? <p className="muted">Finding matches.</p> : null}
-                {searchSuggestionQueryActive && searchSuggestions?.tags.length ? (
+                {activeSuggestionTags.length ? (
                   <section>
                     <span className="search-suggestion-heading">Tags</span>
-                    {searchSuggestions.tags.map((tag) => (
+                    {activeSuggestionTags.map((tag) => (
                       <button
                         type="button"
                         key={tag.name}
@@ -4550,10 +4761,12 @@ function App() {
                     ))}
                   </section>
                 ) : null}
-                {searchSuggestionQueryActive && searchSuggestions?.creators.length ? (
+                {activeSuggestionCreators.length ? (
                   <section>
-                    <span className="search-suggestion-heading">Creators</span>
-                    {searchSuggestions.creators.map((creator) => (
+                    <span className="search-suggestion-heading">
+                      {isNovelSection ? "Authors" : "Creators"}
+                    </span>
+                    {activeSuggestionCreators.map((creator) => (
                       <button
                         type="button"
                         key={creator.id}
@@ -4575,10 +4788,10 @@ function App() {
                     ))}
                   </section>
                 ) : null}
-                {searchSuggestionQueryActive && searchSuggestions?.artworks.length ? (
+                {activeSuggestionArtworks.length ? (
                   <section>
                     <span className="search-suggestion-heading">Works</span>
-                    {searchSuggestions.artworks.map((artwork) => (
+                    {activeSuggestionArtworks.map((artwork) => (
                       <button
                         type="button"
                         key={artwork.id}
@@ -4598,11 +4811,72 @@ function App() {
                     ))}
                   </section>
                 ) : null}
+                {activeSuggestionNovels.length ? (
+                  <section>
+                    <span className="search-suggestion-heading">Novels</span>
+                    {activeSuggestionNovels.map((novel) => (
+                      <button
+                        type="button"
+                        key={novel.id}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => openSuggestedNovel(novel)}
+                      >
+                        <span
+                          className="search-suggestion-novel-cover"
+                          style={{ "--novel-cover": novel.coverColor } as CSSProperties}
+                        >
+                          <NotebookText size={17} />
+                        </span>
+                        <span>
+                          <strong>{novel.title}</strong>
+                          <small>by {novel.creator.displayName}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </section>
+                ) : null}
                 {!searchSuggestionsLoading && searchSuggestionQueryActive && !hasSearchSuggestions ? (
                   <p className="muted">No suggestions found.</p>
                 ) : null}
               </div>
             ) : null}
+          </div>
+
+          <div
+            className="header-quick-modes"
+            aria-label={isNovelSection ? "Quick novel sections" : "Quick illustration filters"}
+          >
+            {isNovelSection
+              ? novelQuickModes.map(({ value, label, icon: Icon }) => (
+                  <button
+                    className={classNames(
+                      view === "novels" && routeNovelSection === value && "is-active"
+                    )}
+                    key={value}
+                    type="button"
+                    onClick={() => showNovels(value)}
+                  >
+                    <Icon size={15} />
+                    {label}
+                  </button>
+                ))
+              : illustrationQuickModes.map(({ value, label, icon: Icon }) => (
+                  <button
+                    className={classNames(sort === value && "is-active")}
+                    key={value}
+                    type="button"
+                    onClick={() => {
+                      if (value === "bookmarks") {
+                        showBookmarks();
+                      } else {
+                        showIllustrations(value);
+                      }
+                    }}
+                  >
+                    <Icon size={15} />
+                    {label}
+                  </button>
+                ))}
           </div>
 
           <div className="header-actions">
@@ -5319,6 +5593,8 @@ function App() {
             sortMode={sort}
             feedTitle={feedTitle}
             feedMeta={feedMeta}
+            totalLikes={totalLikes}
+            totalViews={totalViews}
             galleryLoadingMore={galleryLoadingMore}
             isBookmarksView={isBookmarksView}
             onAuthRequired={() => openAuth("login")}
@@ -5349,6 +5625,10 @@ function App() {
             onOpenProfile={showProfile}
             onLoadMore={handleLoadMoreGallery}
             onRankingPeriodChange={setRankingPeriod}
+            onOpenCreatorDiscover={showCreatorDiscover}
+            onOpenRankings={showRankings}
+            onOpenCollectionDiscover={showCollectionDiscover}
+            onOpenSubscriptions={showTagSubscriptions}
           />
         ) : null}
       </div>
@@ -5631,6 +5911,18 @@ function EmailConfirmationPage({
       ? "Complete the security check to confirm your new email."
       : "Complete the security check to confirm your account email.";
   });
+  const verificationSteps =
+    kind === "change"
+      ? [
+          { label: "Request", value: "Email sent", icon: MailCheck },
+          { label: "Check", value: "Turnstile", icon: ShieldCheck },
+          { label: "Finish", value: "Update email", icon: KeyRound }
+        ]
+      : [
+          { label: "Request", value: "Link ready", icon: MailCheck },
+          { label: "Check", value: "Turnstile", icon: ShieldCheck },
+          { label: "Finish", value: "Verify account", icon: UserRound }
+        ];
 
   useEffect(() => {
     if (!token) {
@@ -5675,10 +5967,9 @@ function EmailConfirmationPage({
           turnstileToken
         })
       });
-      const payload = (await response.json().catch(() => null)) as
-        | EmailConfirmationResponse
-        | { message?: string }
-        | null;
+      const payload = await readJsonResponse<
+        EmailConfirmationResponse | { message?: string } | null
+      >(response, "Email confirmation failed.");
       if (payload && "status" in payload && "kind" in payload) {
         setStatus(payload.status);
         setMessage(payload.message);
@@ -5727,6 +6018,15 @@ function EmailConfirmationPage({
         <p className="eyebrow">Email confirmation</p>
         <h1>{title}</h1>
         <p>{message}</p>
+        <div className="verification-ribbon" aria-label="Confirmation steps">
+          {verificationSteps.map(({ label, value, icon: Icon }) => (
+            <span key={label}>
+              <Icon size={15} />
+              <small>{label}</small>
+              <strong>{value}</strong>
+            </span>
+          ))}
+        </div>
         {status === "challenge" && token ? (
           <div className="email-confirmation-check">
             <TurnstileWidget
@@ -5810,6 +6110,11 @@ function DiscordVerificationPage({
           ? "Discord verification link is missing."
           : "NEHub is checking this Discord sign-in before creating your session."
   );
+  const discordVerificationSteps = [
+    { label: "Provider", value: "Discord", icon: MessageCircle },
+    { label: "Check", value: "Turnstile", icon: ShieldCheck },
+    { label: "Session", value: "NEHub ID", icon: LogIn }
+  ];
 
   useEffect(() => {
     if (!token && !initialStatus) {
@@ -5845,10 +6150,9 @@ function DiscordVerificationPage({
         },
         body: JSON.stringify({ token, turnstileToken: verifiedTurnstileToken })
       });
-      const payload = (await response.json().catch(() => null)) as
-        | DiscordVerificationResponse
-        | { message?: string }
-        | null;
+      const payload = await readJsonResponse<
+        DiscordVerificationResponse | { message?: string } | null
+      >(response, "Discord verification failed.");
       if (payload && "status" in payload) {
         setStatus(payload.status);
         setMessage(payload.message);
@@ -5896,6 +6200,15 @@ function DiscordVerificationPage({
         <p className="eyebrow">Discord verification</p>
         <h1>{title}</h1>
         <p>{message}</p>
+        <div className="verification-ribbon" aria-label="Discord verification steps">
+          {discordVerificationSteps.map(({ label, value, icon: Icon }) => (
+            <span key={label}>
+              <Icon size={15} />
+              <small>{label}</small>
+              <strong>{value}</strong>
+            </span>
+          ))}
+        </div>
         {status === "challenge" && token ? (
           <div className="discord-verification-check">
             <TurnstileWidget
@@ -6132,7 +6445,10 @@ function AuthDialog({
           turnstileToken
         })
       });
-      const payload = (await response.json()) as PasswordResetRequestResponse | { message?: string };
+      const payload = await readJsonResponse<PasswordResetRequestResponse | { message?: string }>(
+        response,
+        "Reset email could not be sent."
+      );
       if (!response.ok) {
         throw new Error(payload.message ?? "Reset email could not be sent.");
       }
@@ -6181,7 +6497,10 @@ function AuthDialog({
           turnstileToken
         })
       });
-      const payload = (await response.json()) as PasswordResetConfirmResponse | { message?: string };
+      const payload = await readJsonResponse<PasswordResetConfirmResponse | { message?: string }>(
+        response,
+        "Password could not be reset."
+      );
       if (!response.ok) {
         throw new Error(payload.message ?? "Password could not be reset.");
       }
@@ -6223,7 +6542,10 @@ function AuthDialog({
           rememberMe
         })
       });
-      const payload = (await response.json()) as AuthResponse | { message?: string };
+      const payload = await readJsonResponse<AuthResponse | { message?: string }>(
+        response,
+        "Verification failed."
+      );
       if (!response.ok || !("user" in payload)) {
         throw new Error(payload.message ?? "Verification failed.");
       }
@@ -6251,9 +6573,9 @@ function AuthDialog({
         method: "POST",
         credentials: "include"
       });
-      const optionsPayload = (await optionsResponse.json()) as
-        | PasskeyAuthenticationOptionsResponse
-        | { message?: string };
+      const optionsPayload = await readJsonResponse<
+        PasskeyAuthenticationOptionsResponse | { message?: string }
+      >(optionsResponse, "Passkey sign-in could not start.");
       if (!optionsResponse.ok || !("publicKey" in optionsPayload)) {
         throw new Error(
           ("message" in optionsPayload ? optionsPayload.message : undefined) ??
@@ -6274,7 +6596,10 @@ function AuthDialog({
         },
         body: JSON.stringify(passkeyAssertionPayload(credential, rememberMe))
       });
-      const payload = (await verifyResponse.json()) as AuthResponse | { message?: string };
+      const payload = await readJsonResponse<AuthResponse | { message?: string }>(
+        verifyResponse,
+        "Passkey sign-in failed."
+      );
       if (!verifyResponse.ok || !("user" in payload)) {
         throw new Error(payload.message ?? "Passkey sign-in failed.");
       }
@@ -6330,7 +6655,10 @@ function AuthDialog({
         },
         body: JSON.stringify(body)
       });
-      const payload = (await response.json()) as AuthLoginResponse | { message?: string };
+      const payload = await readJsonResponse<AuthLoginResponse | { message?: string }>(
+        response,
+        "Authentication failed."
+      );
       if (!response.ok) {
         setMessage(payload.message ?? "Authentication failed.");
         setTurnstileToken("");
@@ -6709,6 +7037,19 @@ function NotificationsPage({
   const showLoadingState = loading && !data;
   const showEmptyState = Boolean(data && !loading && !message && notifications.length === 0);
   const novelContext = context === "novels";
+  const notificationStats = data
+    ? [
+        { label: "Unread", value: formatCount(data.unreadCount), icon: Bell },
+        { label: "Visible", value: formatCount(notifications.length), icon: MailCheck },
+        {
+          label: "Latest",
+          value: notifications[0]
+            ? dateFormat.format(new Date(notifications[0].createdAt))
+            : "None",
+          icon: Clock
+        }
+      ]
+    : [];
 
   useEffect(() => {
     if (!currentUser) {
@@ -6736,11 +7077,18 @@ function NotificationsPage({
   if (!currentUser) {
     return (
       <section className={classNames("content-main notification-page", novelContext && "novel-dedicated-page novel-notification-page")}>
-        <p className="empty-feed">{novelContext ? "Sign in to view alerts." : "Sign in to view notifications."}</p>
-        <button className="primary-button" type="button" onClick={onAuthRequired}>
-          <LogIn size={17} />
-          Sign in
-        </button>
+        <div className="notification-auth-card">
+          <span className="notification-auth-icon" aria-hidden="true">
+            <Bell size={24} />
+          </span>
+          <p className="eyebrow">{novelContext ? "Reader alerts" : "Notifications"}</p>
+          <h1>{novelContext ? "Reading updates" : "Notification center"}</h1>
+          <p>Sign in to see replies, follows, likes, and moderation updates in one inbox.</p>
+          <button className="primary-button" type="button" onClick={onAuthRequired}>
+            <LogIn size={17} />
+            Sign in
+          </button>
+        </div>
       </section>
     );
   }
@@ -6769,6 +7117,18 @@ function NotificationsPage({
           Mark all read
         </button>
       </div>
+
+      {data ? (
+        <div className="notification-summary-strip" aria-label="Notification summary">
+          {notificationStats.map(({ label, value, icon: Icon }) => (
+            <span key={label}>
+              <Icon size={15} />
+              <small>{label}</small>
+              <strong>{value}</strong>
+            </span>
+          ))}
+        </div>
+      ) : null}
 
       {showLoadingState ? <p className="empty-feed">Loading notifications.</p> : null}
       {message ? <p className="empty-feed">{message}</p> : null}
@@ -6854,7 +7214,10 @@ function IllustrationAnalyticsPage({
     setMessage("");
     fetch("/api/analytics/creator", { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as CreatorAnalyticsResponse | { message?: string };
+        const payload = await readJsonResponse<CreatorAnalyticsResponse | { message?: string }>(
+          response,
+          "Analytics could not be loaded."
+        );
         if (!response.ok || !("summary" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Analytics could not be loaded."
@@ -6886,11 +7249,10 @@ function IllustrationAnalyticsPage({
   if (!currentUser) {
     return (
       <section className={classNames("content-main analytics-page", novelContext && "novel-dedicated-page novel-analytics-page")}>
-        <p className="empty-feed">{novelContext ? "Sign in to view stats." : "Sign in to view creator analytics."}</p>
-        <button className="primary-button" type="button" onClick={onAuthRequired}>
-          <LogIn size={17} />
-          Sign in
-        </button>
+        <AnalyticsAuthCard
+          context={novelContext ? "novels" : "illustrations"}
+          onAuthRequired={onAuthRequired}
+        />
       </section>
     );
   }
@@ -6903,6 +7265,7 @@ function IllustrationAnalyticsPage({
     (summary?.likes ?? 0) + (summary?.bookmarks ?? 0) + (summary?.comments ?? 0);
   const overallEngagement =
     Math.round((totalInteractions / Math.max(1, summary?.totalViews ?? 0)) * 1000) / 10;
+  const topArtwork = data?.topArtworks[0]?.artwork ?? data?.recentArtworks[0]?.artwork ?? null;
 
   return (
     <section className={classNames("content-main analytics-page", novelContext && "novel-dedicated-page novel-analytics-page")}>
@@ -6929,6 +7292,29 @@ function IllustrationAnalyticsPage({
 
       {showContent ? (
         <>
+          <div className="analytics-studio-strip" aria-label="Creator studio summary">
+            <span>
+              <TrendingUp size={17} />
+              <strong>{formatCount(summary?.views30d ?? 0)}</strong>
+              <small>30-day views</small>
+            </span>
+            <span>
+              <Heart size={17} />
+              <strong>{formatCount(totalInteractions)}</strong>
+              <small>total reactions</small>
+            </span>
+            <span>
+              <Images size={17} />
+              <strong>{topArtwork?.title ?? "No top work yet"}</strong>
+              <small>{topArtwork ? "top signal" : "publish to rank"}</small>
+            </span>
+            <span>
+              <Calendar size={17} />
+              <strong>{data ? dateFormat.format(new Date(data.generatedAt)) : "Pending"}</strong>
+              <small>last generated</small>
+            </span>
+          </div>
+
           <div className="analytics-summary-grid">
             <MetricTile label="Total views" value={formatCount(summary?.totalViews ?? 0)} />
             <MetricTile label="7-day views" value={formatCount(summary?.views7d ?? 0)} />
@@ -7060,7 +7446,10 @@ function NovelAnalyticsPage({
     setMessage("");
     fetch("/api/analytics/novels", { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as CreatorNovelAnalyticsResponse | { message?: string };
+        const payload = await readJsonResponse<CreatorNovelAnalyticsResponse | { message?: string }>(
+          response,
+          "Novel analytics could not be loaded."
+        );
         if (!response.ok || !("summary" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Novel analytics could not be loaded."
@@ -7092,11 +7481,7 @@ function NovelAnalyticsPage({
   if (!currentUser) {
     return (
       <section className="content-main analytics-page novel-dedicated-page novel-analytics-page">
-        <p className="empty-feed">Sign in to view novel stats.</p>
-        <button className="primary-button" type="button" onClick={onAuthRequired}>
-          <LogIn size={17} />
-          Sign in
-        </button>
+        <AnalyticsAuthCard context="novels" onAuthRequired={onAuthRequired} />
       </section>
     );
   }
@@ -7112,6 +7497,7 @@ function NovelAnalyticsPage({
     (summary?.likes ?? 0) + (summary?.bookmarks ?? 0) + (summary?.comments ?? 0);
   const overallEngagement =
     Math.round((totalInteractions / Math.max(1, summary?.totalReads ?? 0)) * 1000) / 10;
+  const topNovel = data?.topNovels[0]?.novel ?? data?.recentNovels[0]?.novel ?? null;
 
   return (
     <section className="content-main analytics-page novel-dedicated-page novel-analytics-page">
@@ -7136,6 +7522,29 @@ function NovelAnalyticsPage({
 
       {showContent ? (
         <>
+          <div className="analytics-studio-strip" aria-label="Novel studio summary">
+            <span>
+              <TrendingUp size={17} />
+              <strong>{formatCount(summary?.reads30d ?? 0)}</strong>
+              <small>30-day reads</small>
+            </span>
+            <span>
+              <Heart size={17} />
+              <strong>{formatCount(totalInteractions)}</strong>
+              <small>total reactions</small>
+            </span>
+            <span>
+              <NotebookText size={17} />
+              <strong>{topNovel?.title ?? "No top novel yet"}</strong>
+              <small>{topNovel ? "top signal" : "publish to rank"}</small>
+            </span>
+            <span>
+              <Calendar size={17} />
+              <strong>{data ? dateFormat.format(new Date(data.generatedAt)) : "Pending"}</strong>
+              <small>last generated</small>
+            </span>
+          </div>
+
           <div className="analytics-summary-grid">
             <MetricTile label="Total reads" value={formatCount(summary?.totalReads ?? 0)} />
             <MetricTile label="Words" value={formatCount(summary?.words ?? 0)} />
@@ -7226,6 +7635,52 @@ type AnalyticsNovelRowProps = {
   item: CreatorNovelAnalyticsResponse["topNovels"][number];
 };
 
+type AnalyticsAuthCardProps = {
+  context: RouteContext;
+  onAuthRequired: () => void;
+};
+
+function AnalyticsAuthCard({ context, onAuthRequired }: AnalyticsAuthCardProps) {
+  const novelContext = context === "novels";
+  return (
+    <div className={classNames("analytics-auth-card", novelContext && "novel-analytics-auth-card")}>
+      <span className="analytics-auth-icon" aria-hidden="true">
+        {novelContext ? <NotebookText size={24} /> : <BarChart3 size={24} />}
+      </span>
+      <div>
+        <p className="eyebrow">{novelContext ? "Novel studio" : "Creator studio"}</p>
+        <h1>{novelContext ? "Track your reader signals" : "Track your artwork signals"}</h1>
+        <p>
+          {novelContext
+            ? "Sign in to see reads, bookmarks, comments, and top-performing stories in one compact studio."
+            : "Sign in to see views, reactions, followers, and top-performing artwork in one compact studio."}
+        </p>
+      </div>
+      <div className="analytics-auth-strip" aria-label="Creator studio preview">
+        <span>
+          <TrendingUp size={15} />
+          <small>Trend</small>
+          <strong>30 days</strong>
+        </span>
+        <span>
+          <Heart size={15} />
+          <small>Signals</small>
+          <strong>Live</strong>
+        </span>
+        <span>
+          <Sparkles size={15} />
+          <small>Ranking</small>
+          <strong>Top work</strong>
+        </span>
+      </div>
+      <button className="primary-button" type="button" onClick={onAuthRequired}>
+        <LogIn size={17} />
+        Sign in
+      </button>
+    </div>
+  );
+}
+
 function AnalyticsNovelRow({ item }: AnalyticsNovelRowProps) {
   const novel = item.novel;
   return (
@@ -7257,29 +7712,49 @@ type ActivityPanelProps = {
 function ActivityPanel({ data, onOpenArtwork, onOpenNovel, onOpenProfile }: ActivityPanelProps) {
   const activities = data?.activities ?? [];
   const label = data?.scope === "following" ? "Following pulse" : "Community pulse";
+  const latestActivity = activities[0]?.createdAt ?? null;
 
   return (
     <section className="side-panel activity-panel">
-      <div className="panel-title">
-        <Activity size={18} />
-        {label}
+      <div className="panel-title activity-panel-title">
+        <span>
+          <Activity size={18} />
+          {label}
+        </span>
+        <small>{formatCount(activities.length)} live</small>
+      </div>
+      <div className="activity-transmission-card" aria-label="Activity summary">
+        <span className="activity-transmission-icon">
+          <Sparkles size={17} />
+        </span>
+        <span>
+          <small>Latest transmissions</small>
+          <strong>{latestActivity ? dateFormat.format(new Date(latestActivity)) : "Waiting"}</strong>
+        </span>
       </div>
       {!data ? <p className="muted">Loading activity.</p> : null}
-      {activities.map((item) => (
-        <ActivityRow
-          item={item}
-          key={item.id}
-          onOpenArtwork={onOpenArtwork}
-          onOpenNovel={onOpenNovel}
-          onOpenProfile={onOpenProfile}
-        />
-      ))}
+      {activities.length > 0 ? (
+        <div className="activity-list">
+          {activities.map((item) => (
+            <ActivityRow
+              item={item}
+              key={item.id}
+              onOpenArtwork={onOpenArtwork}
+              onOpenNovel={onOpenNovel}
+              onOpenProfile={onOpenProfile}
+            />
+          ))}
+        </div>
+      ) : null}
       {data && activities.length === 0 ? (
-        <p className="muted">
-          {data.scope === "following"
-            ? "Follow creators to build your activity feed."
-            : "No public activity yet."}
-        </p>
+        <div className="activity-empty-card">
+          <Sparkles size={18} />
+          <span>
+            {data.scope === "following"
+              ? "Follow creators to build your activity feed."
+              : "No public activity yet."}
+          </span>
+        </div>
       ) : null}
     </section>
   );
@@ -7302,6 +7777,16 @@ function ActivityRow({ item, onOpenArtwork, onOpenNovel, onOpenProfile }: Activi
           ? MessageCircle
           : UserPlus;
   const actorLabel = item.actor.username || item.actor.displayName;
+  const targetTitle =
+    item.artwork?.title ?? item.novel?.title ?? item.targetUser?.displayName ?? "NEHub";
+  const typeLabel =
+    item.type === "publish"
+      ? "posted"
+      : item.type === "like"
+        ? "liked"
+        : item.type === "comment"
+          ? "commented"
+          : "followed";
 
   return (
     <article className="activity-row">
@@ -7317,6 +7802,7 @@ function ActivityRow({ item, onOpenArtwork, onOpenNovel, onOpenProfile }: Activi
         <button className="activity-line" type="button" onClick={() => onOpenProfile(actorLabel)}>
           <Icon size={14} />
           <strong>{item.actor.displayName}</strong>
+          <span>{typeLabel}</span>
         </button>
         {item.artwork ? (
           <button
@@ -7355,7 +7841,10 @@ function ActivityRow({ item, onOpenArtwork, onOpenNovel, onOpenProfile }: Activi
             @{item.targetUser.username}
           </button>
         ) : null}
-        <small>{dateFormat.format(new Date(item.createdAt))}</small>
+        <div className="activity-meta-line">
+          <small>{dateFormat.format(new Date(item.createdAt))}</small>
+          <span title={targetTitle}>{targetTitle}</span>
+        </div>
       </div>
     </article>
   );
@@ -7479,6 +7968,7 @@ function IllustrationDashboard({
   const userStatusLabel =
     adminUserStatusFilterOptions.find((option) => option.value === userStatus)?.label ??
     "All accounts";
+  const dashboardSource = adminStats?.storage.d1 || health?.storage.d1 ? "d1" : source;
   const [userSearchDraft, setUserSearchDraft] = useState(userQuery);
 
   useEffect(() => {
@@ -7513,7 +8003,7 @@ function IllustrationDashboard({
           label="D1 metadata"
           value={health?.storage.d1 ? "Bound" : "Fallback"}
           active={Boolean(health?.storage.d1)}
-          detail={`${source.toUpperCase()} feed source`}
+          detail={`${dashboardSource.toUpperCase()} feed source`}
         />
         <StatusCard
           icon={<HardDrive size={22} />}
@@ -7536,6 +8026,29 @@ function IllustrationDashboard({
           active={Boolean(adminStats?.storage.email)}
           detail="Verification email delivery"
         />
+      </div>
+
+      <div className="dashboard-summary-strip" aria-label="Illustration dashboard summary">
+        <span>
+          <ShieldCheck size={18} />
+          <small>Review gate</small>
+          <strong>{publicArtworkReviewEnabled ? "Enabled" : "Open"}</strong>
+        </span>
+        <span>
+          <Flag size={18} />
+          <small>{reportStatusLabel} reports</small>
+          <strong>{formatCount(filteredReportTotal)}</strong>
+        </span>
+        <span>
+          <UserRound size={18} />
+          <small>{userStatusLabel}</small>
+          <strong>{formatCount(directoryUsers.length)}</strong>
+        </span>
+        <span>
+          <Clock size={18} />
+          <small>Recent works</small>
+          <strong>{formatCount(recent.length)}</strong>
+        </span>
       </div>
 
       <div className="dashboard-grid">
@@ -7593,7 +8106,7 @@ function IllustrationDashboard({
             <MetricTile label="Likes" value={formatCount(contentStats?.likes ?? totalLikes)} />
             <MetricTile label="Views" value={formatCount(contentStats?.views ?? totalViews)} />
             <MetricTile label={`${reportStatusLabel} reports`} value={formatCount(filteredReportTotal)} />
-            <MetricTile label="Source" value={source.toUpperCase()} />
+            <MetricTile label="Source" value={dashboardSource.toUpperCase()} />
           </div>
         </section>
 
@@ -7619,8 +8132,8 @@ function IllustrationDashboard({
           />
           <StatusLine
             label="Gallery data"
-            value={source === "d1" ? "Persisted" : "Empty"}
-            active={source === "d1"}
+            value={dashboardSource === "d1" ? "Persisted" : "Empty"}
+            active={dashboardSource === "d1"}
           />
         </section>
 
@@ -8119,6 +8632,29 @@ function NovelDashboard({
           active={Boolean(adminStats?.storage.email)}
           detail="Alerts and account email delivery"
         />
+      </div>
+
+      <div className="dashboard-summary-strip novel-dashboard-summary-strip" aria-label="Novel dashboard summary">
+        <span>
+          <NotebookText size={18} />
+          <small>Published</small>
+          <strong>{formatCount(contentStats?.publishedNovels ?? 0)}</strong>
+        </span>
+        <span>
+          <Pencil size={18} />
+          <small>Drafts</small>
+          <strong>{formatCount(draftCount)}</strong>
+        </span>
+        <span>
+          <Flag size={18} />
+          <small>{reportStatusLabel} reports</small>
+          <strong>{formatCount(filteredReportTotal)}</strong>
+        </span>
+        <span>
+          <Clock size={18} />
+          <small>Recent novels</small>
+          <strong>{formatCount(recentNovels.length)}</strong>
+        </span>
       </div>
 
       <div className="dashboard-grid">
@@ -8766,7 +9302,10 @@ function TagPage({
       credentials: "include"
     })
       .then(async (response) => {
-        const payload = (await response.json()) as TagDetailResponse | { message?: string };
+        const payload = await readJsonResponse<TagDetailResponse | { message?: string }>(
+          response,
+          "Tag could not be loaded."
+        );
         if (!response.ok || !("tag" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Tag could not be loaded."
@@ -8808,7 +9347,10 @@ function TagPage({
         `/api/tags/${encodeURIComponent(data.tag)}?${params.toString()}`,
         { credentials: "include" }
       );
-      const payload = (await response.json()) as TagDetailResponse | { message?: string };
+      const payload = await readJsonResponse<TagDetailResponse | { message?: string }>(
+        response,
+        "Tag page could not be loaded."
+      );
       if (!response.ok || !("tag" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ?? "Tag page could not be loaded."
@@ -8860,6 +9402,16 @@ function TagPage({
   const titleTag = data?.tag ?? normalizedTag;
   const activeSortLabel =
     tagPageSortOptions.find((option) => option.value === sort)?.label ?? "Latest";
+  const activeRatingLabel =
+    matureFilterOptions.find((option) => option.value === rating)?.label ?? "All ratings";
+  const tagLoadedCount = artworks.length;
+  const tagRelatedCount = data?.relatedTags.length ?? 0;
+  const tagFollowLabel = data?.subscribed ? "Following" : "Open";
+  const tagSummary = data
+    ? `${formatCount(data.totalCount)} visible works in this community tag.`
+    : message
+      ? "Tag channel could not be loaded."
+      : "Loading tag works from the community.";
 
   return (
     <section className="content-main tag-page">
@@ -8867,11 +9419,7 @@ function TagPage({
         <div>
           <p className="eyebrow">Tag channel</p>
           <h1>#{titleTag}</h1>
-          <p>
-            {data
-              ? `${formatCount(data.totalCount)} visible works in this community tag.`
-              : "Loading tag works from the community."}
-          </p>
+          <p>{tagSummary}</p>
           <div className="profile-meta">
             <span>{activeSortLabel}</span>
             {data ? <span>{matureAccessLabel(data.matureAccess)}</span> : null}
@@ -8919,6 +9467,39 @@ function TagPage({
             ))}
           </select>
         </label>
+      </div>
+
+      <div className="discovery-summary-strip" aria-label="Tag channel summary">
+        <span>
+          <Images size={18} />
+          <small>Total works</small>
+          <strong>{data ? formatCount(data.totalCount) : "..."}</strong>
+        </span>
+        <span>
+          <Grid3X3 size={18} />
+          <small>Shown now</small>
+          <strong>{formatCount(tagLoadedCount)}</strong>
+        </span>
+        <span>
+          <Sparkles size={18} />
+          <small>Related tags</small>
+          <strong>{formatCount(tagRelatedCount)}</strong>
+        </span>
+        <span>
+          <TrendingUp size={18} />
+          <small>Sort</small>
+          <strong>{activeSortLabel}</strong>
+        </span>
+        <span>
+          <Shield size={18} />
+          <small>Rating</small>
+          <strong>{activeRatingLabel}</strong>
+        </span>
+        <span>
+          <Bell size={18} />
+          <small>Tag watch</small>
+          <strong>{tagFollowLabel}</strong>
+        </span>
       </div>
 
       <MatureAccessNotice
@@ -8988,6 +9569,97 @@ type CollectionsPageProps = {
   onCreateCollection: (name: string) => Promise<string>;
   onOpenCollection: (collectionId: string) => void;
 };
+
+type CollectionAccessKind = "artCollections" | "artSeries" | "readingShelves" | "novelSerials";
+
+function CollectionAccessCard({
+  kind,
+  onAuthRequired
+}: {
+  kind: CollectionAccessKind;
+  onAuthRequired: () => void;
+}) {
+  const copy = {
+    artCollections: {
+      className: "",
+      eyebrow: "Folder workspace",
+      title: "Sign in to open your artwork folders",
+      body: "Collect favorites, keep private sets, and publish selected folders from one studio shelf.",
+      icon: FolderOpen,
+      stats: [
+        { icon: Bookmark, label: "Saved", value: "Works" },
+        { icon: Lock, label: "Draft", value: "Private" },
+        { icon: Eye, label: "Share", value: "Public" }
+      ]
+    },
+    artSeries: {
+      className: "series-access-card",
+      eyebrow: "Series workspace",
+      title: "Sign in to arrange multi-part artwork",
+      body: "Turn related pieces into ordered public or private series without leaving your creator tools.",
+      icon: ListOrdered,
+      stats: [
+        { icon: Images, label: "Parts", value: "Ordered" },
+        { icon: Sparkles, label: "Studio", value: "Drafts" },
+        { icon: Eye, label: "Release", value: "Public" }
+      ]
+    },
+    readingShelves: {
+      className: "novel-access-card",
+      eyebrow: "Reading shelf",
+      title: "Sign in to open your reading shelves",
+      body: "Save novels into personal shelves, keep quiet reading lists, and publish the picks you want visible.",
+      icon: FolderOpen,
+      stats: [
+        { icon: NotebookText, label: "Saved", value: "Novels" },
+        { icon: Lock, label: "Shelf", value: "Private" },
+        { icon: Eye, label: "Share", value: "Public" }
+      ]
+    },
+    novelSerials: {
+      className: "novel-access-card series-access-card",
+      eyebrow: "Serial workspace",
+      title: "Sign in to arrange your serials",
+      body: "Keep chapters in order, manage drafts, and present finished sequences as polished reading runs.",
+      icon: ListOrdered,
+      stats: [
+        { icon: NotebookText, label: "Chapters", value: "Ordered" },
+        { icon: Sparkles, label: "Studio", value: "Active" },
+        { icon: Calendar, label: "Update", value: "Ready" }
+      ]
+    }
+  }[kind];
+  const Icon = copy.icon;
+
+  return (
+    <div className={classNames("collection-access-card", copy.className)}>
+      <span className="collection-access-icon" aria-hidden="true">
+        <Icon size={28} />
+      </span>
+      <div>
+        <p className="eyebrow">{copy.eyebrow}</p>
+        <h1>{copy.title}</h1>
+        <p>{copy.body}</p>
+      </div>
+      <div className="collection-access-strip" aria-label={`${copy.eyebrow} highlights`}>
+        {copy.stats.map((stat) => {
+          const StatIcon = stat.icon;
+          return (
+            <span key={stat.label}>
+              <StatIcon size={16} />
+              <small>{stat.label}</small>
+              <strong>{stat.value}</strong>
+            </span>
+          );
+        })}
+      </div>
+      <button className="primary-button" type="button" onClick={onAuthRequired}>
+        <LogIn size={17} />
+        Sign in
+      </button>
+    </div>
+  );
+}
 
 function CollectionFolderPreview({ collection }: { collection: UserCollection }) {
   if (collection.previewArtworks.length === 0) {
@@ -9071,7 +9743,10 @@ function CreatorDiscoverPage({
 
     fetch(`/api/creators?${creatorParams.toString()}`, { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as CreatorDiscoveryResponse | { message?: string };
+        const payload = await readJsonResponse<CreatorDiscoveryResponse | { message?: string }>(
+          response,
+          "Creators could not be loaded."
+        );
         if (!response.ok || !("creators" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Creators could not be loaded."
@@ -9117,7 +9792,10 @@ function CreatorDiscoverPage({
       const response = await fetch(`/api/creators?${params.toString()}`, {
         credentials: "include"
       });
-      const payload = (await response.json()) as CreatorDiscoveryResponse | { message?: string };
+      const payload = await readJsonResponse<CreatorDiscoveryResponse | { message?: string }>(
+        response,
+        "Creators could not be loaded."
+      );
       if (!response.ok || !("creators" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ?? "Creators could not be loaded."
@@ -9151,7 +9829,10 @@ function CreatorDiscoverPage({
         credentials: "include",
         headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
       });
-      const payload = (await response.json()) as FollowResponse | { message?: string };
+      const payload = await readJsonResponse<FollowResponse | { message?: string }>(
+        response,
+        "Follow action failed."
+      );
       if (!response.ok || !("following" in payload)) {
         throw new Error(payload.message ?? "Follow action failed.");
       }
@@ -9183,6 +9864,14 @@ function CreatorDiscoverPage({
   };
 
   const items = data?.creators ?? [];
+  const activeCreatorSortLabel =
+    creatorDiscoverySortOptions.find((option) => option.value === sort)?.label ?? "Popular";
+  const activeCreatorQuery = data?.query || searchQuery.trim();
+  const visibleCreatorArtworkCount = items.reduce((total, item) => total + item.artworkCount, 0);
+  const creatorPreviewCount = items.reduce(
+    (total, item) => total + item.previewArtworks.length,
+    0
+  );
   const resultSummary = data
     ? searchQuery
       ? `${formatCount(data.totalCount)} creators matching "${searchQuery}".`
@@ -9229,6 +9918,39 @@ function CreatorDiscoverPage({
             );
           })}
         </div>
+      </div>
+
+      <div className="discovery-summary-strip" aria-label="Creator discovery summary">
+        <span>
+          <UserRound size={18} />
+          <small>Total creators</small>
+          <strong>{data ? formatCount(data.totalCount) : "..."}</strong>
+        </span>
+        <span>
+          <Grid3X3 size={18} />
+          <small>Shown now</small>
+          <strong>{formatCount(items.length)}</strong>
+        </span>
+        <span>
+          <Images size={18} />
+          <small>Visible works</small>
+          <strong>{formatCount(visibleCreatorArtworkCount)}</strong>
+        </span>
+        <span>
+          <Sparkles size={18} />
+          <small>Preview tiles</small>
+          <strong>{formatCount(creatorPreviewCount)}</strong>
+        </span>
+        <span>
+          <Flame size={18} />
+          <small>Sort</small>
+          <strong>{activeCreatorSortLabel}</strong>
+        </span>
+        <span title={activeCreatorQuery || "All creators"}>
+          <Search size={18} />
+          <small>Search</small>
+          <strong>{activeCreatorQuery ? `"${activeCreatorQuery}"` : "All creators"}</strong>
+        </span>
       </div>
 
       <MatureAccessNotice
@@ -9385,7 +10107,10 @@ function RankingsPage({
 
     fetch(`/api/rankings?period=${period}&limit=50`, { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as RankingResponse | { message?: string };
+        const payload = await readJsonResponse<RankingResponse | { message?: string }>(
+          response,
+          "Rankings could not be loaded."
+        );
         if (!response.ok || !("rankings" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Rankings could not be loaded."
@@ -9416,6 +10141,11 @@ function RankingsPage({
 
   const rankings = data?.rankings ?? [];
   const periodLabel = period === "weekly" ? "Weekly" : "Daily";
+  const topRankingScore = rankings[0]?.score || rankings[0]?.artwork.likeCount || 0;
+  const totalRankingLikes = rankings.reduce(
+    (total, item) => total + (item.score || item.artwork.likeCount),
+    0
+  );
   const summary = data
     ? `${formatCount(rankings.length)} ranked works from recent ${period === "weekly" ? "weekly" : "daily"} likes.`
     : "Loading ranked works from the community.";
@@ -9442,6 +10172,34 @@ function RankingsPage({
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="discovery-summary-strip" aria-label="Ranking summary">
+        <span>
+          <ListOrdered size={18} />
+          <small>Ranked works</small>
+          <strong>{formatCount(rankings.length)}</strong>
+        </span>
+        <span>
+          <Trophy size={18} />
+          <small>Top score</small>
+          <strong>{formatCount(topRankingScore)}</strong>
+        </span>
+        <span>
+          <Heart size={18} />
+          <small>Recent likes</small>
+          <strong>{formatCount(totalRankingLikes)}</strong>
+        </span>
+        <span>
+          <Calendar size={18} />
+          <small>Period</small>
+          <strong>{periodLabel}</strong>
+        </span>
+        <span title={matureAccessLabel(data?.matureAccess ?? null)}>
+          <Shield size={18} />
+          <small>Access</small>
+          <strong>{matureAccessShortLabel(data?.matureAccess ?? null)}</strong>
+        </span>
       </div>
 
       <MatureAccessNotice
@@ -9519,7 +10277,10 @@ function CollectionDiscoverPage({
 
     fetch(`/api/collections/discover?${discoveryParams.toString()}`, { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as CollectionDiscoveryResponse | { message?: string };
+        const payload = await readJsonResponse<CollectionDiscoveryResponse | { message?: string }>(
+          response,
+          "Collections could not be loaded."
+        );
         if (!response.ok || !("collections" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Collections could not be loaded."
@@ -9565,7 +10326,10 @@ function CollectionDiscoverPage({
       const response = await fetch(`/api/collections/discover?${params.toString()}`, {
         credentials: "include"
       });
-      const payload = (await response.json()) as CollectionDiscoveryResponse | { message?: string };
+      const payload = await readJsonResponse<CollectionDiscoveryResponse | { message?: string }>(
+        response,
+        "Collections could not be loaded."
+      );
       if (!response.ok || !("collections" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ?? "Collections could not be loaded."
@@ -9587,6 +10351,13 @@ function CollectionDiscoverPage({
   };
 
   const items = data?.collections ?? [];
+  const activeCollectionSortLabel =
+    collectionDiscoverySortOptions.find((option) => option.value === sort)?.label ?? "Updated";
+  const activeCollectionQuery = data?.query || searchQuery.trim();
+  const visibleCollectionWorks = items.reduce(
+    (total, item) => total + item.collection.itemCount,
+    0
+  );
   const resultSummary = data
     ? searchQuery
       ? `${formatCount(data.totalCount)} public folders matching "${searchQuery}".`
@@ -9633,6 +10404,34 @@ function CollectionDiscoverPage({
             );
           })}
         </div>
+      </div>
+
+      <div className="discovery-summary-strip" aria-label="Collection discovery summary">
+        <span>
+          <FolderOpen size={18} />
+          <small>Public folders</small>
+          <strong>{data ? formatCount(data.totalCount) : "..."}</strong>
+        </span>
+        <span>
+          <Grid3X3 size={18} />
+          <small>Shown now</small>
+          <strong>{formatCount(items.length)}</strong>
+        </span>
+        <span>
+          <Images size={18} />
+          <small>Visible works</small>
+          <strong>{formatCount(visibleCollectionWorks)}</strong>
+        </span>
+        <span>
+          <Calendar size={18} />
+          <small>Sort</small>
+          <strong>{activeCollectionSortLabel}</strong>
+        </span>
+        <span title={activeCollectionQuery || "All folders"}>
+          <Search size={18} />
+          <small>Search</small>
+          <strong>{activeCollectionQuery ? `"${activeCollectionQuery}"` : "All folders"}</strong>
+        </span>
       </div>
 
       <MatureAccessNotice
@@ -9711,6 +10510,9 @@ function CollectionsPage({
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const novelContext = context === "novels";
+  const totalCollectionItems = collections.reduce((total, collection) => total + collection.itemCount, 0);
+  const publicCollections = collections.filter((collection) => collection.visibility === "public").length;
+  const privateCollections = collections.length - publicCollections;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -9733,11 +10535,10 @@ function CollectionsPage({
   if (!currentUser) {
     return (
       <section className={classNames("content-main collection-page", novelContext && "novel-dedicated-page novel-shelves-page")}>
-        <p className="empty-feed">{novelContext ? "Sign in to manage reading shelves." : "Sign in to manage collection folders."}</p>
-        <button className="primary-button" type="button" onClick={onAuthRequired}>
-          <LogIn size={17} />
-          Sign in
-        </button>
+        <CollectionAccessCard
+          kind={novelContext ? "readingShelves" : "artCollections"}
+          onAuthRequired={onAuthRequired}
+        />
       </section>
     );
   }
@@ -9754,6 +10555,29 @@ function CollectionsPage({
               : "Group saved works into private folders, then publish selected folders when they are ready."}
           </p>
         </div>
+      </div>
+
+      <div className="collection-summary-strip" aria-label={novelContext ? "Reading shelf summary" : "Collection summary"}>
+        <span>
+          <FolderOpen size={17} />
+          <strong>{formatCount(collections.length)}</strong>
+          <small>{novelContext ? "shelves" : "folders"}</small>
+        </span>
+        <span>
+          <Images size={17} />
+          <strong>{formatCount(totalCollectionItems)}</strong>
+          <small>{novelContext ? "saved entries" : "saved works"}</small>
+        </span>
+        <span>
+          <Eye size={17} />
+          <strong>{formatCount(publicCollections)}</strong>
+          <small>public</small>
+        </span>
+        <span>
+          <Lock size={17} />
+          <strong>{formatCount(privateCollections)}</strong>
+          <small>private</small>
+        </span>
       </div>
 
       <form className="collection-page-create" onSubmit={handleSubmit}>
@@ -9786,6 +10610,10 @@ function CollectionsPage({
               <small>
                 {formatCount(collection.itemCount)} {novelContext ? "entries" : "works"} · {collection.visibility}
               </small>
+              <span className="collection-folder-meta">
+                <em>{collection.visibility === "public" ? "Public shelf" : "Private draft"}</em>
+                <em>Updated {dateFormat.format(new Date(collection.updatedAt))}</em>
+              </span>
             </span>
             {collection.visibility === "public" ? <Eye size={16} /> : <Lock size={16} />}
           </button>
@@ -9864,7 +10692,10 @@ function CollectionPage({
 
     fetch(`/api/collections/${encodeURIComponent(collectionId)}`, { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as CollectionDetailResponse | { message?: string };
+        const payload = await readJsonResponse<CollectionDetailResponse | { message?: string }>(
+          response,
+          "Collection could not be loaded."
+        );
         if (!response.ok || !("collection" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Collection could not be loaded."
@@ -9911,7 +10742,10 @@ function CollectionPage({
         `/api/collections/${encodeURIComponent(collectionId)}?${params.toString()}`,
         { credentials: "include" }
       );
-      const payload = (await response.json()) as CollectionDetailResponse | { message?: string };
+      const payload = await readJsonResponse<CollectionDetailResponse | { message?: string }>(
+        response,
+        "Collection page could not be loaded."
+      );
       if (!response.ok || !("collection" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ?? "Collection page could not be loaded."
@@ -10021,6 +10855,29 @@ function CollectionPage({
                 </button>
               </div>
             ) : null}
+          </div>
+
+          <div className="collection-detail-strip" aria-label={novelContext ? "Shelf details" : "Collection details"}>
+            <span>
+              <FolderOpen size={17} />
+              <strong>{formatCount(detail.totalCount)}</strong>
+              <small>{novelContext ? "visible entries" : "visible works"}</small>
+            </span>
+            <span>
+              {collection.visibility === "public" ? <Eye size={17} /> : <Lock size={17} />}
+              <strong>{collection.visibility}</strong>
+              <small>visibility</small>
+            </span>
+            <span>
+              <UserRound size={17} />
+              <strong>{owner.displayName}</strong>
+              <small>curator</small>
+            </span>
+            <span>
+              <Calendar size={17} />
+              <strong>{dateFormat.format(new Date(collection.updatedAt))}</strong>
+              <small>updated</small>
+            </span>
           </div>
 
           <MatureAccessNotice
@@ -10199,6 +11056,9 @@ function SeriesListPage({
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const novelContext = context === "novels";
+  const totalSeriesItems = seriesList.reduce((total, series) => total + series.itemCount, 0);
+  const publicSeries = seriesList.filter((series) => series.visibility === "public").length;
+  const privateSeries = seriesList.length - publicSeries;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -10221,11 +11081,10 @@ function SeriesListPage({
   if (!currentUser) {
     return (
       <section className={classNames("content-main collection-page series-page", novelContext && "novel-dedicated-page novel-serials-page")}>
-        <p className="empty-feed">{novelContext ? "Sign in to manage serials." : "Sign in to manage artwork series."}</p>
-        <button className="primary-button" type="button" onClick={onAuthRequired}>
-          <LogIn size={17} />
-          Sign in
-        </button>
+        <CollectionAccessCard
+          kind={novelContext ? "novelSerials" : "artSeries"}
+          onAuthRequired={onAuthRequired}
+        />
       </section>
     );
   }
@@ -10242,6 +11101,29 @@ function SeriesListPage({
               : "Order your own works into public or private multi-part galleries."}
           </p>
         </div>
+      </div>
+
+      <div className="collection-summary-strip series-summary-strip" aria-label={novelContext ? "Serial summary" : "Series summary"}>
+        <span>
+          <ListOrdered size={17} />
+          <strong>{formatCount(seriesList.length)}</strong>
+          <small>{novelContext ? "serials" : "series"}</small>
+        </span>
+        <span>
+          <Images size={17} />
+          <strong>{formatCount(totalSeriesItems)}</strong>
+          <small>{novelContext ? "ordered entries" : "ordered works"}</small>
+        </span>
+        <span>
+          <Eye size={17} />
+          <strong>{formatCount(publicSeries)}</strong>
+          <small>public</small>
+        </span>
+        <span>
+          <Lock size={17} />
+          <strong>{formatCount(privateSeries)}</strong>
+          <small>private</small>
+        </span>
       </div>
 
       <form className="collection-page-create" onSubmit={handleSubmit}>
@@ -10274,6 +11156,10 @@ function SeriesListPage({
               <small>
                 {formatCount(series.itemCount)} {novelContext ? "entries" : "works"} · {series.visibility}
               </small>
+              <span className="collection-folder-meta">
+                <em>{series.visibility === "public" ? "Public run" : "Private draft"}</em>
+                <em>Updated {dateFormat.format(new Date(series.updatedAt))}</em>
+              </span>
             </span>
             {series.visibility === "public" ? <Eye size={16} /> : <Lock size={16} />}
           </button>
@@ -10349,7 +11235,10 @@ function SeriesPage({
 
     fetch(`/api/series/${encodeURIComponent(seriesId)}`, { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as ArtworkSeriesDetailResponse | { message?: string };
+        const payload = await readJsonResponse<ArtworkSeriesDetailResponse | { message?: string }>(
+          response,
+          "Series could not be loaded."
+        );
         if (!response.ok || !("series" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Series could not be loaded."
@@ -10396,7 +11285,10 @@ function SeriesPage({
         `/api/series/${encodeURIComponent(seriesId)}?${params.toString()}`,
         { credentials: "include" }
       );
-      const payload = (await response.json()) as ArtworkSeriesDetailResponse | { message?: string };
+      const payload = await readJsonResponse<ArtworkSeriesDetailResponse | { message?: string }>(
+        response,
+        "Series page could not be loaded."
+      );
       if (!response.ok || !("series" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ?? "Series page could not be loaded."
@@ -10506,6 +11398,29 @@ function SeriesPage({
                 </button>
               </div>
             ) : null}
+          </div>
+
+          <div className="collection-detail-strip series-detail-strip" aria-label={novelContext ? "Serial details" : "Series details"}>
+            <span>
+              <ListOrdered size={17} />
+              <strong>{formatCount(detail.totalCount)}</strong>
+              <small>{novelContext ? "visible entries" : "visible works"}</small>
+            </span>
+            <span>
+              {series.visibility === "public" ? <Eye size={17} /> : <Lock size={17} />}
+              <strong>{series.visibility}</strong>
+              <small>visibility</small>
+            </span>
+            <span>
+              <UserRound size={17} />
+              <strong>{owner.displayName}</strong>
+              <small>creator</small>
+            </span>
+            <span>
+              <Calendar size={17} />
+              <strong>{dateFormat.format(new Date(series.updatedAt))}</strong>
+              <small>updated</small>
+            </span>
           </div>
 
           <MatureAccessNotice
@@ -10714,7 +11629,10 @@ function IllustrationProfilePage({
 
     fetch(`/api/users/${encodeURIComponent(username)}/profile`, { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as UserProfileResponse | { message?: string };
+        const payload = await readJsonResponse<UserProfileResponse | { message?: string }>(
+          response,
+          "Profile could not be loaded."
+        );
         if (!response.ok || !("profile" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Profile could not be loaded."
@@ -10771,7 +11689,10 @@ function IllustrationProfilePage({
       credentials: "include"
     })
       .then(async (response) => {
-        const payload = (await response.json()) as ProfileFollowListResponse | { message?: string };
+        const payload = await readJsonResponse<ProfileFollowListResponse | { message?: string }>(
+          response,
+          "Follow list could not be loaded."
+        );
         if (!response.ok || !("users" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Follow list could not be loaded."
@@ -10926,7 +11847,10 @@ function IllustrationProfilePage({
         `/api/users/${encodeURIComponent(username)}/follows?${params.toString()}`,
         { credentials: "include" }
       );
-      const payload = (await response.json()) as ProfileFollowListResponse | { message?: string };
+      const payload = await readJsonResponse<ProfileFollowListResponse | { message?: string }>(
+        response,
+        "Follow list could not be loaded."
+      );
       if (!response.ok || !("users" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ?? "Follow list could not be loaded."
@@ -10968,7 +11892,10 @@ function IllustrationProfilePage({
         credentials: "include",
         headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
       });
-      const payload = (await response.json()) as FollowResponse | { message?: string };
+      const payload = await readJsonResponse<FollowResponse | { message?: string }>(
+        response,
+        "Follow action failed."
+      );
       if (!response.ok || !("following" in payload)) {
         throw new Error(payload.message ?? "Follow action failed.");
       }
@@ -11052,7 +11979,10 @@ function IllustrationProfilePage({
         `/api/users/${encodeURIComponent(username)}/profile?${params.toString()}`,
         { credentials: "include" }
       );
-      const payload = (await response.json()) as UserProfileResponse | { message?: string };
+      const payload = await readJsonResponse<UserProfileResponse | { message?: string }>(
+        response,
+        "Profile page could not be loaded."
+      );
       if (!response.ok || !("profile" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ?? "Profile page could not be loaded."
@@ -11116,7 +12046,10 @@ function IllustrationProfilePage({
         credentials: "include",
         headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
       });
-      const payload = (await response.json()) as FollowResponse | { message?: string };
+      const payload = await readJsonResponse<FollowResponse | { message?: string }>(
+        response,
+        "Follow action failed."
+      );
       if (!response.ok || !("following" in payload)) {
         throw new Error(payload.message ?? "Follow action failed.");
       }
@@ -11156,7 +12089,10 @@ function IllustrationProfilePage({
         credentials: "include",
         headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
       });
-      const payload = (await response.json()) as BlockResponse | { message?: string };
+      const payload = await readJsonResponse<BlockResponse | { message?: string }>(
+        response,
+        "Block action failed."
+      );
       if (!response.ok || !("blocked" in payload)) {
         throw new Error(payload.message ?? "Block action failed.");
       }
@@ -11227,7 +12163,10 @@ function IllustrationProfilePage({
           turnstileToken: reportTurnstileToken
         })
       });
-      const payload = (await response.json()) as ReportResponse | { message?: string };
+      const payload = await readJsonResponse<ReportResponse | { message?: string }>(
+        response,
+        "Profile report failed."
+      );
       if (!response.ok || !("report" in payload)) {
         throw new Error(payload.message ?? "Profile report failed.");
       }
@@ -11246,12 +12185,12 @@ function IllustrationProfilePage({
     }
   };
 
-  return (
-    <section className={classNames("content-main profile-page", novelContext && "novel-dedicated-page novel-profile-page")}>
-      {loading ? <p className="empty-feed">Loading profile.</p> : null}
-      {message ? <p className="empty-feed">{message}</p> : null}
-      {profile && profileData ? (
-        <>
+	  return (
+	    <section className={classNames("content-main profile-page", novelContext && "novel-dedicated-page novel-profile-page")}>
+	      {loading ? <p className="empty-feed">Loading profile.</p> : null}
+	      {message ? <p className="empty-feed">{message}</p> : null}
+	      {profile && profileData ? (
+	        <>
           <div className="profile-hero">
             {profile.avatarUrl ? (
               <img className="profile-avatar" src={profile.avatarUrl} alt="" />
@@ -11372,11 +12311,39 @@ function IllustrationProfilePage({
                 <LogIn size={16} />
                 Sign in
               </button>
-            )}
-          </div>
+	            )}
+	          </div>
 
-          {reportOpen && currentUser && !ownProfile ? (
-            <form className="report-form profile-report-form" onSubmit={handleProfileReport}>
+	          <div className="profile-summary-strip" aria-label="Profile summary">
+	            <span>
+	              <Images size={18} />
+	              <small>Works</small>
+	              <strong>{formatCount(profileData.stats.artworks)}</strong>
+	            </span>
+	            <span>
+	              <Bookmark size={18} />
+	              <small>Saved works</small>
+	              <strong>{formatCount(profileData.stats.publicBookmarks + profileData.stats.privateBookmarks)}</strong>
+	            </span>
+	            <span>
+	              <Heart size={18} />
+	              <small>Likes</small>
+	              <strong>{formatCount(profileData.stats.totalLikes)}</strong>
+	            </span>
+	            <span>
+	              <Eye size={18} />
+	              <small>{novelContext ? "Reads" : "Views"}</small>
+	              <strong>{formatCount(profileData.stats.totalViews)}</strong>
+	            </span>
+	            <span>
+	              <UserPlus size={18} />
+	              <small>Followers</small>
+	              <strong>{formatCount(profile.followerCount)}</strong>
+	            </span>
+	          </div>
+
+	          {reportOpen && currentUser && !ownProfile ? (
+	            <form className="report-form profile-report-form" onSubmit={handleProfileReport}>
               <label>
                 Reason
                 <select
@@ -11708,7 +12675,10 @@ function NovelProfilePage({
 
     fetch(`/api/users/${encodeURIComponent(username)}/novel-profile`, { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as NovelProfileResponse | { message?: string };
+        const payload = await readJsonResponse<NovelProfileResponse | { message?: string }>(
+          response,
+          "Novel profile could not be loaded."
+        );
         if (!response.ok || !("profile" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Novel profile could not be loaded."
@@ -11761,7 +12731,10 @@ function NovelProfilePage({
       credentials: "include"
     })
       .then(async (response) => {
-        const payload = (await response.json()) as ProfileFollowListResponse | { message?: string };
+        const payload = await readJsonResponse<ProfileFollowListResponse | { message?: string }>(
+          response,
+          "Follow list could not be loaded."
+        );
         if (!response.ok || !("users" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Follow list could not be loaded."
@@ -11887,7 +12860,10 @@ function NovelProfilePage({
         `/api/users/${encodeURIComponent(username)}/follows?${params.toString()}`,
         { credentials: "include" }
       );
-      const payload = (await response.json()) as ProfileFollowListResponse | { message?: string };
+      const payload = await readJsonResponse<ProfileFollowListResponse | { message?: string }>(
+        response,
+        "Follow list could not be loaded."
+      );
       if (!response.ok || !("users" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ?? "Follow list could not be loaded."
@@ -11928,7 +12904,10 @@ function NovelProfilePage({
         credentials: "include",
         headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
       });
-      const payload = (await response.json()) as FollowResponse | { message?: string };
+      const payload = await readJsonResponse<FollowResponse | { message?: string }>(
+        response,
+        "Follow action failed."
+      );
       if (!response.ok || !("following" in payload)) {
         throw new Error(payload.message ?? "Follow action failed.");
       }
@@ -11981,7 +12960,10 @@ function NovelProfilePage({
         `/api/users/${encodeURIComponent(username)}/novel-profile?${params.toString()}`,
         { credentials: "include" }
       );
-      const payload = (await response.json()) as NovelProfileResponse | { message?: string };
+      const payload = await readJsonResponse<NovelProfileResponse | { message?: string }>(
+        response,
+        "Novel profile page could not be loaded."
+      );
       if (!response.ok || !("profile" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ?? "Novel profile page could not be loaded."
@@ -12042,7 +13024,10 @@ function NovelProfilePage({
         credentials: "include",
         headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
       });
-      const payload = (await response.json()) as FollowResponse | { message?: string };
+      const payload = await readJsonResponse<FollowResponse | { message?: string }>(
+        response,
+        "Follow action failed."
+      );
       if (!response.ok || !("following" in payload)) {
         throw new Error(payload.message ?? "Follow action failed.");
       }
@@ -12082,7 +13067,10 @@ function NovelProfilePage({
         credentials: "include",
         headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
       });
-      const payload = (await response.json()) as BlockResponse | { message?: string };
+      const payload = await readJsonResponse<BlockResponse | { message?: string }>(
+        response,
+        "Block action failed."
+      );
       if (!response.ok || !("blocked" in payload)) {
         throw new Error(payload.message ?? "Block action failed.");
       }
@@ -12153,7 +13141,10 @@ function NovelProfilePage({
           turnstileToken: reportTurnstileToken
         })
       });
-      const payload = (await response.json()) as ReportResponse | { message?: string };
+      const payload = await readJsonResponse<ReportResponse | { message?: string }>(
+        response,
+        "Profile report failed."
+      );
       if (!response.ok || !("report" in payload)) {
         throw new Error(payload.message ?? "Profile report failed.");
       }
@@ -12286,16 +13277,44 @@ function NovelProfilePage({
                   </button>
                 ) : null}
               </div>
-            ) : (
-              <button className="secondary-button profile-follow-button" type="button" onClick={onAuthRequired}>
-                <LogIn size={16} />
-                Sign in
-              </button>
-            )}
-          </div>
+	            ) : (
+	              <button className="secondary-button profile-follow-button" type="button" onClick={onAuthRequired}>
+	                <LogIn size={16} />
+	                Sign in
+	              </button>
+	            )}
+	          </div>
 
-          {reportOpen && currentUser && !ownProfile ? (
-            <form className="report-form profile-report-form" onSubmit={handleProfileReport}>
+	          <div className="profile-summary-strip novel-profile-summary-strip" aria-label="Novel profile summary">
+	            <span>
+	              <NotebookText size={18} />
+	              <small>Novels</small>
+	              <strong>{formatCount(profileData.stats.novels)}</strong>
+	            </span>
+	            <span>
+	              <Bookmark size={18} />
+	              <small>Saved reads</small>
+	              <strong>{formatCount(profileData.stats.publicBookmarks + profileData.stats.privateBookmarks)}</strong>
+	            </span>
+	            <span>
+	              <Heart size={18} />
+	              <small>Likes</small>
+	              <strong>{formatCount(profileData.stats.totalLikes)}</strong>
+	            </span>
+	            <span>
+	              <Eye size={18} />
+	              <small>Reads</small>
+	              <strong>{formatCount(profileData.stats.totalReads)}</strong>
+	            </span>
+	            <span>
+	              <FileText size={18} />
+	              <small>Words</small>
+	              <strong>{formatCount(profileData.stats.totalWords)}</strong>
+	            </span>
+	          </div>
+
+	          {reportOpen && currentUser && !ownProfile ? (
+	            <form className="report-form profile-report-form" onSubmit={handleProfileReport}>
               <label>
                 Reason
                 <select value={reportReason} onChange={(event) => setReportReason(event.target.value as ReportReason)}>
@@ -12577,7 +13596,10 @@ function ProfileSettingsPage({
     setMessage("");
     fetch("/api/settings/profile", { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as ProfileSettingsResponse | { message?: string };
+        const payload = await readJsonResponse<ProfileSettingsResponse | { message?: string }>(
+          response,
+          "Profile settings could not be loaded."
+        );
         if (!response.ok || !("profile" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ??
@@ -12625,7 +13647,10 @@ function ProfileSettingsPage({
         },
         body: JSON.stringify(formState)
       });
-      const payload = (await response.json()) as ProfileSettingsResponse | { message?: string };
+      const payload = await readJsonResponse<ProfileSettingsResponse | { message?: string }>(
+        response,
+        "Profile could not be saved."
+      );
       if (!response.ok || !("profile" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ?? "Profile could not be saved."
@@ -12659,7 +13684,10 @@ function ProfileSettingsPage({
         },
         body
       });
-      const payload = (await response.json()) as ProfileSettingsResponse | { message?: string };
+      const payload = await readJsonResponse<ProfileSettingsResponse | { message?: string }>(
+        response,
+        "Profile picture could not be uploaded."
+      );
       if (!response.ok || !("profile" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ??
@@ -12697,6 +13725,25 @@ function ProfileSettingsPage({
           Privacy
         </button>
       </div>
+      {currentUser ? (
+        <div className="settings-account-strip" aria-label="Account summary">
+          <span className="settings-account-avatar" aria-hidden="true">
+            {formState.avatarUrl ? <img src={formState.avatarUrl} alt="" /> : profileInitial}
+          </span>
+          <span>
+            <small>Handle</small>
+            <strong>@{formState.username || currentUser.username}</strong>
+          </span>
+          <span>
+            <small>Storage</small>
+            <strong>{formatCount(currentUser.storage.remainingImages)} images left</strong>
+          </span>
+          <span>
+            <small>Credits</small>
+            <strong>{formatCount(currentUser.storage.siteCredits)}</strong>
+          </span>
+        </div>
+      ) : null}
       {loading ? <p className="empty-feed">Loading settings.</p> : null}
       {message ? <p className="settings-message">{message}</p> : null}
       {!currentUser ? (
@@ -12889,7 +13936,10 @@ function PrivacySecurityPage({
     setSessionMessage("");
     try {
       const response = await fetch("/api/settings/sessions", { credentials: "include" });
-      const payload = (await response.json()) as AuthSessionsResponse | { message?: string };
+      const payload = await readJsonResponse<AuthSessionsResponse | { message?: string }>(
+        response,
+        "Active sessions could not be loaded."
+      );
       if (!response.ok || !("sessions" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ??
@@ -12914,7 +13964,10 @@ function PrivacySecurityPage({
     setBlockedUsersMessage("");
     try {
       const response = await fetch("/api/settings/blocked-users", { credentials: "include" });
-      const payload = (await response.json()) as BlockedUsersResponse | { message?: string };
+      const payload = await readJsonResponse<BlockedUsersResponse | { message?: string }>(
+        response,
+        "Blocked users could not be loaded."
+      );
       if (!response.ok || !("users" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ??
@@ -12948,9 +14001,9 @@ function PrivacySecurityPage({
       const response = await fetch("/api/settings/notification-preferences", {
         credentials: "include"
       });
-      const payload = (await response.json()) as
-        | NotificationPreferencesResponse
-        | { message?: string };
+      const payload = await readJsonResponse<
+        NotificationPreferencesResponse | { message?: string }
+      >(response, "Notification preferences could not be loaded.");
       if (!response.ok || !("preferences" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ??
@@ -12980,7 +14033,10 @@ function PrivacySecurityPage({
     setDiscordMessage("");
     try {
       const response = await fetch("/api/settings/security", { credentials: "include" });
-      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      const payload = await readJsonResponse<SecuritySettingsResponse | { message?: string }>(
+        response,
+        "Account security settings could not be loaded."
+      );
       if (!response.ok || !("twoStep" in payload)) {
         throw new Error(payload.message ?? "Account security settings could not be loaded.");
       }
@@ -13006,7 +14062,9 @@ function PrivacySecurityPage({
     setMessage("");
     fetch("/api/settings/privacy-security", { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as PrivacySecuritySettingsResponse | { message?: string };
+        const payload = await readJsonResponse<
+          PrivacySecuritySettingsResponse | { message?: string }
+        >(response, "Privacy settings could not be loaded.");
         if (!response.ok || !("privacy" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ??
@@ -13090,7 +14148,10 @@ function PrivacySecurityPage({
         },
         body: JSON.stringify(nextPrivacy)
       });
-      const payload = (await response.json()) as PrivacySecuritySettingsResponse | { message?: string };
+      const payload = await readJsonResponse<PrivacySecuritySettingsResponse | { message?: string }>(
+        response,
+        "Privacy settings could not be saved."
+      );
       if (!response.ok || !("privacy" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ??
@@ -13158,9 +14219,9 @@ function PrivacySecurityPage({
         },
         body: JSON.stringify(notificationPreferences)
       });
-      const payload = (await response.json()) as
-        | NotificationPreferencesResponse
-        | { message?: string };
+      const payload = await readJsonResponse<
+        NotificationPreferencesResponse | { message?: string }
+      >(response, "Notification preferences could not be saved.");
       if (!response.ok || !("preferences" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ??
@@ -13206,7 +14267,10 @@ function PrivacySecurityPage({
           newPassword
         })
       });
-      const payload = (await response.json()) as PasswordChangeResponse | { message?: string };
+      const payload = await readJsonResponse<PasswordChangeResponse | { message?: string }>(
+        response,
+        "Password could not be changed."
+      );
       if (!response.ok || !("csrfToken" in payload)) {
         throw new Error(payload.message ?? "Password could not be changed.");
       }
@@ -13242,7 +14306,10 @@ function PrivacySecurityPage({
           currentPassword: emailChangePassword
         })
       });
-      const payload = (await response.json()) as EmailChangeRequestResponse | { message?: string };
+      const payload = await readJsonResponse<EmailChangeRequestResponse | { message?: string }>(
+        response,
+        "Email change could not be started."
+      );
       if (!response.ok || !("pendingEmail" in payload)) {
         throw new Error(payload.message ?? "Confirmation email could not be sent.");
       }
@@ -13300,7 +14367,10 @@ function PrivacySecurityPage({
           ...options
         })
       });
-      const payload = (await response.json()) as SecurityApprovalResponse | { message?: string };
+      const payload = await readJsonResponse<SecurityApprovalResponse | { message?: string }>(
+        response,
+        "Security approval could not be started."
+      );
       if (!response.ok || !("message" in payload)) {
         throw new Error(payload.message ?? "Approval request could not be sent.");
       }
@@ -13346,7 +14416,10 @@ function PrivacySecurityPage({
         },
         body: JSON.stringify({ code: totpCode })
       });
-      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      const payload = await readJsonResponse<SecuritySettingsResponse | { message?: string }>(
+        response,
+        "Authenticator app could not be enabled."
+      );
       if (!response.ok || !("twoStep" in payload)) {
         throw new Error(payload.message ?? "Authenticator code could not be confirmed.");
       }
@@ -13403,7 +14476,10 @@ function PrivacySecurityPage({
         },
         body: JSON.stringify({ approvalToken })
       });
-      const payload = (await response.json()) as DiscordStartResponse | { message?: string };
+      const payload = await readJsonResponse<DiscordStartResponse | { message?: string }>(
+        response,
+        "Discord connection could not be started."
+      );
       if (!response.ok || !("authorizationUrl" in payload)) {
         throw new Error(payload.message ?? "Discord login could not be connected.");
       }
@@ -13430,7 +14506,10 @@ function PrivacySecurityPage({
         },
         body: JSON.stringify({ approvalToken })
       });
-      const payload = (await response.json()) as TotpSetupResponse | { message?: string };
+      const payload = await readJsonResponse<TotpSetupResponse | { message?: string }>(
+        response,
+        "Authenticator setup could not be started."
+      );
       if (!response.ok || !("secret" in payload)) {
         throw new Error(payload.message ?? "Authenticator setup could not start.");
       }
@@ -13486,7 +14565,10 @@ function PrivacySecurityPage({
         },
         body: JSON.stringify(passkeyCreationPayload(credential, approvedName))
       });
-      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      const payload = await readJsonResponse<SecuritySettingsResponse | { message?: string }>(
+        response,
+        "Passkey could not be added."
+      );
       if (!response.ok || !("twoStep" in payload)) {
         throw new Error(payload.message ?? "Passkey could not be added.");
       }
@@ -13512,7 +14594,10 @@ function PrivacySecurityPage({
         },
         body: JSON.stringify({ approvalToken })
       });
-      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      const payload = await readJsonResponse<SecuritySettingsResponse | { message?: string }>(
+        response,
+        "Authenticator app could not be disabled."
+      );
       if (!response.ok || !("twoStep" in payload)) {
         throw new Error(payload.message ?? "Authenticator app could not be disabled.");
       }
@@ -13539,7 +14624,10 @@ function PrivacySecurityPage({
         },
         body: JSON.stringify({ enabled, approvalToken })
       });
-      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      const payload = await readJsonResponse<SecuritySettingsResponse | { message?: string }>(
+        response,
+        "Email codes could not be updated."
+      );
       if (!response.ok || !("twoStep" in payload)) {
         throw new Error(payload.message ?? "Email codes could not be updated.");
       }
@@ -13568,7 +14656,10 @@ function PrivacySecurityPage({
         },
         body: JSON.stringify({ approvalToken })
       });
-      const payload = (await response.json()) as SecuritySettingsResponse | { message?: string };
+      const payload = await readJsonResponse<SecuritySettingsResponse | { message?: string }>(
+        response,
+        "Passkey could not be removed."
+      );
       if (!response.ok || !("twoStep" in payload)) {
         throw new Error(payload.message ?? "Passkey could not be removed.");
       }
@@ -13619,7 +14710,10 @@ function PrivacySecurityPage({
         },
         body: JSON.stringify({ code })
       });
-      const payload = (await response.json()) as SecurityApprovalCodeResponse | { message?: string };
+      const payload = await readJsonResponse<SecurityApprovalCodeResponse | { message?: string }>(
+        response,
+        "Backup code could not be approved."
+      );
       if (!response.ok || !("approvalToken" in payload) || !("action" in payload)) {
         throw new Error(payload.message ?? "Approval code could not be verified.");
       }
@@ -13718,7 +14812,10 @@ function PrivacySecurityPage({
           }
         }
       );
-      const payload = (await response.json()) as RevokeSessionsResponse | { message?: string };
+      const payload = await readJsonResponse<RevokeSessionsResponse | { message?: string }>(
+        response,
+        "Session could not be revoked."
+      );
       if (!response.ok || !("sessions" in payload) || !("csrfToken" in payload)) {
         throw new Error(payload.message ?? "Session could not be revoked.");
       }
@@ -13749,7 +14846,10 @@ function PrivacySecurityPage({
           }
         }
       );
-      const payload = (await response.json()) as UnblockUserResponse | { message?: string };
+      const payload = await readJsonResponse<UnblockUserResponse | { message?: string }>(
+        response,
+        "User could not be unblocked."
+      );
       if (!response.ok || !("users" in payload)) {
         throw new Error(payload.message ?? "User could not be unblocked.");
       }
@@ -13771,7 +14871,10 @@ function PrivacySecurityPage({
     setExportMessage("");
     try {
       const response = await fetch("/api/settings/export", { credentials: "include" });
-      const payload = (await response.json()) as AccountExportResponse | { message?: string };
+      const payload = await readJsonResponse<AccountExportResponse | { message?: string }>(
+        response,
+        "Account export could not be created."
+      );
       if (!response.ok || !("exportedAt" in payload)) {
         throw new Error(
           ("message" in payload ? payload.message : undefined) ??
@@ -13828,7 +14931,10 @@ function PrivacySecurityPage({
           confirmation: deactivationConfirmation
         })
       });
-      const payload = (await response.json()) as AccountDeactivationResponse | { message?: string };
+      const payload = await readJsonResponse<AccountDeactivationResponse | { message?: string }>(
+        response,
+        "Account could not be deactivated."
+      );
       if (!response.ok || !("deactivated" in payload)) {
         throw new Error(payload.message ?? "Account could not be deactivated.");
       }
@@ -13854,6 +14960,11 @@ function PrivacySecurityPage({
   const emailCodesEnabled = securitySettings?.twoStep.emailEnabled ?? false;
   const hasPasskeys = (securitySettings?.passkeys.length ?? 0) > 0;
   const securityMethodCount = [totpEnabled, emailCodesEnabled, hasPasskeys].filter(Boolean).length;
+  const profileVisibilityLabel =
+    profileVisibilityOptions.find((option) => option.value === profileVisibility)?.label ??
+    "Public";
+  const bookmarkDefaultLabel =
+    bookmarkDefaultVisibility === "private" ? "Private saves" : "Public saves";
   const securitySummary = securityLoading
     ? "Loading"
     : securityMethodCount > 0
@@ -13883,6 +14994,29 @@ function PrivacySecurityPage({
           Profile
         </button>
       </div>
+      {currentUser ? (
+        <div className="settings-account-strip settings-privacy-strip" aria-label="Privacy and security summary">
+          <span className="settings-account-avatar" aria-hidden="true">
+            <ShieldCheck size={20} />
+          </span>
+          <span>
+            <small>Profile</small>
+            <strong>{profileVisibilityLabel}</strong>
+          </span>
+          <span>
+            <small>Bookmarks</small>
+            <strong>{bookmarkDefaultLabel}</strong>
+          </span>
+          <span>
+            <small>Two-step</small>
+            <strong>{securitySummary}</strong>
+          </span>
+          <span>
+            <small>Sessions</small>
+            <strong>{formatCount(sessions.length)} active</strong>
+          </span>
+        </div>
+      ) : null}
       {loading ? <p className="empty-feed">Loading settings.</p> : null}
       {!currentUser ? (
         <button className="primary-button" type="button" onClick={onAuthRequired}>
@@ -14798,6 +15932,18 @@ type PolicyPageProps =
 
 function PolicyPage(props: PolicyPageProps) {
   const isTerms = props.kind === "terms";
+  const PolicyIcon = isTerms ? FileText : Shield;
+  const policyHighlights = isTerms
+    ? [
+        { label: "Accounts", value: "Verified email", icon: UserRound },
+        { label: "Publishing", value: "Creator-owned", icon: ImageUp },
+        { label: "Moderation", value: "Safety-first", icon: ShieldCheck }
+      ]
+    : [
+        { label: "Data", value: "Account archive", icon: Database },
+        { label: "Runtime", value: "Cloudflare", icon: Cloud },
+        { label: "Visibility", value: "User controls", icon: Lock }
+      ];
   const sections = isTerms
     ? [
         {
@@ -14857,11 +16003,23 @@ function PolicyPage(props: PolicyPageProps) {
   return (
     <section className="content-main policy-page">
       <div className="policy-heading">
-        <p className="eyebrow">NEHub</p>
-        <h1>
-          {isTerms ? "Terms of Use" : "Privacy Policy"}
-        </h1>
-        <p>Last updated {policyUpdatedDate}</p>
+        <div>
+          <p className="eyebrow">NEHub</p>
+          <h1>{isTerms ? "Terms of Use" : "Privacy Policy"}</h1>
+          <p>Last updated {policyUpdatedDate}</p>
+        </div>
+        <span className="policy-heading-icon" aria-hidden="true">
+          <PolicyIcon size={30} />
+        </span>
+      </div>
+      <div className="policy-quick-strip" aria-label={`${isTerms ? "Terms" : "Privacy"} highlights`}>
+        {policyHighlights.map(({ label, value, icon: Icon }) => (
+          <span key={label}>
+            <Icon size={15} />
+            <small>{label}</small>
+            <strong>{value}</strong>
+          </span>
+        ))}
       </div>
       <div className="policy-grid">
         {sections.map((section) => (
@@ -15212,7 +16370,10 @@ function NovelHubPage({
         credentials: "include",
         headers: csrfToken ? { [csrfHeaderName]: csrfToken } : undefined
       });
-      const payload = (await response.json()) as FollowResponse | { message?: string };
+      const payload = await readJsonResponse<FollowResponse | { message?: string }>(
+        response,
+        "Follow action failed."
+      );
       if (!response.ok || !("following" in payload)) {
         throw new Error(payload.message ?? "Follow action failed.");
       }
@@ -15328,6 +16489,182 @@ function NovelHubPage({
     isCollectionSection && "collection-page collection-discover-page",
     isDedicatedNovelSection && "novel-section-page"
   );
+  const activeCreatorSortLabel =
+    creatorDiscoverySortOptions.find((option) => option.value === creatorSort)?.label ?? "Popular";
+  const activeShelfSortLabel =
+    collectionDiscoverySortOptions.find((option) => option.value === shelfSort)?.label ?? "Updated";
+  const activeNovelAccessLabel = matureAccessShortLabel(data?.matureAccess ?? null);
+  const visibleAuthorNovelCount = visibleCreatorItems.reduce(
+    (total, item) => total + item.authorNovels.length,
+    0
+  );
+  const visibleAuthorFollowers = visibleCreatorItems.reduce(
+    (total, item) => total + item.creator.followerCount,
+    0
+  );
+  const novelTags = data?.tags ?? [];
+  const followedNovelTagMentions = novelTags.reduce((total, tag) => total + tag.count, 0);
+  const activeNovelTagCount = activeTag
+    ? novelTags.find((tag) => tag.name.toLowerCase() === activeTag.toLowerCase())?.count ?? 0
+    : novelTags[0]?.count ?? 0;
+  const topNovelTagLabel = activeTag
+    ? `#${activeTag}`
+    : novelTags[0]
+      ? `#${novelTags[0].name}`
+      : "No tags";
+  const visibleRankingCount = rankingItems.length || (isRankingsSection ? sectionNovels.length : 0);
+  const topNovelRanking = rankingItems[0] ?? null;
+  const topNovelRankingScore =
+    topNovelRanking?.score || topNovelRanking?.novel.likeCount || sectionNovels[0]?.likeCount || 0;
+  const totalNovelRankingScore =
+    rankingItems.length > 0
+      ? rankingItems.reduce((total, item) => total + (item.score || item.novel.likeCount), 0)
+      : sectionNovels.reduce((total, novel) => total + novel.likeCount, 0);
+  const recommendedCreatorFollowerCount = recommendedCreators.reduce(
+    (total, creator) => total + creator.followerCount,
+    0
+  );
+  const visibleShelfNovelCount = visibleCollections.reduce(
+    (total, collection) => total + collection.novelCount,
+    0
+  );
+  const latestShelfUpdatedAt = visibleCollections.reduce<string | null>(
+    (latest, collection) =>
+      !latest || new Date(collection.updatedAt).getTime() > new Date(latest).getTime()
+        ? collection.updatedAt
+        : latest,
+    null
+  );
+  const latestShelfLabel = latestShelfUpdatedAt
+    ? dateFormat.format(new Date(latestShelfUpdatedAt))
+    : "No shelves";
+  const novelDiscoverySummaryStrip = (() => {
+    if (isCreatorSection) {
+      return (
+        <div className="discovery-summary-strip novel-summary-strip" aria-label="Novel author summary">
+          <span>
+            <UserRound size={18} />
+            <small>Authors</small>
+            <strong>{formatCount(visibleCreatorItems.length)}</strong>
+          </span>
+          <span>
+            <NotebookText size={18} />
+            <small>Novels shown</small>
+            <strong>{formatCount(visibleAuthorNovelCount)}</strong>
+          </span>
+          <span>
+            <UserPlus size={18} />
+            <small>Followers</small>
+            <strong>{formatCount(visibleAuthorFollowers)}</strong>
+          </span>
+          <span>
+            <Flame size={18} />
+            <small>Sort</small>
+            <strong>{activeCreatorSortLabel}</strong>
+          </span>
+          <span title={creatorSearchQuery || "All authors"}>
+            <Search size={18} />
+            <small>Search</small>
+            <strong>{creatorSearchQuery ? `"${creatorSearchQuery}"` : "All authors"}</strong>
+          </span>
+        </div>
+      );
+    }
+    if (isTagSection) {
+      return (
+        <div className="discovery-summary-strip novel-summary-strip" aria-label="Novel tag summary">
+          <span>
+            <Bell size={18} />
+            <small>Followed tags</small>
+            <strong>{data ? formatCount(novelTags.length) : "..."}</strong>
+          </span>
+          <span>
+            <NotebookText size={18} />
+            <small>Tag mentions</small>
+            <strong>{formatCount(followedNovelTagMentions)}</strong>
+          </span>
+          <span title={topNovelTagLabel}>
+            <Sparkles size={18} />
+            <small>{activeTag ? "Active tag" : "Top tag"}</small>
+            <strong>{topNovelTagLabel}</strong>
+          </span>
+          <span>
+            <Grid3X3 size={18} />
+            <small>Tag works</small>
+            <strong>{formatCount(activeNovelTagCount)}</strong>
+          </span>
+          <span title={matureAccessLabel(data?.matureAccess ?? null)}>
+            <Shield size={18} />
+            <small>Access</small>
+            <strong>{activeNovelAccessLabel}</strong>
+          </span>
+        </div>
+      );
+    }
+    if (isRankingsSection) {
+      return (
+        <div className="discovery-summary-strip novel-summary-strip" aria-label="Novel ranking summary">
+          <span>
+            <ListOrdered size={18} />
+            <small>Ranked novels</small>
+            <strong>{formatCount(visibleRankingCount)}</strong>
+          </span>
+          <span>
+            <Trophy size={18} />
+            <small>Top score</small>
+            <strong>{formatCount(topNovelRankingScore)}</strong>
+          </span>
+          <span>
+            <Heart size={18} />
+            <small>Recent likes</small>
+            <strong>{formatCount(totalNovelRankingScore)}</strong>
+          </span>
+          <span>
+            <Calendar size={18} />
+            <small>Period</small>
+            <strong>{rankingPeriod === "weekly" ? "Weekly" : "Daily"}</strong>
+          </span>
+          <span title={matureAccessLabel(data?.matureAccess ?? null)}>
+            <Shield size={18} />
+            <small>Access</small>
+            <strong>{activeNovelAccessLabel}</strong>
+          </span>
+        </div>
+      );
+    }
+    if (isCollectionSection) {
+      return (
+        <div className="discovery-summary-strip novel-summary-strip" aria-label="Novel shelf summary">
+          <span>
+            <FolderOpen size={18} />
+            <small>Shelves</small>
+            <strong>{formatCount(visibleCollections.length)}</strong>
+          </span>
+          <span>
+            <NotebookText size={18} />
+            <small>Saved novels</small>
+            <strong>{formatCount(visibleShelfNovelCount)}</strong>
+          </span>
+          <span>
+            <Calendar size={18} />
+            <small>Latest update</small>
+            <strong>{latestShelfLabel}</strong>
+          </span>
+          <span>
+            <Grid3X3 size={18} />
+            <small>Sort</small>
+            <strong>{activeShelfSortLabel}</strong>
+          </span>
+          <span title={shelfSearchQuery || "All shelves"}>
+            <Search size={18} />
+            <small>Search</small>
+            <strong>{shelfSearchQuery ? `"${shelfSearchQuery}"` : currentUser ? "All shelves" : "Sign in"}</strong>
+          </span>
+        </div>
+      );
+    }
+    return null;
+  })();
   const novelRightRail = showNovelRightRail ? (
     <aside className="right-rail novel-right-rail" aria-label="Novel recommendations">
       <section className="side-panel ranking-panel">
@@ -15349,6 +16686,16 @@ function NovelHubPage({
             ))}
           </div>
         </div>
+        <div className="rail-summary-card ranking-summary-card" aria-label="Novel ranking summary">
+          <span className="rail-summary-icon">
+            <Trophy size={17} />
+          </span>
+          <span>
+            <small>{rankingPeriod === "weekly" ? "Weekly top read" : "Daily top read"}</small>
+            <strong>{topNovelRanking ? topNovelRanking.novel.title : "Awaiting scores"}</strong>
+          </span>
+          <em>{formatCount(topNovelRankingScore)} pts</em>
+        </div>
         {rankingItems.slice(0, 5).map(({ novel, score }, index) => (
           <button
             className="ranking-row novel-ranking-row"
@@ -15362,11 +16709,16 @@ function NovelHubPage({
             </span>
             <span>
               <strong>{novel.title}</strong>
-              <small>{formatCount(score || novel.likeCount)} recent reads</small>
+              <small>{formatCount(score || novel.likeCount)} pts · {formatCount(novel.readMinutes)} min</small>
             </span>
           </button>
         ))}
-        {rankingItems.length === 0 ? <p className="muted">No ranked novels yet.</p> : null}
+        {rankingItems.length === 0 ? (
+          <div className="rail-empty-card">
+            <Sparkles size={16} />
+            <span>No ranked novels yet.</span>
+          </div>
+        ) : null}
       </section>
 
       <ActivityPanel
@@ -15377,9 +16729,22 @@ function NovelHubPage({
       />
 
       <section className="side-panel creator-panel">
-        <div className="panel-title">
-          <ShieldCheck size={18} />
-          Recommended users
+        <div className="panel-title creator-panel-title">
+          <span>
+            <ShieldCheck size={18} />
+            Recommended users
+          </span>
+          <small>{formatCount(recommendedCreators.length)} picks</small>
+        </div>
+        <div className="rail-summary-card creator-summary-card" aria-label="Recommended author summary">
+          <span className="rail-summary-icon">
+            <UserPlus size={17} />
+          </span>
+          <span>
+            <small>Author watchlist</small>
+            <strong>{formatCount(recommendedCreatorFollowerCount)} followers</strong>
+          </span>
+          <em>Live</em>
         </div>
         {recommendedCreators.slice(0, 5).map((creator) => (
           <button
@@ -15398,13 +16763,21 @@ function NovelHubPage({
             )}
             <div>
               <strong>{creator.displayName}</strong>
-              <span>@{creator.handle}</span>
+              <span>
+                @{creator.handle} · {formatCount(creator.followerCount)} followers
+              </span>
             </div>
             <span className="icon-button creator-row-icon" aria-label={`Open ${creator.displayName}`}>
               <UserPlus size={15} />
             </span>
           </button>
         ))}
+        {recommendedCreators.length === 0 ? (
+          <div className="rail-empty-card">
+            <UserPlus size={16} />
+            <span>No recommended users yet.</span>
+          </div>
+        ) : null}
       </section>
     </aside>
   ) : null;
@@ -15476,6 +16849,8 @@ function NovelHubPage({
           ) : null}
         </div>
       </div>
+
+      {isTagSection || isRankingsSection ? novelDiscoverySummaryStrip : null}
 
       {showContinueReading ? (
         <section className="novel-continue-section" aria-label="Continue reading">
@@ -15583,6 +16958,7 @@ function NovelHubPage({
               })}
             </div>
           </div>
+          {novelDiscoverySummaryStrip}
           <MatureAccessNotice
             matureAccess={data?.matureAccess ?? null}
             onLogin={onAuthRequired}
@@ -15718,6 +17094,7 @@ function NovelHubPage({
               })}
             </div>
           </div>
+          {novelDiscoverySummaryStrip}
           <MatureAccessNotice
             matureAccess={data?.matureAccess ?? null}
             onLogin={onAuthRequired}
@@ -16032,6 +17409,9 @@ function NovelDetailPage({
     safePageIndex * paragraphsPerPage,
     safePageIndex * paragraphsPerPage + paragraphsPerPage
   );
+  const readerPositionLabel =
+    novel.contentFormat === "markdown" ? "Markdown" : `${safePageIndex + 1} / ${totalPages}`;
+  const novelStatusLabel = novel.isDraft ? "Draft" : novel.visibility;
   const saveReadingProgress = (nextPageIndex = safePageIndex) => {
     if (!currentUser) {
       return;
@@ -16386,6 +17766,34 @@ function NovelDetailPage({
         ) : null}
       </header>
 
+      <div className="novel-reader-strip" aria-label="Reader summary">
+        <span>
+          <Clock size={17} />
+          <strong>{novel.readMinutes} min</strong>
+          <small>reading time</small>
+        </span>
+        <span>
+          <NotebookText size={17} />
+          <strong>{formatCount(novel.wordCount)}</strong>
+          <small>words</small>
+        </span>
+        <span>
+          <Bookmark size={17} />
+          <strong>{readerPositionLabel}</strong>
+          <small>reader position</small>
+        </span>
+        <span>
+          <Eye size={17} />
+          <strong>{novelStatusLabel}</strong>
+          <small>status</small>
+        </span>
+        <span>
+          <Calendar size={17} />
+          <strong>{dateFormat.format(new Date(novel.createdAt))}</strong>
+          <small>published</small>
+        </span>
+      </div>
+
       <div className="novel-reading-layout">
         <div className="novel-body" style={{ fontSize }}>
           <div className="novel-reader-controls" aria-label="Reader controls">
@@ -16605,6 +18013,8 @@ type IllustrationsPageProps = {
   sortMode: SortMode;
   feedTitle: string;
   feedMeta: string;
+  totalLikes: number;
+  totalViews: number;
   galleryLoadingMore: boolean;
   isBookmarksView: boolean;
   onAuthRequired: () => void;
@@ -16621,6 +18031,10 @@ type IllustrationsPageProps = {
   onOpenProfile: (username: string) => void;
   onLoadMore: () => void;
   onRankingPeriodChange: (period: RankingPeriod) => void;
+  onOpenCreatorDiscover: () => void;
+  onOpenRankings: () => void;
+  onOpenCollectionDiscover: () => void;
+  onOpenSubscriptions: () => void;
 };
 
 function IllustrationsPage({
@@ -16636,6 +18050,8 @@ function IllustrationsPage({
   sortMode,
   feedTitle,
   feedMeta,
+  totalLikes,
+  totalViews,
   galleryLoadingMore,
   isBookmarksView,
   onAuthRequired,
@@ -16651,8 +18067,59 @@ function IllustrationsPage({
   onBookmark,
   onOpenProfile,
   onLoadMore,
-  onRankingPeriodChange
+  onRankingPeriodChange,
+  onOpenCreatorDiscover,
+  onOpenRankings,
+  onOpenCollectionDiscover,
+  onOpenSubscriptions
 }: IllustrationsPageProps) {
+  const featuredArtwork = artworks[0] ?? rankingItems[0]?.artwork ?? null;
+  const topRanking = rankingItems[0];
+  const topRankingScore = topRanking?.score || topRanking?.artwork.likeCount || 0;
+  const recommendedCreatorFollowerCount = creators.reduce(
+    (total, creator) => total + creator.followerCount,
+    0
+  );
+  const galleryTotal = gallery?.totalCount ?? artworks.length;
+  const activeModeLabel =
+    sortMode === "bookmarks"
+      ? "Bookmark shelf"
+      : sortMode === "subscriptions"
+        ? "Tag watch"
+        : sortMode === "following"
+          ? "Following feed"
+          : sortMode === "popular"
+            ? "Popular feed"
+            : sortMode === "rising"
+              ? "Rising feed"
+              : "Recommended feed";
+  const discoveryTiles = [
+    {
+      label: "Creators",
+      value: formatCount(creators.length),
+      icon: UserPlus,
+      onClick: onOpenCreatorDiscover
+    },
+    {
+      label: rankingPeriod === "weekly" ? "Weekly ranking" : "Daily ranking",
+      value: formatCount(rankingItems.length),
+      icon: Trophy,
+      onClick: onOpenRankings
+    },
+    {
+      label: "Followed tags",
+      value: formatCount(prominentTags.length),
+      icon: Bell,
+      onClick: onOpenSubscriptions
+    },
+    {
+      label: "Public folders",
+      value: "Open",
+      icon: FolderOpen,
+      onClick: onOpenCollectionDiscover
+    }
+  ];
+
   return (
     <>
       <section className="feed-main">
@@ -16661,43 +18128,135 @@ function IllustrationsPage({
           onLogin={onAuthRequired}
           onPrivacySecurity={onPrivacySecurity}
         />
-        <div className="section-heading">
-          <div>
-            <h1>{feedTitle}</h1>
-            <p>{feedMeta}</p>
+        <div className="illustration-hero">
+          <div className="section-heading illustration-section-heading">
+            <div>
+              <p className="eyebrow">Illustrations</p>
+              <h1>{feedTitle}</h1>
+              <p>{feedMeta}</p>
+            </div>
+            <div className="feed-controls illustration-feed-controls">
+              <label className="rating-filter">
+                <Shield size={15} />
+                <select
+                  value={matureFilter}
+                  onChange={(event) => onMatureFilterChange(event.target.value as MatureFilter)}
+                >
+                  {matureFilterOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="filter-chip sort-filter">
+                <Grid3X3 size={15} />
+                <select
+                  value={sortMode}
+                  onChange={(event) => onSortModeChange(event.target.value as SortMode)}
+                  aria-label="Illustration feed"
+                >
+                  {illustrationSortOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={15} aria-hidden="true" />
+              </label>
+              <button className="filter-reset-button" type="button" onClick={onResetFilters}>
+                Reset
+              </button>
+            </div>
           </div>
-          <div className="feed-controls illustration-feed-controls">
-            <label className="rating-filter">
-              <Shield size={15} />
-              <select
-                value={matureFilter}
-                onChange={(event) => onMatureFilterChange(event.target.value as MatureFilter)}
-              >
-                {matureFilterOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="filter-chip sort-filter">
-              <Grid3X3 size={15} />
-              <select
-                value={sortMode}
-                onChange={(event) => onSortModeChange(event.target.value as SortMode)}
-                aria-label="Illustration feed"
-              >
-                {illustrationSortOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={15} aria-hidden="true" />
-            </label>
-            <button className="filter-reset-button" type="button" onClick={onResetFilters}>
-              Reset
+          <div className="illustration-hero-grid" aria-label="Feed summary">
+            <button
+              className={classNames("spotlight-card", !featuredArtwork && "is-empty")}
+              type="button"
+              disabled={!featuredArtwork}
+              onClick={() => featuredArtwork && onOpenArtwork(featuredArtwork)}
+            >
+              {featuredArtwork ? (
+                <>
+                  <img
+                    src={featuredArtwork.thumbnailUrl}
+                    alt=""
+                    loading="eager"
+                    decoding="async"
+                  />
+                  <span>
+                    <small>Spotlight</small>
+                    <strong>{featuredArtwork.title}</strong>
+                    <em>by {featuredArtwork.creator.displayName}</em>
+                  </span>
+                </>
+              ) : (
+                <span>
+                  <small>Spotlight</small>
+                  <strong>No work loaded yet</strong>
+                  <em>Awaiting the first upload.</em>
+                </span>
+              )}
             </button>
+            <div className="feed-stat-panel">
+              <span>
+                <strong>{formatCount(galleryTotal)}</strong>
+                Works
+              </span>
+              <span>
+                <strong>{formatCount(totalLikes)}</strong>
+                Likes
+              </span>
+              <span>
+                <strong>{formatCount(totalViews)}</strong>
+                Views
+              </span>
+              <span>
+                <strong>{formatCount(prominentTags.length)}</strong>
+                Tags
+              </span>
+            </div>
+            <button
+              className="trend-card"
+              type="button"
+              disabled={!topRanking}
+              onClick={() => topRanking && onOpenArtwork(topRanking.artwork)}
+            >
+              <Trophy size={18} />
+              <span>
+                <small>{activeModeLabel}</small>
+                <strong>
+                  {topRanking ? `#1 ${topRanking.artwork.title}` : "Ranking opens after likes"}
+                </strong>
+                <em>
+                  {topRanking
+                    ? `${formatCount(topRanking.score || topRanking.artwork.likeCount)} recent likes`
+                    : "Waiting for new scores."}
+                </em>
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <div className="discovery-jump-grid" aria-label="Discovery shortcuts">
+          {discoveryTiles.map(({ label, value, icon: Icon, onClick }) => (
+            <button className="discovery-jump-card" type="button" key={label} onClick={onClick}>
+              <Icon size={18} />
+              <span>
+                <strong>{label}</strong>
+                <small>{value}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <div className="section-heading feed-subheading">
+          <div>
+            <h2>Browse works</h2>
+            <p>
+              {formatCount(artworks.length)} shown · {formatCount(prominentTags.length)} live tags ·{" "}
+              {formatCount(rankingItems.length)} ranked
+            </p>
           </div>
         </div>
 
@@ -16754,7 +18313,7 @@ function IllustrationsPage({
         {artworks.length === 0 ? (
           <p className="empty-feed">
             {isBookmarksView
-              ? "Bookmarked works will appear here after you save them."
+              ? "Saved works will appear here."
               : "No artwork matches this view yet."}
           </p>
         ) : null}
@@ -16780,6 +18339,16 @@ function IllustrationsPage({
               ))}
             </div>
           </div>
+          <div className="rail-summary-card ranking-summary-card" aria-label="Illustration ranking summary">
+            <span className="rail-summary-icon">
+              <Trophy size={17} />
+            </span>
+            <span>
+              <small>{rankingPeriod === "weekly" ? "Weekly top work" : "Daily top work"}</small>
+              <strong>{topRanking ? topRanking.artwork.title : "Awaiting scores"}</strong>
+            </span>
+            <em>{formatCount(topRankingScore)} pts</em>
+          </div>
           {rankingItems.slice(0, 5).map(({ artwork, score }, index) => (
             <button
               className="ranking-row"
@@ -16791,11 +18360,16 @@ function IllustrationsPage({
               <img src={artwork.thumbnailUrl} alt="" loading="lazy" decoding="async" />
               <span>
                 <strong>{artwork.title}</strong>
-                <small>{formatCount(score || artwork.likeCount)} recent likes</small>
+                <small>{formatCount(score || artwork.likeCount)} pts · {formatCount(artwork.viewCount)} views</small>
               </span>
             </button>
           ))}
-          {rankingItems.length === 0 ? <p className="muted">No ranked works yet.</p> : null}
+          {rankingItems.length === 0 ? (
+            <div className="rail-empty-card">
+              <Sparkles size={16} />
+              <span>No ranked works yet.</span>
+            </div>
+          ) : null}
         </section>
 
         <ActivityPanel
@@ -16806,9 +18380,22 @@ function IllustrationsPage({
         />
 
         <section className="side-panel creator-panel">
-          <div className="panel-title">
-            <ShieldCheck size={18} />
-            Recommended users
+          <div className="panel-title creator-panel-title">
+            <span>
+              <ShieldCheck size={18} />
+              Recommended users
+            </span>
+            <small>{formatCount(creators.length)} picks</small>
+          </div>
+          <div className="rail-summary-card creator-summary-card" aria-label="Recommended creator summary">
+            <span className="rail-summary-icon">
+              <UserPlus size={17} />
+            </span>
+            <span>
+              <small>Creator watchlist</small>
+              <strong>{formatCount(recommendedCreatorFollowerCount)} followers</strong>
+            </span>
+            <em>Live</em>
           </div>
           {creators.slice(0, 5).map((creator) => (
             <button
@@ -16827,13 +18414,21 @@ function IllustrationsPage({
               )}
               <div>
                 <strong>{creator.displayName}</strong>
-                <span>@{creator.handle}</span>
+                <span>
+                  @{creator.handle} · {formatCount(creator.followerCount)} followers
+                </span>
               </div>
               <span className="icon-button creator-row-icon" aria-label={`Open ${creator.displayName}`}>
                 <UserPlus size={15} />
               </span>
             </button>
           ))}
+          {creators.length === 0 ? (
+            <div className="rail-empty-card">
+              <UserPlus size={16} />
+              <span>No recommended users yet.</span>
+            </div>
+          ) : null}
         </section>
       </aside>
     </>
@@ -16858,6 +18453,9 @@ function ArtworkCard({
   onOpenProfile
 }: ArtworkCardProps) {
   const artworkPath = `/artworks/${encodeURIComponent(artwork.id)}`;
+  const primaryTag = artwork.tags[0] ?? "";
+  const artworkEngagement =
+    artwork.likeCount + artwork.bookmarkCount + artwork.viewCount + artwork.commentCount;
 
   return (
     <article
@@ -16882,6 +18480,7 @@ function ArtworkCard({
             {artwork.images.length}
           </span>
         ) : null}
+        {primaryTag ? <span className="image-tag-badge">#{primaryTag}</span> : null}
         {artwork.matureRating !== "general" ? (
           <span className={classNames("rating-badge", `is-${artwork.matureRating}`)}>
             {matureRatingLabel(artwork.matureRating)}
@@ -16897,6 +18496,20 @@ function ArtworkCard({
             {artwork.reviewStatus}
           </span>
         ) : null}
+        <span className="image-hover-action" aria-hidden="true">
+          <Eye size={15} />
+          View
+        </span>
+        <span className="image-signal-strip" aria-hidden="true">
+          <span>
+            <Heart size={13} />
+            {formatCount(artwork.likeCount)}
+          </span>
+          <span>
+            <MessageCircle size={13} />
+            {formatCount(artwork.commentCount)}
+          </span>
+        </span>
       </button>
       <div className="art-card-body">
         <a
@@ -16919,6 +18532,11 @@ function ArtworkCard({
         >
           {artwork.title}
         </a>
+        <div className="art-card-microline" aria-label="Artwork summary">
+          <span>{artwork.images.length > 1 ? `${artwork.images.length} pages` : "Single"}</span>
+          <span>{formatCount(artworkEngagement)} signals</span>
+          <span>{dateFormat.format(new Date(artwork.createdAt))}</span>
+        </div>
         <button className="creator-mini creator-mini-link" type="button" onClick={() => onOpenProfile(artwork.creator.handle)}>
           {artwork.creator.avatarUrl ? (
             <img src={artwork.creator.avatarUrl} alt="" />
@@ -16927,6 +18545,13 @@ function ArtworkCard({
           )}
           <span>{artwork.creator.displayName}</span>
         </button>
+        {artwork.tags.length > 1 ? (
+          <div className="art-card-tags" aria-label="Artwork tags">
+            {artwork.tags.slice(0, 3).map((tag) => (
+              <span key={tag}>#{tag}</span>
+            ))}
+          </div>
+        ) : null}
       </div>
       <div className="art-stats">
         <span>
@@ -17129,6 +18754,60 @@ function ArtworkDialog({
     .map((imageId) => artworkImages.find((image) => image.id === imageId))
     .filter((image): image is (typeof artworkImages)[number] => Boolean(image));
   const relatedArtworks = detail?.relatedArtworks ?? [];
+  const artworkCommentCount = detail?.comments.length ?? artwork.commentCount;
+  const totalArtworkSignals = artwork.likeCount + artwork.bookmarkCount + artworkCommentCount;
+  const artworkEngagementRate =
+    Math.round((totalArtworkSignals / Math.max(1, artwork.viewCount)) * 1000) / 10;
+  const imageDimensions = `${formatCount(artwork.width)} x ${formatCount(artwork.height)}`;
+  const artworkMetaItems = [
+    {
+      label: "Pages",
+      value: formatCount(artworkImages.length),
+      icon: Images
+    },
+    {
+      label: "Rating",
+      value: matureRatingLabel(artwork.matureRating),
+      icon: Eye
+    },
+    {
+      label: "Posted",
+      value: dateFormat.format(new Date(artwork.createdAt)),
+      icon: Calendar
+    },
+    {
+      label: "Size",
+      value: imageDimensions,
+      icon: Grid3X3
+    }
+  ];
+  const artworkSignalItems = [
+    {
+      label: "Likes",
+      value: formatCount(artwork.likeCount),
+      icon: Heart
+    },
+    {
+      label: "Bookmarks",
+      value: formatCount(artwork.bookmarkCount),
+      icon: Bookmark
+    },
+    {
+      label: "Comments",
+      value: formatCount(artworkCommentCount),
+      icon: MessageCircle
+    },
+    {
+      label: "Views",
+      value: formatCount(artwork.viewCount),
+      icon: Eye
+    },
+    {
+      label: "Signal",
+      value: `${artworkEngagementRate}%`,
+      icon: TrendingUp
+    }
+  ];
   const canManageArtwork =
     Boolean(currentUser && currentUser.id === artwork.creator.id) ||
     currentUser?.role === "admin";
@@ -17630,6 +19309,13 @@ function ArtworkDialog({
           <X size={20} />
         </button>
         <div className={classNames("modal-art-stage", artworkImages.length > 1 && "is-series")}>
+          <div className="artwork-stage-ribbon" aria-label="Artwork page count">
+            <Images size={15} />
+            <span>
+              <strong>{formatCount(artworkImages.length)}</strong>
+              <small>{artworkImages.length === 1 ? "page" : "pages"}</small>
+            </span>
+          </div>
           {artworkImages.map((image, index) => (
             <figure className="modal-art-frame" key={image.id}>
               <img src={image.imageUrl} alt={artwork.title} />
@@ -17651,6 +19337,7 @@ function ArtworkDialog({
             <div>
               <strong>{artwork.creator.displayName}</strong>
               <span>@{artwork.creator.handle}</span>
+              <small>{formatCount(artwork.creator.followerCount)} followers</small>
             </div>
           </button>
           <h2>{artwork.title}</h2>
@@ -17664,6 +19351,24 @@ function ArtworkDialog({
               {artwork.reviewStatus}
             </span>
           ) : null}
+          <div className="artwork-detail-strip" aria-label="Artwork details">
+            {artworkMetaItems.map(({ label, value, icon: Icon }) => (
+              <span key={label}>
+                <Icon size={15} />
+                <small>{label}</small>
+                <strong>{value}</strong>
+              </span>
+            ))}
+          </div>
+          <div className="artwork-signal-strip" aria-label="Artwork engagement">
+            {artworkSignalItems.map(({ label, value, icon: Icon }) => (
+              <span key={label}>
+                <Icon size={15} fill={label === "Likes" && artwork.liked ? "currentColor" : "none"} />
+                <strong>{value}</strong>
+                <small>{label}</small>
+              </span>
+            ))}
+          </div>
           <p>{artwork.caption}</p>
           <div className="tag-row modal-tags">
             {artwork.tags.map((tag) => (
@@ -18198,10 +19903,9 @@ function TagChipEditor({
         signal: controller.signal
       })
         .then(async (response) => {
-          const payload = (await response.json()) as
-            | SearchSuggestionsResponse
-            | NovelSearchSuggestionsResponse
-            | { message?: string };
+          const payload = await readJsonResponse<
+            SearchSuggestionsResponse | NovelSearchSuggestionsResponse | { message?: string }
+          >(response, "Tag suggestions could not be loaded.");
           if (!response.ok || !("tags" in payload)) {
             throw new Error(
               ("message" in payload ? payload.message : undefined) ??
@@ -18352,6 +20056,9 @@ function ReadingListsPage({
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const totalShelfEntries = readingLists.reduce((total, readingList) => total + readingList.novelCount, 0);
+  const publicShelves = readingLists.filter((readingList) => readingList.visibility === "public").length;
+  const privateShelves = readingLists.length - publicShelves;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -18374,11 +20081,7 @@ function ReadingListsPage({
   if (!currentUser) {
     return (
       <section className="content-main collection-page novel-dedicated-page novel-shelves-page">
-        <p className="empty-feed">Sign in to manage reading shelves.</p>
-        <button className="primary-button" type="button" onClick={onAuthRequired}>
-          <LogIn size={17} />
-          Sign in
-        </button>
+        <CollectionAccessCard kind="readingShelves" onAuthRequired={onAuthRequired} />
       </section>
     );
   }
@@ -18391,6 +20094,29 @@ function ReadingListsPage({
           <h1>Reading shelves</h1>
           <p>Group saved novels into private or public reading lists.</p>
         </div>
+      </div>
+
+      <div className="collection-summary-strip novel-summary-strip" aria-label="Reading shelf summary">
+        <span>
+          <FolderOpen size={17} />
+          <strong>{formatCount(readingLists.length)}</strong>
+          <small>shelves</small>
+        </span>
+        <span>
+          <NotebookText size={17} />
+          <strong>{formatCount(totalShelfEntries)}</strong>
+          <small>saved entries</small>
+        </span>
+        <span>
+          <Eye size={17} />
+          <strong>{formatCount(publicShelves)}</strong>
+          <small>public</small>
+        </span>
+        <span>
+          <Lock size={17} />
+          <strong>{formatCount(privateShelves)}</strong>
+          <small>private</small>
+        </span>
       </div>
 
       <form className="collection-page-create" onSubmit={handleSubmit}>
@@ -18423,6 +20149,10 @@ function ReadingListsPage({
               <small>
                 {formatCount(readingList.novelCount)} entries · {readingList.visibility}
               </small>
+              <span className="collection-folder-meta">
+                <em>{readingList.visibility === "public" ? "Public shelf" : "Private stack"}</em>
+                <em>Updated {dateFormat.format(new Date(readingList.updatedAt))}</em>
+              </span>
             </span>
             {readingList.visibility === "public" ? <Eye size={16} /> : <Lock size={16} />}
           </button>
@@ -18489,7 +20219,10 @@ function ReadingListPage({
     }
     fetch(`/api/reading-lists/${encodeURIComponent(readingListId)}`, { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as ReadingListDetailResponse | { message?: string };
+        const payload = await readJsonResponse<ReadingListDetailResponse | { message?: string }>(
+          response,
+          "Reading shelf could not be loaded."
+        );
         if (!response.ok || !("readingList" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Reading shelf could not be loaded."
@@ -18588,7 +20321,10 @@ function ReadingListPage({
         },
         body: JSON.stringify({ novelIds: nextNovels.map((novel) => novel.id) })
       });
-      const payload = (await response.json()) as ReadingListResponse | { message?: string };
+      const payload = await readJsonResponse<ReadingListResponse | { message?: string }>(
+        response,
+        "Unable to reorder reading shelf."
+      );
       if (!response.ok || !("readingList" in payload)) {
         throw new Error(payload.message ?? "Unable to reorder reading shelf.");
       }
@@ -18654,6 +20390,29 @@ function ReadingListPage({
                 </button>
               </div>
             ) : null}
+          </div>
+
+          <div className="collection-detail-strip novel-detail-strip" aria-label="Reading shelf details">
+            <span>
+              <FolderOpen size={17} />
+              <strong>{formatCount(detail.novels.length)}</strong>
+              <small>visible entries</small>
+            </span>
+            <span>
+              {readingList.visibility === "public" ? <Eye size={17} /> : <Lock size={17} />}
+              <strong>{readingList.visibility}</strong>
+              <small>visibility</small>
+            </span>
+            <span>
+              <UserRound size={17} />
+              <strong>{owner.displayName}</strong>
+              <small>curator</small>
+            </span>
+            <span>
+              <Calendar size={17} />
+              <strong>{dateFormat.format(new Date(readingList.updatedAt))}</strong>
+              <small>updated</small>
+            </span>
           </div>
 
           <MatureAccessNotice
@@ -18787,6 +20546,7 @@ function NovelSeriesListPage({
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const totalSerialEntries = seriesList.reduce((total, series) => total + series.novelCount, 0);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -18809,11 +20569,7 @@ function NovelSeriesListPage({
   if (!currentUser) {
     return (
       <section className="content-main collection-page series-page novel-dedicated-page novel-serials-page">
-        <p className="empty-feed">Sign in to manage serials.</p>
-        <button className="primary-button" type="button" onClick={onAuthRequired}>
-          <LogIn size={17} />
-          Sign in
-        </button>
+        <CollectionAccessCard kind="novelSerials" onAuthRequired={onAuthRequired} />
       </section>
     );
   }
@@ -18826,6 +20582,29 @@ function NovelSeriesListPage({
           <h1>Serials</h1>
           <p>Order your own works into chaptered reading sequences.</p>
         </div>
+      </div>
+
+      <div className="collection-summary-strip series-summary-strip novel-summary-strip" aria-label="Serial summary">
+        <span>
+          <ListOrdered size={17} />
+          <strong>{formatCount(seriesList.length)}</strong>
+          <small>serials</small>
+        </span>
+        <span>
+          <NotebookText size={17} />
+          <strong>{formatCount(totalSerialEntries)}</strong>
+          <small>ordered entries</small>
+        </span>
+        <span>
+          <Sparkles size={17} />
+          <strong>{seriesList.length ? "Active" : "Draft"}</strong>
+          <small>workspace</small>
+        </span>
+        <span>
+          <Calendar size={17} />
+          <strong>{seriesList[0] ? dateFormat.format(new Date(seriesList[0].updatedAt)) : "Pending"}</strong>
+          <small>latest update</small>
+        </span>
       </div>
 
       <form className="collection-page-create" onSubmit={handleSubmit}>
@@ -18856,6 +20635,10 @@ function NovelSeriesListPage({
             <span>
               <strong>{series.title}</strong>
               <small>{formatCount(series.novelCount)} entries</small>
+              <span className="collection-folder-meta">
+                <em>{series.novelCount > 0 ? "Active run" : "Draft run"}</em>
+                <em>Updated {dateFormat.format(new Date(series.updatedAt))}</em>
+              </span>
             </span>
             <ListOrdered size={16} />
           </button>
@@ -18921,7 +20704,10 @@ function NovelSeriesPage({
     }
     fetch(`/api/novel-series/${encodeURIComponent(seriesId)}`, { credentials: "include" })
       .then(async (response) => {
-        const payload = (await response.json()) as NovelSeriesDetailResponse | { message?: string };
+        const payload = await readJsonResponse<NovelSeriesDetailResponse | { message?: string }>(
+          response,
+          "Serial could not be loaded."
+        );
         if (!response.ok || !("series" in payload)) {
           throw new Error(
             ("message" in payload ? payload.message : undefined) ?? "Serial could not be loaded."
@@ -19019,7 +20805,10 @@ function NovelSeriesPage({
         },
         body: JSON.stringify({ novelIds: nextNovels.map((novel) => novel.id) })
       });
-      const payload = (await response.json()) as NovelSeriesResponse | { message?: string };
+      const payload = await readJsonResponse<NovelSeriesResponse | { message?: string }>(
+        response,
+        "Unable to reorder serial."
+      );
       if (!response.ok || !("series" in payload)) {
         throw new Error(payload.message ?? "Unable to reorder serial.");
       }
@@ -19087,6 +20876,29 @@ function NovelSeriesPage({
                 </button>
               </div>
             ) : null}
+          </div>
+
+          <div className="collection-detail-strip series-detail-strip novel-detail-strip" aria-label="Serial details">
+            <span>
+              <ListOrdered size={17} />
+              <strong>{formatCount(detail.novels.length)}</strong>
+              <small>visible entries</small>
+            </span>
+            <span>
+              <NotebookText size={17} />
+              <strong>{formatCount(detail.novels.reduce((total, novel) => total + novel.wordCount, 0))}</strong>
+              <small>words</small>
+            </span>
+            <span>
+              <UserRound size={17} />
+              <strong>{owner.displayName}</strong>
+              <small>author</small>
+            </span>
+            <span>
+              <Calendar size={17} />
+              <strong>{dateFormat.format(new Date(series.updatedAt))}</strong>
+              <small>updated</small>
+            </span>
           </div>
 
           <MatureAccessNotice
@@ -19342,6 +21154,23 @@ function NovelFormDrawer({
           <button className="close-button" type="button" onClick={onClose} aria-label="Close">
             <X size={20} />
           </button>
+        </div>
+        <div className="drawer-stats-strip" aria-label="Novel draft summary">
+          <span>
+            <NotebookText size={15} />
+            <small>Words</small>
+            <strong>{formatCount(wordCount)}</strong>
+          </span>
+          <span>
+            <Clock size={15} />
+            <small>Read</small>
+            <strong>{estimateReadMinutes(wordCount)} min</strong>
+          </span>
+          <span>
+            <Eye size={15} />
+            <small>Visibility</small>
+            <strong>{input.isDraft ? "Draft" : novelVisibilityOptions.find((option) => option.value === input.visibility)?.label ?? "Public"}</strong>
+          </span>
         </div>
         {mode === "create" ? (
           <form className="novel-import-panel" onSubmit={handleImportSubmit}>
@@ -19711,6 +21540,23 @@ function UploadDrawer({
           <button className="close-button" type="button" onClick={onClose} aria-label="Close">
             <X size={20} />
           </button>
+        </div>
+        <div className="drawer-stats-strip" aria-label="Artwork upload summary">
+          <span>
+            <Images size={15} />
+            <small>Pages</small>
+            <strong>{selectedFileCount} / 8</strong>
+          </span>
+          <span>
+            <HardDrive size={15} />
+            <small>Slots</small>
+            <strong>{storage ? formatCount(storage.remainingImages) : "Ready"}</strong>
+          </span>
+          <span>
+            <Sparkles size={15} />
+            <small>Credits</small>
+            <strong>{storage ? formatCount(storage.siteCredits) : "0"}</strong>
+          </span>
         </div>
         <form onSubmit={handleSubmit} className="upload-form">
           <label>
