@@ -118,10 +118,10 @@ img {
 
 .header-inner {
   display: grid;
-  grid-template-columns: minmax(0, max-content) minmax(220px, 1fr) minmax(0, auto) minmax(0, max-content);
+  grid-template-columns: minmax(0, max-content) minmax(260px, 1fr) minmax(0, auto) minmax(0, max-content);
   align-items: center;
-  gap: 16px;
-  width: min(1480px, 100%);
+  gap: 14px;
+  width: min(1680px, 100%);
   margin: 0 auto;
   padding: 12px 24px;
 }
@@ -195,11 +195,13 @@ img {
 }
 
 .header-context-card {
-  display: grid;
+  display: none;
   grid-template-columns: 34px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
-  max-width: 190px;
+  flex: 0 0 116px;
+  width: 116px;
+  max-width: none;
   min-height: 44px;
   border: 1px solid rgba(255, 255, 255, 0.78);
   border-radius: 8px;
@@ -235,13 +237,11 @@ img {
 }
 
 .header-context-card small {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 800;
+  display: none;
 }
 
 .main-nav {
+  flex: 0 0 auto;
   gap: 4px;
 }
 
@@ -261,6 +261,7 @@ img {
   min-height: 38px;
   padding: 0 12px;
   color: var(--purple);
+  white-space: nowrap;
 }
 
 .main-nav button:not(.is-active):hover,
@@ -869,7 +870,23 @@ h1 {
 }
 
 .illustration-section-heading {
+  flex-wrap: wrap;
   margin-bottom: 0;
+}
+
+.illustration-section-heading > div,
+.illustration-feed-controls,
+.illustration-hero-grid {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.illustration-section-heading > div {
+  flex: 1 1 260px;
+}
+
+.illustration-feed-controls {
+  flex: 1 1 320px;
 }
 
 .illustration-section-heading h1 {
@@ -879,7 +896,8 @@ h1 {
 
 .illustration-hero-grid {
   display: grid;
-  grid-template-columns: minmax(240px, 1.15fr) minmax(220px, 0.85fr) minmax(220px, 0.9fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  width: 100%;
   gap: 12px;
 }
 
@@ -1107,6 +1125,8 @@ h1 {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
   min-height: 38px;
   border: 1px solid #fff;
   border-radius: 999px;
@@ -1124,6 +1144,7 @@ h1 {
 }
 
 .sort-filter select {
+  min-width: 0;
   max-width: 132px;
   border: 0;
   background: transparent;
@@ -1237,7 +1258,7 @@ h1 {
 }
 
 .tag-page {
-  max-width: 1040px;
+  width: 100%;
 }
 
 .tag-hero {
@@ -2430,6 +2451,7 @@ h1 {
 
 .content-main {
   grid-column: 2 / -1;
+  width: 100%;
   min-width: 0;
 }
 
@@ -2621,7 +2643,7 @@ h1 {
 }
 
 .analytics-page {
-  max-width: 1180px;
+  width: 100%;
 }
 
 .analytics-auth-card {
@@ -2629,8 +2651,7 @@ h1 {
   display: grid;
   justify-items: start;
   gap: 16px;
-  width: min(720px, 100%);
-  margin: 0 auto;
+  width: 100%;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 8px;
@@ -3239,7 +3260,7 @@ h1 {
 
 .novel-feed-page {
   align-content: start;
-  max-width: 1040px;
+  width: 100%;
 }
 
 .page-frame.is-novel-section .novel-feed-main {
@@ -3267,7 +3288,7 @@ h1 {
 }
 
 .novel-section-page {
-  max-width: 1040px;
+  width: 100%;
 }
 
 .novel-section-page .novel-feed-heading {
@@ -5471,7 +5492,7 @@ h1 {
   position: relative;
   display: grid;
   justify-items: start;
-  width: min(620px, 100%);
+  width: 100%;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 8px;
@@ -5603,7 +5624,7 @@ h1 {
   position: relative;
   display: grid;
   justify-items: start;
-  width: min(620px, 100%);
+  width: 100%;
   overflow: hidden;
   border: 1px solid rgba(88, 101, 242, 0.34);
   border-radius: 8px;
@@ -5802,14 +5823,13 @@ h1 {
 }
 
 .notification-page {
-  max-width: 900px;
+  width: 100%;
 }
 
 .notification-auth-card {
   display: grid;
   justify-items: start;
-  width: min(620px, 100%);
-  margin: 0 auto;
+  width: 100%;
   border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 8px;
   padding: clamp(22px, 4vw, 34px);
@@ -6358,7 +6378,7 @@ h1 {
 }
 
 .novel-profile-page {
-  max-width: 1080px;
+  width: 100%;
 }
 
 .novel-profile-page .profile-hero {
@@ -6650,7 +6670,7 @@ h1 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
-  max-width: 720px;
+  width: 100%;
   margin-bottom: 18px;
 }
 
@@ -6669,8 +6689,7 @@ h1 {
   display: grid;
   justify-items: start;
   gap: 16px;
-  width: min(760px, 100%);
-  margin: 0 auto;
+  width: 100%;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 8px;
@@ -6974,7 +6993,7 @@ h1 {
 }
 
 .ranking-page {
-  max-width: 1120px;
+  width: 100%;
 }
 
 .ranking-page-heading p:not(.eyebrow) {
@@ -7070,7 +7089,7 @@ h1 {
 }
 
 .creator-discover-page {
-  max-width: 1040px;
+  width: 100%;
 }
 
 .creator-discover-heading p:not(.eyebrow) {
@@ -7411,10 +7430,10 @@ h1 {
 }
 
 .settings-page,
-.policy-page,
 .donate-page,
+.policy-page,
 .collection-page {
-  max-width: 1040px;
+  width: 100%;
 }
 
 .settings-heading,
@@ -7669,7 +7688,7 @@ h1 {
 .settings-form {
   display: grid;
   gap: 14px;
-  max-width: 820px;
+  width: 100%;
 }
 
 .settings-account-strip {
@@ -7677,7 +7696,7 @@ h1 {
   grid-template-columns: 54px repeat(3, minmax(0, 1fr));
   gap: 10px;
   align-items: center;
-  width: min(820px, 100%);
+  width: 100%;
   margin: -4px 0 16px;
   border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 8px;
@@ -8431,7 +8450,6 @@ h1 {
 .policy-grid {
   display: grid;
   gap: 14px;
-  max-width: 920px;
 }
 
 .policy-section h2 {
@@ -9150,6 +9168,12 @@ h1 {
   border: 0 !important;
 }
 
+@media (min-width: 1760px) {
+  .header-context-card {
+    display: grid;
+  }
+}
+
 @media (max-width: 1460px) {
   .header-context-card {
     display: none;
@@ -9642,8 +9666,8 @@ h1 {
   .novel-feed-controls {
     width: 100%;
     max-width: 100%;
-    justify-content: flex-end;
-    flex-wrap: nowrap;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .novel-feed-controls {
@@ -9676,6 +9700,10 @@ h1 {
   .novel-feed-controls .rating-filter select {
     flex: 0 0 auto;
     min-width: 86px;
+  }
+
+  .illustration-feed-controls .sort-filter select {
+    max-width: min(34vw, 132px);
   }
 
   .novel-feed-controls .sort-filter select {
