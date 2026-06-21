@@ -1921,7 +1921,9 @@ function App() {
     setSelectedArtwork(null);
     setArtworkDetail(null);
     setNovelDetail(null);
-    showIllustrations("latest");
+    if (sort !== "following") {
+      showIllustrations("latest");
+    }
   }, [authReady, currentUser, sort, view]);
 
   useEffect(() => {
@@ -2081,6 +2083,7 @@ function App() {
       ].map((creator) => [creator.id, creator])
     ).values()
   ];
+  const followedIllustrationCreators = recommendedIllustrationCreators.filter((creator) => creator.following);
   const totalLikes = artworks.reduce((sum, artwork) => sum + artwork.likeCount, 0);
   const totalViews = artworks.reduce((sum, artwork) => sum + artwork.viewCount, 0);
   const novels = novelsData?.novels ?? [];
@@ -2105,18 +2108,6 @@ function App() {
       .slice(0, 8);
   const bookmarkedNovels = novels.filter((novel) => novel.bookmarked);
   const continueReadingItems = readingProgressData?.progress ?? [];
-  const recommendedNovelCreators = [
-    ...new Map(
-      [
-        ...(novelsData?.creators ?? []),
-        ...novels.map((novel) => novel.creator),
-        ...followedNovels.map((novel) => novel.creator),
-        ...novelRankingNovels.map((novel) => novel.creator),
-        ...continueReadingItems.map((item) => item.novel.creator),
-        ...(featuredNovel ? [featuredNovel.creator] : [])
-      ].map((creator) => [creator.id, creator])
-    ).values()
-  ];
   const novelCollections = readingLists?.readingLists ?? [];
   const novelSectionTitleMap: Record<NovelSection, string> = {
     home: "Latest creator works",
@@ -2146,22 +2137,41 @@ function App() {
   };
   const isBookmarksView = sort === "bookmarks";
   const isSubscriptionsView = sort === "subscriptions";
+  const isFollowingView = sort === "following";
   const feedTitle = isBookmarksView
     ? "Bookmarked illustrations"
     : isSubscriptionsView
       ? "Followed tag works"
-      : "Recommended illustrations";
+      : isFollowingView
+        ? "Following illustrations"
+        : "Recommended illustrations";
   const feedMeta = isBookmarksView
     ? `${formatCount(artworks.length)} saved ${artworks.length === 1 ? "work" : "works"}`
     : isSubscriptionsView
       ? `${formatCount(tagSubscriptions?.tags.length ?? 0)} followed tags`
-      : `${formatCount(totalLikes)} likes across ${formatCount(totalViews)} views`;
+      : isFollowingView
+        ? `${formatCount(artworks.length)} works from ${formatCount(followedIllustrationCreators.length)} followed creators`
+        : `${formatCount(totalLikes)} likes across ${formatCount(totalViews)} views`;
   const accountNotice = dashboardMessage || authNotice;
+  const hasEmailVerificationNotice = Boolean(currentUser && !currentUser.emailVerified);
   const hasAccountNotice =
     view !== "emailConfirmation" &&
     view !== "discordVerification" &&
-    Boolean(accountNotice || (currentUser && !currentUser.emailVerified));
+    Boolean(accountNotice || hasEmailVerificationNotice);
+  const showAccountNoticeBanner = hasAccountNotice && hasEmailVerificationNotice;
+  const showAccountNoticeToast = hasAccountNotice && Boolean(accountNotice) && !hasEmailVerificationNotice;
   const activeSearchQuery = isNovelSection ? novelQuery : illustrationQuery;
+
+  useEffect(() => {
+    if (!showAccountNoticeToast) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setAuthNotice("");
+      setDashboardMessage("");
+    }, 5000);
+    return () => window.clearTimeout(timeoutId);
+  }, [authNotice, dashboardMessage, showAccountNoticeToast]);
 
   const pushRoute = (
     path: string,
@@ -4852,12 +4862,28 @@ function App() {
         </div>
       </header>
 
-      {hasAccountNotice ? (
+      {showAccountNoticeBanner ? (
         <div className="global-account-notice">
           <AccountNotice
             notice={accountNotice}
             siteKey={authConfig?.turnstileSiteKey ?? ""}
             user={currentUser}
+            onDismiss={() => {
+              setAuthNotice("");
+              setDashboardMessage("");
+            }}
+            onResend={handleResendVerification}
+          />
+        </div>
+      ) : null}
+
+      {showAccountNoticeToast ? (
+        <div className="account-toast-region">
+          <AccountNotice
+            notice={accountNotice}
+            siteKey={authConfig?.turnstileSiteKey ?? ""}
+            user={currentUser}
+            variant="toast"
             onDismiss={() => {
               setAuthNotice("");
               setDashboardMessage("");
@@ -5186,7 +5212,6 @@ function App() {
               novels={novels}
               totalWords={totalNovelWords}
               creators={novelCreators}
-              recommendedCreators={recommendedNovelCreators}
               followedCreators={followedNovelCreators}
               followedNovels={followedNovels}
               rankingNovels={novelRankingNovels}
@@ -5511,7 +5536,6 @@ function App() {
         ) : view === "illustrations" ? (
           <IllustrationsPage
             gallery={gallery}
-            activityData={activityData}
             artworks={artworks}
             creators={recommendedIllustrationCreators}
             prominentTags={prominentTags}
@@ -5549,11 +5573,9 @@ function App() {
             onToggleTagSubscription={handleToggleTagSubscription}
             onOpenArtwork={openArtwork}
             onOpenArtworkPage={openArtworkPage}
-            onOpenNovel={openNovel}
             onBookmark={handleBookmark}
             onOpenProfile={showProfile}
             onLoadMore={handleLoadMoreGallery}
-            onRankingPeriodChange={setRankingPeriod}
             onOpenCreatorDiscover={showCreatorDiscover}
             onOpenRankings={showRankings}
             onOpenCollectionDiscover={showCollectionDiscover}
@@ -5707,6 +5729,7 @@ type AccountNoticeProps = {
   notice: string;
   siteKey: string;
   user: AuthUser | null;
+  variant?: "banner" | "toast";
   onDismiss: () => void;
   onResend: (turnstileToken: string) => Promise<string>;
 };
@@ -5715,6 +5738,7 @@ function AccountNotice({
   notice,
   siteKey,
   user,
+  variant = "banner",
   onDismiss,
   onResend
 }: AccountNoticeProps) {
@@ -5752,7 +5776,7 @@ function AccountNotice({
   };
 
   return (
-    <section className="account-notice" aria-live="polite">
+    <section className={classNames("account-notice", variant === "toast" && "is-toast")} aria-live="polite">
       <div className="account-notice-copy">
         <MailCheck size={20} />
         <div>
@@ -16182,7 +16206,6 @@ type NovelHubPageProps = {
   novels: Novel[];
   totalWords: number;
   creators: Creator[];
-  recommendedCreators: Creator[];
   followedCreators: Creator[];
   followedNovels: Novel[];
   rankingNovels: Novel[];
@@ -16219,7 +16242,6 @@ function NovelHubPage({
   novels,
   totalWords,
   creators,
-  recommendedCreators,
   followedCreators,
   followedNovels,
   rankingNovels,
@@ -16501,10 +16523,6 @@ function NovelHubPage({
     rankingItems.length > 0
       ? rankingItems.reduce((total, item) => total + (item.score || item.novel.likeCount), 0)
       : sectionNovels.reduce((total, novel) => total + novel.likeCount, 0);
-  const recommendedCreatorFollowerCount = recommendedCreators.reduce(
-    (total, creator) => total + creator.followerCount,
-    0
-  );
   const visibleShelfNovelCount = visibleCollections.reduce(
     (total, collection) => total + collection.novelCount,
     0
@@ -16708,58 +16726,6 @@ function NovelHubPage({
         onOpenNovel={onOpenNovel}
         onOpenProfile={onOpenProfile}
       />
-
-      <section className="side-panel creator-panel">
-        <div className="panel-title creator-panel-title">
-          <span>
-            <ShieldCheck size={18} />
-            Recommended users
-          </span>
-          <small>{formatCount(recommendedCreators.length)} picks</small>
-        </div>
-        <div className="rail-summary-card creator-summary-card" aria-label="Recommended author summary">
-          <span className="rail-summary-icon">
-            <UserPlus size={17} />
-          </span>
-          <span>
-            <small>Author watchlist</small>
-            <strong>{formatCount(recommendedCreatorFollowerCount)} followers</strong>
-          </span>
-          <em>Live</em>
-        </div>
-        {recommendedCreators.slice(0, 5).map((creator) => (
-          <button
-            className="creator-row creator-row-link"
-            key={creator.id}
-            type="button"
-            onClick={() => onOpenProfile(creator.handle)}
-          >
-            {creator.avatarUrl ? (
-              <img src={creator.avatarUrl} alt="" />
-            ) : (
-              <DefaultAvatar
-                className="creator-row-avatar-fallback"
-                name={creator.displayName}
-              />
-            )}
-            <div>
-              <strong>{creator.displayName}</strong>
-              <span>
-                @{creator.handle} · {formatCount(creator.followerCount)} followers
-              </span>
-            </div>
-            <span className="icon-button creator-row-icon" aria-label={`Open ${creator.displayName}`}>
-              <UserPlus size={15} />
-            </span>
-          </button>
-        ))}
-        {recommendedCreators.length === 0 ? (
-          <div className="rail-empty-card">
-            <UserPlus size={16} />
-            <span>No recommended users yet.</span>
-          </div>
-        ) : null}
-      </section>
     </aside>
   ) : null;
 
@@ -17983,7 +17949,6 @@ function NovelDetailPage({
 
 type IllustrationsPageProps = {
   gallery: GalleryResponse | null;
-  activityData: ActivityResponse | null;
   artworks: Artwork[];
   creators: Creator[];
   prominentTags: GalleryResponse["tags"];
@@ -18007,11 +17972,9 @@ type IllustrationsPageProps = {
   onToggleTagSubscription: (tag: string) => void;
   onOpenArtwork: (artwork: Artwork) => void;
   onOpenArtworkPage: (artwork: Artwork) => void;
-  onOpenNovel: (novelId: string) => void;
   onBookmark: (artwork: Artwork, visibility?: BookmarkVisibility) => void;
   onOpenProfile: (username: string) => void;
   onLoadMore: () => void;
-  onRankingPeriodChange: (period: RankingPeriod) => void;
   onOpenCreatorDiscover: () => void;
   onOpenRankings: () => void;
   onOpenCollectionDiscover: () => void;
@@ -18020,7 +17983,6 @@ type IllustrationsPageProps = {
 
 function IllustrationsPage({
   gallery,
-  activityData,
   artworks,
   creators,
   prominentTags,
@@ -18044,11 +18006,9 @@ function IllustrationsPage({
   onToggleTagSubscription,
   onOpenArtwork,
   onOpenArtworkPage,
-  onOpenNovel,
   onBookmark,
   onOpenProfile,
   onLoadMore,
-  onRankingPeriodChange,
   onOpenCreatorDiscover,
   onOpenRankings,
   onOpenCollectionDiscover,
@@ -18056,11 +18016,6 @@ function IllustrationsPage({
 }: IllustrationsPageProps) {
   const featuredArtwork = artworks[0] ?? rankingItems[0]?.artwork ?? null;
   const topRanking = rankingItems[0];
-  const topRankingScore = topRanking?.score || topRanking?.artwork.likeCount || 0;
-  const recommendedCreatorFollowerCount = creators.reduce(
-    (total, creator) => total + creator.followerCount,
-    0
-  );
   const galleryTotal = gallery?.totalCount ?? artworks.length;
   const activeModeLabel =
     sortMode === "bookmarks"
@@ -18074,48 +18029,110 @@ function IllustrationsPage({
             : sortMode === "rising"
               ? "Rising feed"
               : "Recommended feed";
+  const isFollowingView = sortMode === "following";
+  const followedCreators = creators.filter((creator) => creator.following);
+  const followingSignalCount = artworks.reduce(
+    (total, artwork) => total + artwork.likeCount + artwork.bookmarkCount + artwork.commentCount,
+    0
+  );
+  const heroEyebrow = isFollowingView ? "Following" : "Illustrations";
+  const spotlightLabel = isFollowingView ? "Latest from your watchlist" : "Spotlight";
+  const trendTitle = isFollowingView
+    ? featuredArtwork?.title ?? "Follow creators to start"
+    : topRanking
+      ? `#1 ${topRanking.artwork.title}`
+      : "Ranking opens after likes";
+  const trendMeta = isFollowingView
+    ? featuredArtwork
+      ? `${formatCount(featuredArtwork.likeCount)} likes · ${dateFormat.format(new Date(featuredArtwork.createdAt))}`
+      : "New works from followed creators will land here."
+    : topRanking
+      ? `${formatCount(topRanking.score || topRanking.artwork.likeCount)} recent likes`
+      : "Waiting for new scores.";
+  const trendDisabled = isFollowingView ? !featuredArtwork : !topRanking;
+  const TrendIcon = isFollowingView ? Activity : Trophy;
+  const statItems = isFollowingView
+    ? [
+        { label: "Works", value: formatCount(galleryTotal) },
+        { label: "Creators", value: formatCount(followedCreators.length) },
+        { label: "Tags", value: formatCount(prominentTags.length) },
+        { label: "Signals", value: formatCount(followingSignalCount) }
+      ]
+    : [
+        { label: "Works", value: formatCount(galleryTotal) },
+        { label: "Likes", value: formatCount(totalLikes) },
+        { label: "Views", value: formatCount(totalViews) },
+        { label: "Tags", value: formatCount(prominentTags.length) }
+      ];
   const showIllustrationSortControl = illustrationSortOptions.some(
     (option) => option.value === sortMode
   );
-  const discoveryTiles = [
-    {
-      label: "Creators",
-      value: formatCount(creators.length),
-      icon: UserPlus,
-      onClick: onOpenCreatorDiscover
-    },
-    {
-      label: rankingPeriod === "weekly" ? "Weekly ranking" : "Daily ranking",
-      value: formatCount(rankingItems.length),
-      icon: Trophy,
-      onClick: onOpenRankings
-    },
-    {
-      label: "Followed tags",
-      value: formatCount(prominentTags.length),
-      icon: Bell,
-      onClick: onOpenSubscriptions
-    },
-    {
-      label: "Public folders",
-      value: "Open",
-      icon: FolderOpen,
-      onClick: onOpenCollectionDiscover
-    }
-  ];
+  const discoveryTiles = isFollowingView
+    ? [
+        {
+          label: "Find creators",
+          value: `${formatCount(followedCreators.length)} followed`,
+          icon: UserPlus,
+          onClick: onOpenCreatorDiscover
+        },
+        {
+          label: rankingPeriod === "weekly" ? "Weekly ranking" : "Daily ranking",
+          value: formatCount(rankingItems.length),
+          icon: Trophy,
+          onClick: onOpenRankings
+        },
+        {
+          label: "Tag watch",
+          value: `${formatCount(prominentTags.length)} live`,
+          icon: Bell,
+          onClick: onOpenSubscriptions
+        },
+        {
+          label: "Public folders",
+          value: "Open",
+          icon: FolderOpen,
+          onClick: onOpenCollectionDiscover
+        }
+      ]
+    : [
+        {
+          label: "Creators",
+          value: formatCount(creators.length),
+          icon: UserPlus,
+          onClick: onOpenCreatorDiscover
+        },
+        {
+          label: rankingPeriod === "weekly" ? "Weekly ranking" : "Daily ranking",
+          value: formatCount(rankingItems.length),
+          icon: Trophy,
+          onClick: onOpenRankings
+        },
+        {
+          label: "Followed tags",
+          value: formatCount(prominentTags.length),
+          icon: Bell,
+          onClick: onOpenSubscriptions
+        },
+        {
+          label: "Public folders",
+          value: "Open",
+          icon: FolderOpen,
+          onClick: onOpenCollectionDiscover
+        }
+      ];
 
   return (
     <>
-      <section className="feed-main">
+      <section className={classNames("feed-main", "is-wide-feed", isFollowingView && "is-following-feed")}>
         <MatureAccessNotice
           matureAccess={gallery?.matureAccess ?? null}
           onLogin={onAuthRequired}
           onPrivacySecurity={onPrivacySecurity}
         />
-        <div className="illustration-hero">
+        <div className={classNames("illustration-hero", isFollowingView && "is-following-feed")}>
           <div className="section-heading illustration-section-heading">
             <div>
-              <p className="eyebrow">Illustrations</p>
+              <p className="eyebrow">{heroEyebrow}</p>
               <h1>{feedTitle}</h1>
               <p>{feedMeta}</p>
             </div>
@@ -18171,57 +18188,94 @@ function IllustrationsPage({
                     decoding="async"
                   />
                   <span>
-                    <small>Spotlight</small>
+                    <small>{spotlightLabel}</small>
                     <strong>{featuredArtwork.title}</strong>
                     <em>by {featuredArtwork.creator.displayName}</em>
                   </span>
                 </>
               ) : (
                 <span>
-                  <small>Spotlight</small>
+                  <small>{spotlightLabel}</small>
                   <strong>No work loaded yet</strong>
-                  <em>Awaiting the first upload.</em>
+                  <em>{isFollowingView ? "Follow creators to fill this feed." : "Awaiting the first upload."}</em>
                 </span>
               )}
             </button>
-            <div className="feed-stat-panel">
-              <span>
-                <strong>{formatCount(galleryTotal)}</strong>
-                Works
-              </span>
-              <span>
-                <strong>{formatCount(totalLikes)}</strong>
-                Likes
-              </span>
-              <span>
-                <strong>{formatCount(totalViews)}</strong>
-                Views
-              </span>
-              <span>
-                <strong>{formatCount(prominentTags.length)}</strong>
-                Tags
-              </span>
+            <div className={classNames("feed-stat-panel", isFollowingView && "is-following-feed")}>
+              {statItems.map((item) => (
+                <span key={item.label}>
+                  <strong>{item.value}</strong>
+                  {item.label}
+                </span>
+              ))}
             </div>
             <button
               className="trend-card"
               type="button"
-              disabled={!topRanking}
-              onClick={() => topRanking && onOpenArtwork(topRanking.artwork)}
+              disabled={trendDisabled}
+              onClick={() => {
+                if (isFollowingView) {
+                  if (featuredArtwork) {
+                    onOpenArtwork(featuredArtwork);
+                  }
+                  return;
+                }
+                if (topRanking) {
+                  onOpenArtwork(topRanking.artwork);
+                }
+              }}
             >
-              <Trophy size={18} />
+              <TrendIcon size={18} />
               <span>
                 <small>{activeModeLabel}</small>
-                <strong>
-                  {topRanking ? `#1 ${topRanking.artwork.title}` : "Ranking opens after likes"}
-                </strong>
-                <em>
-                  {topRanking
-                    ? `${formatCount(topRanking.score || topRanking.artwork.likeCount)} recent likes`
-                    : "Waiting for new scores."}
-                </em>
+                <strong>{trendTitle}</strong>
+                <em>{trendMeta}</em>
               </span>
             </button>
           </div>
+          {isFollowingView ? (
+            <div className="following-watch-strip" aria-label="Following feed summary">
+              <div className="following-watch-copy">
+                <span className="following-watch-icon">
+                  <UserPlus size={17} />
+                </span>
+                <span>
+                  <strong>Your creator watch</strong>
+                  <small>
+                    {followedCreators.length
+                      ? `${formatCount(followedCreators.length)} creators feeding this page`
+                      : "Follow creators to turn this into a personal feed"}
+                  </small>
+                </span>
+              </div>
+              {followedCreators.length ? (
+                <div className="following-avatar-stack" aria-label="Followed creators">
+                  {followedCreators.slice(0, 5).map((creator) => (
+                    <button
+                      className="following-avatar-button"
+                      key={creator.id}
+                      type="button"
+                      onClick={() => onOpenProfile(creator.handle)}
+                      aria-label={`Open ${creator.displayName}`}
+                    >
+                      {creator.avatarUrl ? (
+                        <img src={creator.avatarUrl} alt="" />
+                      ) : (
+                        <DefaultAvatar
+                          className="following-avatar-fallback"
+                          name={creator.displayName}
+                        />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <button className="secondary-button following-watch-action" type="button" onClick={onOpenCreatorDiscover}>
+                <UserPlus size={16} />
+                Find creators
+              </button>
+            </div>
+          ) : null}
         </div>
 
         <div className="discovery-jump-grid" aria-label="Discovery shortcuts">
@@ -18238,10 +18292,17 @@ function IllustrationsPage({
 
         <div className="section-heading feed-subheading">
           <div>
-            <h2>Browse works</h2>
+            <h2>
+              {isFollowingView
+                ? "From creators you follow"
+                : isBookmarksView
+                  ? "Saved works"
+                  : "Browse works"}
+            </h2>
             <p>
-              {formatCount(artworks.length)} shown · {formatCount(prominentTags.length)} live tags ·{" "}
-              {formatCount(rankingItems.length)} ranked
+              {isFollowingView
+                ? `${formatCount(artworks.length)} shown · ${formatCount(followedCreators.length)} followed creators · ${formatCount(prominentTags.length)} live tags`
+                : `${formatCount(artworks.length)} shown · ${formatCount(prominentTags.length)} live tags · ${formatCount(rankingItems.length)} ranked`}
             </p>
           </div>
         </div>
@@ -18297,126 +18358,15 @@ function IllustrationsPage({
           </div>
         ) : null}
         {artworks.length === 0 ? (
-          <p className="empty-feed">
+          <p className={classNames("empty-feed", isFollowingView && "is-following-feed")}>
             {isBookmarksView
               ? "Saved works will appear here."
+              : isFollowingView
+                ? "Follow creators to build this page. Their latest approved works will appear here."
               : "No artwork matches this view yet."}
           </p>
         ) : null}
       </section>
-
-      <aside className="right-rail" aria-label="Recommendations">
-        <section className="side-panel ranking-panel">
-          <div className="panel-title ranking-title">
-            <span>
-              <Trophy size={18} />
-              Ranking
-            </span>
-            <div className="mini-segmented" aria-label="Ranking period">
-              {(["daily", "weekly"] as RankingPeriod[]).map((period) => (
-                <button
-                  className={classNames(rankingPeriod === period && "is-active")}
-                  key={period}
-                  type="button"
-                  onClick={() => onRankingPeriodChange(period)}
-                >
-                  {period === "daily" ? "Day" : "Week"}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="rail-summary-card ranking-summary-card" aria-label="Illustration ranking summary">
-            <span className="rail-summary-icon">
-              <Trophy size={17} />
-            </span>
-            <span>
-              <small>{rankingPeriod === "weekly" ? "Weekly top work" : "Daily top work"}</small>
-              <strong>{topRanking ? topRanking.artwork.title : "Awaiting scores"}</strong>
-            </span>
-            <em>{formatCount(topRankingScore)} pts</em>
-          </div>
-          {rankingItems.slice(0, 5).map(({ artwork, score }, index) => (
-            <button
-              className="ranking-row"
-              key={artwork.id}
-              type="button"
-              onClick={() => onOpenArtwork(artwork)}
-            >
-              <span className="rank-number">{index + 1}</span>
-              <img src={artwork.thumbnailUrl} alt="" loading="lazy" decoding="async" />
-              <span>
-                <strong>{artwork.title}</strong>
-                <small>{formatCount(score || artwork.likeCount)} pts · {formatCount(artwork.viewCount)} views</small>
-              </span>
-            </button>
-          ))}
-          {rankingItems.length === 0 ? (
-            <div className="rail-empty-card">
-              <Sparkles size={16} />
-              <span>No ranked works yet.</span>
-            </div>
-          ) : null}
-        </section>
-
-        <ActivityPanel
-          data={activityData}
-          onOpenArtwork={onOpenArtwork}
-          onOpenNovel={onOpenNovel}
-          onOpenProfile={onOpenProfile}
-        />
-
-        <section className="side-panel creator-panel">
-          <div className="panel-title creator-panel-title">
-            <span>
-              <ShieldCheck size={18} />
-              Recommended users
-            </span>
-            <small>{formatCount(creators.length)} picks</small>
-          </div>
-          <div className="rail-summary-card creator-summary-card" aria-label="Recommended creator summary">
-            <span className="rail-summary-icon">
-              <UserPlus size={17} />
-            </span>
-            <span>
-              <small>Creator watchlist</small>
-              <strong>{formatCount(recommendedCreatorFollowerCount)} followers</strong>
-            </span>
-            <em>Live</em>
-          </div>
-          {creators.slice(0, 5).map((creator) => (
-            <button
-              className="creator-row creator-row-link"
-              key={creator.id}
-              type="button"
-              onClick={() => onOpenProfile(creator.handle)}
-            >
-              {creator.avatarUrl ? (
-                <img src={creator.avatarUrl} alt="" />
-              ) : (
-                <DefaultAvatar
-                  className="creator-row-avatar-fallback"
-                  name={creator.displayName}
-                />
-              )}
-              <div>
-                <strong>{creator.displayName}</strong>
-                <span>
-                  @{creator.handle} · {formatCount(creator.followerCount)} followers
-                </span>
-              </div>
-              <span className="icon-button creator-row-icon" aria-label={`Open ${creator.displayName}`}>
-                <UserPlus size={15} />
-              </span>
-            </button>
-          ))}
-          {creators.length === 0 ? (
-            <div className="rail-empty-card">
-              <UserPlus size={16} />
-              <span>No recommended users yet.</span>
-            </div>
-          ) : null}
-        </section>
-      </aside>
     </>
   );
 }
