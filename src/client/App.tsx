@@ -341,32 +341,7 @@ const tagPageSortOptions: {
 const illustrationSortOptions: { value: SortMode; label: string }[] = [
   { value: "latest", label: "All work" },
   { value: "popular", label: "Popular" },
-  { value: "rising", label: "Rising" },
-  { value: "following", label: "Following" },
-  { value: "subscriptions", label: "Followed tags" },
-  { value: "bookmarks", label: "Bookmarks" }
-];
-
-const illustrationQuickModes: {
-  value: SortMode;
-  label: string;
-  icon: typeof Grid3X3;
-}[] = [
-  { value: "latest", label: "Home", icon: Home },
-  { value: "popular", label: "Popular", icon: Flame },
-  { value: "rising", label: "Rising", icon: TrendingUp },
-  { value: "bookmarks", label: "Saved", icon: Bookmark }
-];
-
-const novelQuickModes: {
-  value: NovelSection;
-  label: string;
-  icon: typeof Grid3X3;
-}[] = [
-  { value: "home", label: "Home", icon: Home },
-  { value: "rankings", label: "Rankings", icon: Trophy },
-  { value: "tags", label: "Tags", icon: Bell },
-  { value: "bookmarks", label: "Saved", icon: Bookmark }
+  { value: "rising", label: "Rising" }
 ];
 
 const numberFormat = new Intl.NumberFormat("en", {
@@ -583,6 +558,23 @@ function DefaultAvatar({ className, name }: { className?: string; name: string }
     <span className={classNames("default-avatar", className)} aria-hidden="true">
       {avatarInitial(name)}
     </span>
+  );
+}
+
+const profileFeedbackTone = (message: string) =>
+  /complete|could not|failed|not found|sign in|unable/i.test(message) ? "warning" : "success";
+
+function ProfileFeedbackNotice({ message }: { message: string }) {
+  const tone = profileFeedbackTone(message);
+  const Icon = tone === "success" ? Check : Flag;
+
+  return (
+    <div className={classNames("profile-feedback-notice", `is-${tone}`)} role="status" aria-live="polite">
+      <span className="profile-feedback-icon" aria-hidden="true">
+        <Icon size={16} />
+      </span>
+      <span>{message}</span>
+    </div>
   );
 }
 
@@ -2164,19 +2156,6 @@ function App() {
     : isSubscriptionsView
       ? `${formatCount(tagSubscriptions?.tags.length ?? 0)} followed tags`
       : `${formatCount(totalLikes)} likes across ${formatCount(totalViews)} views`;
-  const activeContextLabel = isNovelSection
-    ? novelSectionTitleMap[routeNovelSection]
-    : view === "tag" && routeTag
-      ? `#${routeTag}`
-      : isBookmarksView
-        ? "Saved works"
-        : isSubscriptionsView
-          ? "Followed tags"
-          : sort === "popular"
-            ? "Popular works"
-            : sort === "rising"
-              ? "Rising works"
-              : "For you";
   const accountNotice = dashboardMessage || authNotice;
   const hasAccountNotice =
     view !== "emailConfirmation" &&
@@ -4660,19 +4639,6 @@ function App() {
                 <span>{isNovelSection ? "reading diary" : "art diary"}</span>
               </div>
             </a>
-            <div className="header-context-card" aria-hidden="true">
-              <span className="header-context-avatar">
-                <Sparkles size={17} />
-              </span>
-              <span>
-                <strong>{activeContextLabel}</strong>
-                <small>
-                  {isNovelSection
-                    ? `${formatCount(novels.length)} readable works`
-                    : `${formatCount(artworks.length)} visible works`}
-                </small>
-              </span>
-            </div>
             <nav className="main-nav" aria-label="Content types">
               <button
                 className={classNames(isIllustrationsSection && sort === "latest" && "is-active")}
@@ -4840,43 +4806,6 @@ function App() {
                 ) : null}
               </div>
             ) : null}
-          </div>
-
-          <div
-            className="header-quick-modes"
-            aria-label={isNovelSection ? "Quick novel sections" : "Quick illustration filters"}
-          >
-            {isNovelSection
-              ? novelQuickModes.map(({ value, label, icon: Icon }) => (
-                  <button
-                    className={classNames(
-                      view === "novels" && routeNovelSection === value && "is-active"
-                    )}
-                    key={value}
-                    type="button"
-                    onClick={() => showNovels(value)}
-                  >
-                    <Icon size={15} />
-                    {label}
-                  </button>
-                ))
-              : illustrationQuickModes.map(({ value, label, icon: Icon }) => (
-                  <button
-                    className={classNames(sort === value && "is-active")}
-                    key={value}
-                    type="button"
-                    onClick={() => {
-                      if (value === "bookmarks") {
-                        showBookmarks();
-                      } else {
-                        showIllustrations(value);
-                      }
-                    }}
-                  >
-                    <Icon size={15} />
-                    {label}
-                  </button>
-                ))}
           </div>
 
           <div className="header-actions">
@@ -7748,7 +7677,9 @@ function ActivityPanel({ data, onOpenArtwork, onOpenNovel, onOpenProfile }: Acti
       ) : null}
       {data && activities.length === 0 ? (
         <div className="activity-empty-card">
-          <Sparkles size={18} />
+          <span className="activity-empty-icon" aria-hidden="true">
+            <UserPlus size={18} strokeWidth={2.6} />
+          </span>
           <span>
             {data.scope === "following"
               ? "Follow creators to build your activity feed."
@@ -8205,39 +8136,64 @@ function IllustrationDashboard({
             <p className="muted">Loading users.</p>
           )}
           {directoryUsers.map((user) => (
-            <div className="admin-user-row" key={user.id}>
-              <span className={classNames("verify-dot", (user.emailVerified || user.role !== "member") && "is-verified")} />
-              <div>
-                <strong>{user.displayName}</strong>
-                <span>
-                  @{user.username} · {user.email} · {formatUserRole(user.role)}
-                  {!user.emailVerified ? " · unverified" : ""}
-                  {user.suspendedAt ? " · suspended" : ""} ·{" "}
-                  {dateFormat.format(new Date(user.createdAt))}
-                </span>
+            <div
+              className={classNames(
+                "admin-user-row",
+                user.suspendedAt && "is-suspended",
+                !user.emailVerified && "is-unverified"
+              )}
+              key={user.id}
+            >
+              <div
+                className="admin-user-presence"
+                aria-label={user.emailVerified || user.role !== "member" ? "Verified account" : "Unverified account"}
+              >
+                <span className={classNames("verify-dot", (user.emailVerified || user.role !== "member") && "is-verified")} />
               </div>
-              <label className="admin-user-role-select">
-                Role
-                <select
-                  value={user.role}
-                  onChange={(event) => onUpdateUserRole(user, event.target.value as UserRole)}
-                >
-                  {userRoleOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {user.role === "member" ? (
-                <button
-                  className={classNames("text-button", user.suspendedAt && "is-danger")}
-                  type="button"
-                  onClick={() => onToggleUserSuspension(user, !user.suspendedAt)}
-                >
-                  {user.suspendedAt ? "Restore" : "Suspend"}
-                </button>
-              ) : null}
+              <div className="admin-user-identity">
+                <div className="admin-user-heading">
+                  <strong>{user.displayName}</strong>
+                  <span className={classNames("admin-user-role-pill", `is-${user.role}`)}>
+                    {formatUserRole(user.role)}
+                  </span>
+                  {!user.emailVerified ? (
+                    <span className="admin-user-state-pill is-warning">Unverified</span>
+                  ) : null}
+                  {user.suspendedAt ? (
+                    <span className="admin-user-state-pill is-danger">Suspended</span>
+                  ) : null}
+                </div>
+                <div className="admin-user-meta">
+                  <span>@{user.username}</span>
+                  <span>{user.email}</span>
+                  <span>Joined {dateFormat.format(new Date(user.createdAt))}</span>
+                </div>
+              </div>
+              <div className="admin-user-controls">
+                <label className="admin-user-role-select">
+                  <span>Role</span>
+                  <select
+                    value={user.role}
+                    onChange={(event) => onUpdateUserRole(user, event.target.value as UserRole)}
+                  >
+                    {userRoleOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {user.role === "member" ? (
+                  <button
+                    className={classNames("admin-user-action-button", user.suspendedAt ? "is-restore" : "is-danger")}
+                    type="button"
+                    onClick={() => onToggleUserSuspension(user, !user.suspendedAt)}
+                  >
+                    {user.suspendedAt ? <Check size={15} /> : <UserX size={15} />}
+                    <span>{user.suspendedAt ? "Restore" : "Suspend"}</span>
+                  </button>
+                ) : null}
+              </div>
             </div>
           ))}
           {adminUsers && directoryUsers.length === 0 ? (
@@ -8820,39 +8776,64 @@ function NovelDashboard({
               <p className="muted">Loading users.</p>
             )}
             {directoryUsers.map((user) => (
-              <div className="admin-user-row" key={user.id}>
-                <span className={classNames("verify-dot", (user.emailVerified || user.role !== "member") && "is-verified")} />
-                <div>
-                  <strong>{user.displayName}</strong>
-                  <span>
-                    @{user.username} · {user.email} · {formatUserRole(user.role)}
-                    {!user.emailVerified ? " · unverified" : ""}
-                    {user.suspendedAt ? " · suspended" : ""} ·{" "}
-                    {dateFormat.format(new Date(user.createdAt))}
-                  </span>
+              <div
+                className={classNames(
+                  "admin-user-row",
+                  user.suspendedAt && "is-suspended",
+                  !user.emailVerified && "is-unverified"
+                )}
+                key={user.id}
+              >
+                <div
+                  className="admin-user-presence"
+                  aria-label={user.emailVerified || user.role !== "member" ? "Verified account" : "Unverified account"}
+                >
+                  <span className={classNames("verify-dot", (user.emailVerified || user.role !== "member") && "is-verified")} />
                 </div>
-                <label className="admin-user-role-select">
-                  Role
-                  <select
-                    value={user.role}
-                    onChange={(event) => onUpdateUserRole(user, event.target.value as UserRole)}
-                  >
-                    {userRoleOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {user.role === "member" ? (
-                  <button
-                    className={classNames("text-button", user.suspendedAt && "is-danger")}
-                    type="button"
-                    onClick={() => onToggleUserSuspension(user, !user.suspendedAt)}
-                  >
-                    {user.suspendedAt ? "Restore" : "Suspend"}
-                  </button>
-                ) : null}
+                <div className="admin-user-identity">
+                  <div className="admin-user-heading">
+                    <strong>{user.displayName}</strong>
+                    <span className={classNames("admin-user-role-pill", `is-${user.role}`)}>
+                      {formatUserRole(user.role)}
+                    </span>
+                    {!user.emailVerified ? (
+                      <span className="admin-user-state-pill is-warning">Unverified</span>
+                    ) : null}
+                    {user.suspendedAt ? (
+                      <span className="admin-user-state-pill is-danger">Suspended</span>
+                    ) : null}
+                  </div>
+                  <div className="admin-user-meta">
+                    <span>@{user.username}</span>
+                    <span>{user.email}</span>
+                    <span>Joined {dateFormat.format(new Date(user.createdAt))}</span>
+                  </div>
+                </div>
+                <div className="admin-user-controls">
+                  <label className="admin-user-role-select">
+                    <span>Role</span>
+                    <select
+                      value={user.role}
+                      onChange={(event) => onUpdateUserRole(user, event.target.value as UserRole)}
+                    >
+                      {userRoleOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {user.role === "member" ? (
+                    <button
+                      className={classNames("admin-user-action-button", user.suspendedAt ? "is-restore" : "is-danger")}
+                      type="button"
+                      onClick={() => onToggleUserSuspension(user, !user.suspendedAt)}
+                    >
+                      {user.suspendedAt ? <Check size={15} /> : <UserX size={15} />}
+                      <span>{user.suspendedAt ? "Restore" : "Suspend"}</span>
+                    </button>
+                  ) : null}
+                </div>
               </div>
             ))}
             {adminUsers && directoryUsers.length === 0 ? (
@@ -12185,12 +12166,12 @@ function IllustrationProfilePage({
     }
   };
 
-	  return (
-	    <section className={classNames("content-main profile-page", novelContext && "novel-dedicated-page novel-profile-page")}>
-	      {loading ? <p className="empty-feed">Loading profile.</p> : null}
-	      {message ? <p className="empty-feed">{message}</p> : null}
-	      {profile && profileData ? (
-	        <>
+  return (
+    <section className={classNames("content-main profile-page", novelContext && "novel-dedicated-page novel-profile-page")}>
+      {loading ? <p className="empty-feed">Loading profile.</p> : null}
+      {message ? <ProfileFeedbackNotice message={message} /> : null}
+      {profile && profileData ? (
+        <>
           <div className="profile-hero">
             {profile.avatarUrl ? (
               <img className="profile-avatar" src={profile.avatarUrl} alt="" />
@@ -13166,7 +13147,7 @@ function NovelProfilePage({
   return (
     <section className="content-main profile-page novel-dedicated-page novel-profile-page">
       {loading ? <p className="empty-feed">Loading novel profile.</p> : null}
-      {message ? <p className="empty-feed">{message}</p> : null}
+      {message ? <ProfileFeedbackNotice message={message} /> : null}
       {profile && profileData ? (
         <>
           <div className="profile-hero">
@@ -18093,6 +18074,9 @@ function IllustrationsPage({
             : sortMode === "rising"
               ? "Rising feed"
               : "Recommended feed";
+  const showIllustrationSortControl = illustrationSortOptions.some(
+    (option) => option.value === sortMode
+  );
   const discoveryTiles = [
     {
       label: "Creators",
@@ -18149,21 +18133,23 @@ function IllustrationsPage({
                   ))}
                 </select>
               </label>
-              <label className="filter-chip sort-filter">
-                <Grid3X3 size={15} />
-                <select
-                  value={sortMode}
-                  onChange={(event) => onSortModeChange(event.target.value as SortMode)}
-                  aria-label="Illustration feed"
-                >
-                  {illustrationSortOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown size={15} aria-hidden="true" />
-              </label>
+              {showIllustrationSortControl ? (
+                <label className="filter-chip sort-filter">
+                  <Grid3X3 size={15} />
+                  <select
+                    value={sortMode}
+                    onChange={(event) => onSortModeChange(event.target.value as SortMode)}
+                    aria-label="Illustration feed"
+                  >
+                    {illustrationSortOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={15} aria-hidden="true" />
+                </label>
+              ) : null}
               <button className="filter-reset-button" type="button" onClick={onResetFilters}>
                 Reset
               </button>
