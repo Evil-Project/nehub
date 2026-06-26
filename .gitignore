@@ -142,3 +142,7 @@ vite.config.ts.timestamp-*
 
 # Graphify
 graphify-out/
+
+# AI agent tooling
+.codex/
+.opencode/

@@ -199,6 +199,12 @@ import type {
   UserRole,
   TotpSetupResponse
 } from "../shared/types";
+import { classNames } from "./lib";
+import { DefaultAvatar } from "./components/DefaultAvatar";
+import { MetricTile } from "./components/MetricTile";
+import { StatusCard } from "./components/StatusCard";
+import { StatusLine } from "./components/StatusLine";
+import { StatusPill } from "./components/StatusPill";
 
 type HealthResponse = {
   ok: boolean;
@@ -422,9 +428,6 @@ const parseTagListInput = (value: string) =>
     )
   ).slice(0, 80);
 
-const classNames = (...values: Array<string | false | null | undefined>) =>
-  values.filter(Boolean).join(" ");
-
 const csrfHeaderName = "x-csrf-token";
 const policyUpdatedDate = "June 7, 2026";
 
@@ -550,16 +553,6 @@ const matureAccessShortLabel = (matureAccess: MatureAccess | null) => {
 const isNovelSearchSuggestions = (
   suggestions: SearchSuggestionsResponse | NovelSearchSuggestionsResponse | null
 ): suggestions is NovelSearchSuggestionsResponse => Boolean(suggestions && "novels" in suggestions);
-
-const avatarInitial = (value: string) => value.trim().slice(0, 1).toUpperCase() || "?";
-
-function DefaultAvatar({ className, name }: { className?: string; name: string }) {
-  return (
-    <span className={classNames("default-avatar", className)} aria-hidden="true">
-      {avatarInitial(name)}
-    </span>
-  );
-}
 
 const profileFeedbackTone = (message: string) =>
   /complete|could not|failed|not found|sign in|unable/i.test(message) ? "warning" : "success";
@@ -1038,6 +1031,7 @@ function App() {
   const authOpeningRef = useRef(false);
   const isNovelSection = routeContext === "novels";
   const isIllustrationsSection = view === "illustrations" || view === "artwork";
+  const isIllustrationHome = view === "illustrations" && sort === "latest";
   const showHeaderComposeButton = !isNovelSection || view === "novel";
 
   const refreshAuthSession = useCallback(async () => {
@@ -1273,7 +1267,7 @@ function App() {
   }, [contentAccessRevision, currentUser?.id, isIllustrationsSection, rankingPeriod, view]);
 
   useEffect(() => {
-    if (!isNovelSection) {
+    if (!isNovelSection && !isIllustrationHome) {
       return;
     }
 
@@ -1310,7 +1304,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [contentAccessRevision, currentUser?.id, isNovelSection, novelRankingPeriod]);
+  }, [contentAccessRevision, currentUser?.id, isIllustrationHome, isNovelSection, novelRankingPeriod]);
 
   useEffect(() => {
     if (!currentUser || !isNovelSection) {
@@ -5536,12 +5530,15 @@ function App() {
         ) : view === "illustrations" ? (
           <IllustrationsPage
             gallery={gallery}
+            activityData={activityData}
             artworks={artworks}
             creators={recommendedIllustrationCreators}
             prominentTags={prominentTags}
             subscribedTagSet={subscribedTagSet}
             rankingItems={rankingItems}
             rankingPeriod={rankingPeriod}
+            novelRankingItems={novelRankingData?.rankings ?? []}
+            novelRankingPeriod={novelRankingPeriod}
             matureFilter={illustrationMatureFilter}
             sortMode={sort}
             feedTitle={feedTitle}
@@ -5573,11 +5570,13 @@ function App() {
             onToggleTagSubscription={handleToggleTagSubscription}
             onOpenArtwork={openArtwork}
             onOpenArtworkPage={openArtworkPage}
+            onOpenNovel={openNovel}
             onBookmark={handleBookmark}
             onOpenProfile={showProfile}
             onLoadMore={handleLoadMoreGallery}
             onOpenCreatorDiscover={showCreatorDiscover}
             onOpenRankings={showRankings}
+            onNovelRankingPeriodChange={setNovelRankingPeriod}
             onOpenCollectionDiscover={showCollectionDiscover}
             onOpenSubscriptions={showTagSubscriptions}
           />
@@ -7712,6 +7711,96 @@ function ActivityPanel({ data, onOpenArtwork, onOpenNovel, onOpenProfile }: Acti
         </div>
       ) : null}
     </section>
+  );
+}
+
+type NovelRecommendationRailProps = {
+  activityData: ActivityResponse | null;
+  className?: string;
+  rankingItems: NovelRankingResponse["rankings"];
+  rankingPeriod: RankingPeriod;
+  onRankingPeriodChange: (period: RankingPeriod) => void;
+  onOpenArtwork: (artwork: Artwork) => void;
+  onOpenNovel: (novelId: string) => void;
+  onOpenProfile: (username: string) => void;
+};
+
+function NovelRecommendationRail({
+  activityData,
+  className,
+  rankingItems,
+  rankingPeriod,
+  onRankingPeriodChange,
+  onOpenArtwork,
+  onOpenNovel,
+  onOpenProfile
+}: NovelRecommendationRailProps) {
+  const topNovelRanking = rankingItems[0] ?? null;
+  const topNovelRankingScore = topNovelRanking?.score || topNovelRanking?.novel.likeCount || 0;
+
+  return (
+    <aside className={classNames("right-rail novel-right-rail", className)} aria-label="Novel recommendations">
+      <section className="side-panel ranking-panel">
+        <div className="panel-title ranking-title">
+          <span>
+            <Trophy size={18} />
+            Ranking
+          </span>
+          <div className="mini-segmented" aria-label="Novel rail ranking period">
+            {(["daily", "weekly"] as RankingPeriod[]).map((period) => (
+              <button
+                className={classNames(rankingPeriod === period && "is-active")}
+                key={period}
+                type="button"
+                onClick={() => onRankingPeriodChange(period)}
+              >
+                {period === "daily" ? "Day" : "Week"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="rail-summary-card ranking-summary-card" aria-label="Novel ranking summary">
+          <span className="rail-summary-icon">
+            <Trophy size={17} />
+          </span>
+          <span>
+            <small>{rankingPeriod === "weekly" ? "Weekly top read" : "Daily top read"}</small>
+            <strong>{topNovelRanking ? topNovelRanking.novel.title : "Awaiting scores"}</strong>
+          </span>
+          <em>{formatCount(topNovelRankingScore)} pts</em>
+        </div>
+        {rankingItems.slice(0, 5).map(({ novel, score }, index) => (
+          <button
+            className="ranking-row novel-ranking-row"
+            key={novel.id}
+            type="button"
+            onClick={() => onOpenNovel(novel.id)}
+          >
+            <span className="rank-number">{index + 1}</span>
+            <span className="novel-ranking-row-cover" style={{ "--novel-cover": novel.coverColor } as CSSProperties}>
+              <NotebookText size={15} />
+            </span>
+            <span>
+              <strong>{novel.title}</strong>
+              <small>{formatCount(score || novel.likeCount)} pts · {formatCount(novel.readMinutes)} min</small>
+            </span>
+          </button>
+        ))}
+        {rankingItems.length === 0 ? (
+          <div className="rail-empty-card">
+            <Sparkles size={16} />
+            <span>No ranked novels yet.</span>
+          </div>
+        ) : null}
+      </section>
+
+      <ActivityPanel
+        data={activityData}
+        onOpenArtwork={onOpenArtwork}
+        onOpenNovel={onOpenNovel}
+        onOpenProfile={onOpenProfile}
+      />
+    </aside>
   );
 }
 
@@ -15917,20 +16006,6 @@ function MatureAccessStatus({ matureAccess }: MatureAccessStatusProps) {
   );
 }
 
-type StatusPillProps = {
-  active: boolean;
-  label: string;
-};
-
-function StatusPill({ active, label }: StatusPillProps) {
-  return (
-    <span className={classNames("status-pill", active && "is-active")}>
-      {active ? <ShieldCheck size={14} /> : <EyeOff size={14} />}
-      {label}
-    </span>
-  );
-}
-
 type PolicyPageProps =
   | { kind: "terms"; context?: RouteContext; onOpenPrivacy: () => void; onOpenTerms?: never }
   | { kind: "privacy"; context?: RouteContext; onOpenTerms: () => void; onOpenPrivacy?: never };
@@ -16159,41 +16234,6 @@ function DonatePage() {
         </div>
       </section>
     </section>
-  );
-}
-
-type StatusCardProps = {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  active: boolean;
-  detail: string;
-};
-
-function StatusCard({ icon, label, value, active, detail }: StatusCardProps) {
-  return (
-    <article className="status-card">
-      <div className={classNames("status-card-icon", active && "is-active")}>{icon}</div>
-      <div>
-        <span>{label}</span>
-        <strong>{value}</strong>
-        <p>{detail}</p>
-      </div>
-    </article>
-  );
-}
-
-type MetricTileProps = {
-  label: string;
-  value: string;
-};
-
-function MetricTile({ label, value }: MetricTileProps) {
-  return (
-    <div className="metric-tile">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
   );
 }
 
@@ -16665,68 +16705,15 @@ function NovelHubPage({
     return null;
   })();
   const novelRightRail = showNovelRightRail ? (
-    <aside className="right-rail novel-right-rail" aria-label="Novel recommendations">
-      <section className="side-panel ranking-panel">
-        <div className="panel-title ranking-title">
-          <span>
-            <Trophy size={18} />
-            Ranking
-          </span>
-          <div className="mini-segmented" aria-label="Novel rail ranking period">
-            {(["daily", "weekly"] as RankingPeriod[]).map((period) => (
-              <button
-                className={classNames(rankingPeriod === period && "is-active")}
-                key={period}
-                type="button"
-                onClick={() => onRankingPeriodChange(period)}
-              >
-                {period === "daily" ? "Day" : "Week"}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="rail-summary-card ranking-summary-card" aria-label="Novel ranking summary">
-          <span className="rail-summary-icon">
-            <Trophy size={17} />
-          </span>
-          <span>
-            <small>{rankingPeriod === "weekly" ? "Weekly top read" : "Daily top read"}</small>
-            <strong>{topNovelRanking ? topNovelRanking.novel.title : "Awaiting scores"}</strong>
-          </span>
-          <em>{formatCount(topNovelRankingScore)} pts</em>
-        </div>
-        {rankingItems.slice(0, 5).map(({ novel, score }, index) => (
-          <button
-            className="ranking-row novel-ranking-row"
-            key={novel.id}
-            type="button"
-            onClick={() => onOpenNovel(novel.id)}
-          >
-            <span className="rank-number">{index + 1}</span>
-            <span className="novel-ranking-row-cover" style={{ "--novel-cover": novel.coverColor } as CSSProperties}>
-              <NotebookText size={15} />
-            </span>
-            <span>
-              <strong>{novel.title}</strong>
-              <small>{formatCount(score || novel.likeCount)} pts · {formatCount(novel.readMinutes)} min</small>
-            </span>
-          </button>
-        ))}
-        {rankingItems.length === 0 ? (
-          <div className="rail-empty-card">
-            <Sparkles size={16} />
-            <span>No ranked novels yet.</span>
-          </div>
-        ) : null}
-      </section>
-
-      <ActivityPanel
-        data={activityData}
-        onOpenArtwork={onOpenArtwork}
-        onOpenNovel={onOpenNovel}
-        onOpenProfile={onOpenProfile}
-      />
-    </aside>
+    <NovelRecommendationRail
+      activityData={activityData}
+      rankingItems={rankingItems}
+      rankingPeriod={rankingPeriod}
+      onRankingPeriodChange={onRankingPeriodChange}
+      onOpenArtwork={onOpenArtwork}
+      onOpenNovel={onOpenNovel}
+      onOpenProfile={onOpenProfile}
+    />
   ) : null;
 
   return (
@@ -17949,12 +17936,15 @@ function NovelDetailPage({
 
 type IllustrationsPageProps = {
   gallery: GalleryResponse | null;
+  activityData: ActivityResponse | null;
   artworks: Artwork[];
   creators: Creator[];
   prominentTags: GalleryResponse["tags"];
   subscribedTagSet: Set<string>;
   rankingItems: RankingResponse["rankings"];
   rankingPeriod: RankingPeriod;
+  novelRankingItems: NovelRankingResponse["rankings"];
+  novelRankingPeriod: RankingPeriod;
   matureFilter: MatureFilter;
   sortMode: SortMode;
   feedTitle: string;
@@ -17972,23 +17962,28 @@ type IllustrationsPageProps = {
   onToggleTagSubscription: (tag: string) => void;
   onOpenArtwork: (artwork: Artwork) => void;
   onOpenArtworkPage: (artwork: Artwork) => void;
+  onOpenNovel: (novelId: string) => void;
   onBookmark: (artwork: Artwork, visibility?: BookmarkVisibility) => void;
   onOpenProfile: (username: string) => void;
   onLoadMore: () => void;
   onOpenCreatorDiscover: () => void;
   onOpenRankings: () => void;
+  onNovelRankingPeriodChange: (period: RankingPeriod) => void;
   onOpenCollectionDiscover: () => void;
   onOpenSubscriptions: () => void;
 };
 
 function IllustrationsPage({
   gallery,
+  activityData,
   artworks,
   creators,
   prominentTags,
   subscribedTagSet,
   rankingItems,
   rankingPeriod,
+  novelRankingItems,
+  novelRankingPeriod,
   matureFilter,
   sortMode,
   feedTitle,
@@ -18006,11 +18001,13 @@ function IllustrationsPage({
   onToggleTagSubscription,
   onOpenArtwork,
   onOpenArtworkPage,
+  onOpenNovel,
   onBookmark,
   onOpenProfile,
   onLoadMore,
   onOpenCreatorDiscover,
   onOpenRankings,
+  onNovelRankingPeriodChange,
   onOpenCollectionDiscover,
   onOpenSubscriptions
 }: IllustrationsPageProps) {
@@ -18030,6 +18027,7 @@ function IllustrationsPage({
               ? "Rising feed"
               : "Recommended feed";
   const isFollowingView = sortMode === "following";
+  const showHomeNovelRail = sortMode === "latest";
   const followedCreators = creators.filter((creator) => creator.following);
   const followingSignalCount = artworks.reduce(
     (total, artwork) => total + artwork.likeCount + artwork.bookmarkCount + artwork.commentCount,
@@ -18123,7 +18121,7 @@ function IllustrationsPage({
 
   return (
     <>
-      <section className={classNames("feed-main", "is-wide-feed", isFollowingView && "is-following-feed")}>
+      <section className={classNames("feed-main", !showHomeNovelRail && "is-wide-feed", isFollowingView && "is-following-feed")}>
         <MatureAccessNotice
           matureAccess={gallery?.matureAccess ?? null}
           onLogin={onAuthRequired}
@@ -18367,6 +18365,18 @@ function IllustrationsPage({
           </p>
         ) : null}
       </section>
+      {showHomeNovelRail ? (
+        <NovelRecommendationRail
+          activityData={activityData}
+          className="home-novel-right-rail"
+          rankingItems={novelRankingItems}
+          rankingPeriod={novelRankingPeriod}
+          onRankingPeriodChange={onNovelRankingPeriodChange}
+          onOpenArtwork={onOpenArtwork}
+          onOpenNovel={onOpenNovel}
+          onOpenProfile={onOpenProfile}
+        />
+      ) : null}
     </>
   );
 }
@@ -18512,21 +18522,6 @@ function ArtworkCard({
         </button>
       </div>
     </article>
-  );
-}
-
-type StatusLineProps = {
-  label: string;
-  value: string;
-  active: boolean;
-};
-
-function StatusLine({ label, value, active }: StatusLineProps) {
-  return (
-    <div className="status-line">
-      <span>{label}</span>
-      <strong className={active ? "is-active" : ""}>{value}</strong>
-    </div>
   );
 }
 
